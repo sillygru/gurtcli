@@ -132,6 +132,20 @@ func (m model) manualModelView() string {
 	return b.String()
 }
 
+func (m model) helpWithStatus(help string) string {
+	providerLabel := llm.DisplayName(m.provider)
+	if m.provider == llm.ProviderCustom {
+		providerLabel = "Custom"
+	}
+	helpRendered := m.styles.dim.Render(help)
+	statusRendered := m.styles.dim.Render(fmt.Sprintf("%s • %s", providerLabel, m.modelName))
+	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
+	if pad < 1 {
+		pad = 1
+	}
+	return helpRendered + strings.Repeat(" ", pad) + statusRendered
+}
+
 func (m model) chatView() string {
 	var b strings.Builder
 
@@ -163,7 +177,7 @@ func (m model) chatView() string {
 		b.WriteString(m.chatInput.View())
 		help := "(y)es / (n)o / allow for (a)ll: "
 		b.WriteString("\n")
-		b.WriteString(m.styles.dim.Render(help))
+		b.WriteString(m.helpWithStatus(help))
 	} else {
 		b.WriteString("> ")
 		b.WriteString(m.chatInput.View())
@@ -186,7 +200,7 @@ func (m model) chatView() string {
 			help = "↑↓ navigate • tab select • esc dismiss"
 		}
 		b.WriteString("\n")
-		b.WriteString(m.styles.dim.Render(help))
+		b.WriteString(m.helpWithStatus(help))
 	}
 
 	return b.String()

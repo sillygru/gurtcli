@@ -167,6 +167,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
 			m.reasoning.active = false
 			m.reasoning.visible = false
+			m.reasoning.content = nil
 		}
 
 		if len(msg.toolCalls) > 0 {
@@ -830,7 +831,7 @@ func buildChatContent(m model) string {
 	lastIsCurrent := false
 	if len(m.messages) > 0 {
 		last := m.messages[len(m.messages)-1]
-		lastIsCurrent = last.Role == "assistant" && reasoningLen > 0
+		lastIsCurrent = last.Role == "assistant" && (m.reasoning.active || streamingLen > 0)
 	}
 
 	// Render all finalized messages except the last one if it's the current response
