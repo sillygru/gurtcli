@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -12,7 +17,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
+	"github.com/sillygru/gurtcli/tools"
 )
+
+//go:embed prompts/system.md
+var systemPromptTemplate string
 
 var dateSuffixRegex = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
 
@@ -151,13 +160,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.reasoning.content != nil {
 			reasoningStr = m.reasoning.content.String()
 		}
-		if contentStr != "" || reasoningStr != "" {
-			msg := llm.Message{Role: "assistant", Content: contentStr}
-			if reasoningStr != "" {
-				msg.Reasoning = reasoningStr
-			}
-			m.messages = append(m.messages, msg)
-		}
 		m.streamingContent = nil
 		m.isStreaming = false
 		m.streamState.cancel = nil
@@ -166,6 +168,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.active = false
 			m.reasoning.visible = false
 		}
+
+		if len(msg.toolCalls) > 0 {
+			asm := llm.Message{Role: "assistant", Content: contentStr}
+			if reasoningStr != "" {
+				asm.Reasoning = reasoningStr
+			}
+			asm.ToolCalls = msg.toolCalls
+			m.messages = append(m.messages, asm)
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			m.toolCallCycle++
+			if m.toolCallCycle > maxToolCallCycles {
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Reached maximum tool call cycles (%d). Stopping.", maxToolCallCycles),
+				})
+				m.toolCallCycle = 0
+				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.GotoBottom()
+				m.chatInput.Focus()
+				return m, nil
+			}
+			return m.processToolCalls(msg.toolCalls)
+		}
+
+		if contentStr != "" || reasoningStr != "" {
+			msg := llm.Message{Role: "assistant", Content: contentStr}
+			if reasoningStr != "" {
+				msg.Reasoning = reasoningStr
+			}
+			m.messages = append(m.messages, msg)
+		}
+		m.toolCallCycle = 0
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
@@ -430,6 +465,37 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pendingPerm != nil {
+		if msg.String() == "enter" {
+			input := strings.TrimSpace(m.chatInput.Value())
+			m.chatInput.Reset()
+			tc := m.pendingPerm.toolCall
+			remaining := m.pendingPerm.remaining
+			m.pendingPerm = nil
+
+			switch input {
+			case "y", "Y":
+				m = m.executeTool(tc)
+				return m.processToolCalls(remaining)
+			case "n", "N":
+				m.messages = append(m.messages, llm.Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    "User denied this operation.",
+				})
+				return m.processToolCalls(remaining)
+			case "a", "A":
+				m.alwaysAllowPerms = true
+				m = m.executeTool(tc)
+				return m.processToolCalls(remaining)
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.chatInput, cmd = m.chatInput.Update(msg)
+		return m, cmd
+	}
+
 	if msg.String() == "enter" {
 		if m.isStreaming {
 			return m, nil
@@ -453,6 +519,40 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.chatViewport, _ = m.chatViewport.Update(msg)
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	return m, cmd
+}
+
+func (m model) executeTool(tc llm.ToolCall) model {
+	args := json.RawMessage(tc.Function.Arguments)
+	result, err := tools.Execute(context.Background(), tc.Function.Name, args, tools.Options{
+		WorkspaceRoot: m.workspaceRoot,
+	})
+	content := result
+	if err != nil {
+		content = fmt.Sprintf("Error: %v", err)
+	}
+	m.messages = append(m.messages, llm.Message{
+		Role:       "tool",
+		ToolCallID: tc.ID,
+		Content:    content,
+	})
+	return m
+}
+
+func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
+	for i, tc := range tcs {
+		if tools.IsDestructive(tc.Function.Name) && !m.yolo && !m.alwaysAllowPerms {
+			m.pendingPerm = &pendingPerm{
+				toolCall:  tc,
+				remaining: tcs[i+1:],
+			}
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			m.chatInput.Focus()
+			return m, nil
+		}
+		m = m.executeTool(tc)
+	}
+	return m, startChatStreamCmd(m)
 }
 
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -485,10 +585,18 @@ func startChatStreamCmd(m model) tea.Cmd {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.streamState.cancel = cancel
 
+		systemPrompt, err := renderSystemPrompt(m)
+		if err != nil {
+			cancel()
+			return chatStreamError{err: fmt.Errorf("rendering system prompt: %w", err)}
+		}
+
 		baseURL := m.customURL
 		req := llm.ChatRequest{
-			Model:    m.modelName,
-			Messages: m.messages,
+			Model:        m.modelName,
+			Messages:     m.messages,
+			SystemPrompt: systemPrompt,
+			Tools:        tools.Definitions(),
 		}
 
 		events, err := llm.StreamChatCompletion(ctx, m.provider, m.apiKey, baseURL, req)
@@ -505,8 +613,11 @@ func startChatStreamCmd(m model) tea.Cmd {
 					globalProgram.Send(chatStreamChunk{content: event.Content})
 				case llm.StreamReasoning:
 					globalProgram.Send(chatStreamReasoning{content: event.Content})
+				case llm.StreamToolCalls:
+					globalProgram.Send(chatStreamDone{toolCalls: event.ToolCalls})
+					return
 				case llm.StreamDone:
-					globalProgram.Send(chatStreamDone{})
+					globalProgram.Send(chatStreamDone{toolCalls: event.ToolCalls})
 					return
 				case llm.StreamError:
 					globalProgram.Send(chatStreamError{err: event.Err})
@@ -518,6 +629,25 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		return nil
 	}
+}
+
+func renderSystemPrompt(m model) (string, error) {
+	tmpl, err := template.New("system").Parse(systemPromptTemplate)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, map[string]string{
+		"OS":        runtime.GOOS,
+		"Arch":      runtime.GOARCH,
+		"Workspace": m.workspaceRoot,
+		"CWD":       m.workspaceRoot,
+		"Model":     m.modelName,
+	})
+	if err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func buildChatContent(m model) string {
@@ -559,11 +689,21 @@ func buildChatContent(m model) string {
 		case "assistant":
 			b.WriteString(m.styles.header.Render("gurtcli"))
 			b.WriteString("\n")
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					b.WriteString(m.styles.dim.Render(fmt.Sprintf("  [tool: %s]", tc.Function.Name)))
+					b.WriteString("\n")
+				}
+			}
 			if msg.Reasoning != "" {
 				b.WriteString(m.styles.reasoningToggle.Render("[▶ Show reasoning]"))
 				b.WriteString("\n")
 			}
 			b.WriteString(msg.Content)
+			b.WriteString("\n\n")
+		case "tool":
+			b.WriteString("  ")
+			b.WriteString(m.styles.dim.Render(msg.Content))
 			b.WriteString("\n\n")
 		}
 	}

@@ -151,15 +151,30 @@ func (m model) chatView() string {
 	b.WriteString(strings.Repeat("─", dividerLen))
 	b.WriteString("\n")
 
-	b.WriteString("> ")
-	b.WriteString(m.chatInput.View())
+	if m.pendingPerm != nil {
+		tc := m.pendingPerm.toolCall
+		args := tc.Function.Arguments
+		if len(args) > 60 {
+			args = args[:60] + "..."
+		}
+		b.WriteString(m.styles.dim.Render(fmt.Sprintf("Allow %s(%s)?", tc.Function.Name, args)))
+		b.WriteString("\n")
+		b.WriteString("> ")
+		b.WriteString(m.chatInput.View())
+		help := "(y)es / (n)o / allow for (a)ll: "
+		b.WriteString("\n")
+		b.WriteString(m.styles.dim.Render(help))
+	} else {
+		b.WriteString("> ")
+		b.WriteString(m.chatInput.View())
 
-	help := "enter send • ↑↓ scroll • ctrl+c quit"
-	if m.isStreaming {
-		help = "ctrl+c cancel"
+		help := "enter send • ↑↓ scroll • ctrl+c quit"
+		if m.isStreaming {
+			help = "ctrl+c cancel"
+		}
+		b.WriteString("\n")
+		b.WriteString(m.styles.dim.Render(help))
 	}
-	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render(help))
 
 	return b.String()
 }

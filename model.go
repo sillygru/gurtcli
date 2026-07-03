@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 )
+
+const maxToolCallCycles = 25
 
 var globalProgram *tea.Program
 
@@ -81,7 +84,9 @@ type chatStreamReasoning struct {
 	content string
 }
 
-type chatStreamDone struct{}
+type chatStreamDone struct {
+	toolCalls []llm.ToolCall
+}
 
 type chatStreamError struct {
 	err error
@@ -95,17 +100,26 @@ type reasoningState struct {
 	duration  time.Duration
 }
 
+type pendingPerm struct {
+	toolCall  llm.ToolCall
+	remaining []llm.ToolCall
+}
+
 type streamState struct {
 	cancel context.CancelFunc
 }
 
 type model struct {
-	state       state
-	yolo        bool
-	reconfigure bool
-	styles      styles
-	width       int
-	height      int
+	state           state
+	yolo            bool
+	reconfigure     bool
+	styles          styles
+	width           int
+	height          int
+	workspaceRoot   string
+	alwaysAllowPerms bool
+	toolCallCycle   int
+	pendingPerm     *pendingPerm
 
 	provider  string
 	modelName string
@@ -246,6 +260,8 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		}
 	}
 
+	wd, _ := os.Getwd()
+
 	m := model{
 		state:        startState,
 		yolo:         yolo,
@@ -255,6 +271,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		modelName:    modelName,
 		customURL:    customURL,
 		apiKey:       apiKey,
+		workspaceRoot: wd,
 		providerList: pl,
 		modelList:    ml,
 		urlInput:     ui,

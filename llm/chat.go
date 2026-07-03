@@ -8,18 +8,45 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 )
 
 type Message struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	Reasoning  string     `json:"reasoning,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
+	Model        string    `json:"model"`
+	Messages     []Message `json:"messages"`
+	SystemPrompt string    `json:"-"`
+	Tools        []Tool    `json:"-"`
+}
+
+type Tool struct {
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type,omitempty"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type StreamEventType int
@@ -27,46 +54,180 @@ type StreamEventType int
 const (
 	StreamDelta StreamEventType = iota
 	StreamReasoning
+	StreamToolCalls
 	StreamDone
 	StreamError
 )
 
 type StreamEvent struct {
-	Type    StreamEventType
-	Content string
-	Err     error
+	Type      StreamEventType
+	Content   string
+	Err       error
+	ToolCalls []ToolCall
 }
 
 type openaiChatBody struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Stream   bool      `json:"stream"`
+	Tools    []Tool    `json:"tools,omitempty"`
 }
 
 type anthropicChatBody struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
+	Model    string              `json:"model"`
+	Messages []anthropicMessage  `json:"messages"`
+	Stream   bool               `json:"stream"`
+	System   string             `json:"system,omitempty"`
+	Tools    []Tool             `json:"tools,omitempty"`
 }
 
+type anthropicMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type anthropicContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   string          `json:"content,omitempty"`
+}
+
+// openaiChunk for SSE parsing
 type openaiChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-		} `json:"delta"`
-	} `json:"choices"`
+	Choices []openaiChoice `json:"choices"`
 }
 
-type anthropicDelta struct {
-	Type     string `json:"type"`
-	Text     string `json:"text"`
-	Thinking string `json:"thinking"`
+type openaiChoice struct {
+	Delta        openaiDelta `json:"delta"`
+	FinishReason string      `json:"finish_reason"`
 }
 
-type anthropicChunk struct {
-	Type  string         `json:"type"`
-	Delta anthropicDelta `json:"delta"`
+type openaiDelta struct {
+	Content          string           `json:"content"`
+	ReasoningContent string           `json:"reasoning_content"`
+	ToolCalls        []openaiToolCall `json:"tool_calls"`
+}
+
+type openaiToolCall struct {
+	Index    int                `json:"index"`
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function openaiToolCallFunc `json:"function"`
+}
+
+type openaiToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// Anthropic SSE types for tool call parsing
+type anthropicContentBlockStart struct {
+	Type         string               `json:"type"`
+	Index        int                  `json:"index"`
+	ContentBlock anthropicBlockContent `json:"content_block"`
+}
+
+type anthropicBlockContent struct {
+	Type  string          `json:"type"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
+type anthropicContentBlockDeltaEvt struct {
+	Type  string            `json:"type"`
+	Index int               `json:"index"`
+	Delta anthropicDeltaEvt `json:"delta"`
+}
+
+type anthropicDeltaEvt struct {
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+}
+
+type anthropicMessageDeltaEvt struct {
+	Type  string              `json:"type"`
+	Delta anthropicStopReason `json:"delta"`
+}
+
+type anthropicStopReason struct {
+	StopReason   string `json:"stop_reason"`
+	StopSequence string `json:"stop_sequence"`
+}
+
+func convertToAnthropicMessages(msgs []Message) []anthropicMessage {
+	result := make([]anthropicMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		switch msg.Role {
+		case "user":
+			if msg.ToolCallID != "" {
+				block := anthropicContentBlock{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolCallID,
+					Content:   msg.Content,
+				}
+				blocks, _ := json.Marshal([]anthropicContentBlock{block})
+				result = append(result, anthropicMessage{
+					Role:    "user",
+					Content: blocks,
+				})
+			} else {
+				content, _ := json.Marshal(msg.Content)
+				result = append(result, anthropicMessage{
+					Role:    "user",
+					Content: content,
+				})
+			}
+
+		case "assistant":
+			if len(msg.ToolCalls) > 0 {
+				blocks := make([]anthropicContentBlock, 0)
+				if msg.Content != "" {
+					blocks = append(blocks, anthropicContentBlock{
+						Type: "text",
+						Text: msg.Content,
+					})
+				}
+				for _, tc := range msg.ToolCalls {
+					input := json.RawMessage(tc.Function.Arguments)
+					if !json.Valid([]byte(tc.Function.Arguments)) {
+						input = json.RawMessage("{}")
+					}
+					blocks = append(blocks, anthropicContentBlock{
+						Type:  "tool_use",
+						ID:    tc.ID,
+						Name:  tc.Function.Name,
+						Input: input,
+					})
+				}
+				blocksJSON, _ := json.Marshal(blocks)
+				result = append(result, anthropicMessage{
+					Role:    "assistant",
+					Content: blocksJSON,
+				})
+			} else {
+				content, _ := json.Marshal(msg.Content)
+				result = append(result, anthropicMessage{
+					Role:    "assistant",
+					Content: content,
+				})
+			}
+
+		default:
+			content, _ := json.Marshal(msg.Content)
+			result = append(result, anthropicMessage{
+				Role:    msg.Role,
+				Content: content,
+			})
+		}
+	}
+	return result
 }
 
 func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string, req ChatRequest) (<-chan StreamEvent, error) {
@@ -85,16 +246,28 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 
 	switch provider {
 	case ProviderAnthropic:
+		msgs := req.Messages
+		if len(msgs) > 0 && msgs[0].Role == "system" {
+			msgs = msgs[1:]
+		}
 		bodyBytes, err = json.Marshal(anthropicChatBody{
 			Model:    req.Model,
-			Messages: req.Messages,
+			Messages: convertToAnthropicMessages(msgs),
 			Stream:   true,
+			System:   req.SystemPrompt,
+			Tools:    req.Tools,
 		})
 	default:
+		msgs := make([]Message, 0, len(req.Messages)+1)
+		if req.SystemPrompt != "" {
+			msgs = append(msgs, Message{Role: "system", Content: req.SystemPrompt})
+		}
+		msgs = append(msgs, req.Messages...)
 		bodyBytes, err = json.Marshal(openaiChatBody{
 			Model:    req.Model,
-			Messages: req.Messages,
+			Messages: msgs,
 			Stream:   true,
+			Tools:    req.Tools,
 		})
 	}
 	if err != nil {
@@ -138,9 +311,47 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 	return events, nil
 }
 
+type openaiToolAccumEntry struct {
+	Index    int
+	ID       string
+	Type     string
+	Name     string
+	Arguments string
+}
+
 func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- StreamEvent) {
 	scanner := bufio.NewScanner(r)
 	var eventType string
+
+	var openaiAccum []openaiToolAccumEntry
+	var anthropicAccum map[int]struct {
+		ID   string
+		Name string
+		Args string
+	}
+	var pendingToolCalls []ToolCall
+
+	flushOpenAIToolCalls := func() {
+		if len(openaiAccum) == 0 {
+			return
+		}
+		sort.Slice(openaiAccum, func(i, j int) bool {
+			return openaiAccum[i].Index < openaiAccum[j].Index
+		})
+		calls := make([]ToolCall, len(openaiAccum))
+		for i, entry := range openaiAccum {
+			calls[i] = ToolCall{
+				ID:   entry.ID,
+				Type: entry.Type,
+				Function: ToolCallFunction{
+					Name:      entry.Name,
+					Arguments: entry.Arguments,
+				},
+			}
+		}
+		events <- StreamEvent{Type: StreamToolCalls, ToolCalls: calls}
+		openaiAccum = nil
+	}
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -161,11 +372,150 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 			}
 
 			if data == "[DONE]" {
+				if len(openaiAccum) > 0 {
+					flushOpenAIToolCalls()
+				}
 				events <- StreamEvent{Type: StreamDone}
 				return
 			}
 
-			emitEvent(events, provider, eventType, data)
+			switch provider {
+			case ProviderOpenAI, ProviderCustom:
+				var chunk openaiChunk
+				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+					continue
+				}
+				if len(chunk.Choices) == 0 {
+					continue
+				}
+				choice := chunk.Choices[0]
+
+				if len(choice.Delta.ToolCalls) > 0 {
+					for _, tc := range choice.Delta.ToolCalls {
+						found := false
+						for i := range openaiAccum {
+							if openaiAccum[i].Index == tc.Index {
+								if tc.ID != "" {
+									openaiAccum[i].ID = tc.ID
+								}
+								if tc.Type != "" {
+									openaiAccum[i].Type = tc.Type
+								}
+								if tc.Function.Name != "" {
+									openaiAccum[i].Name = tc.Function.Name
+								}
+								openaiAccum[i].Arguments += tc.Function.Arguments
+								found = true
+								break
+							}
+						}
+						if !found {
+							openaiAccum = append(openaiAccum, openaiToolAccumEntry{
+								Index:     tc.Index,
+								ID:        tc.ID,
+								Type:      tc.Type,
+								Name:      tc.Function.Name,
+								Arguments: tc.Function.Arguments,
+							})
+						}
+					}
+					if choice.FinishReason == "tool_calls" {
+						flushOpenAIToolCalls()
+					}
+					continue
+				}
+
+				if choice.Delta.Content != "" {
+					events <- StreamEvent{Type: StreamDelta, Content: choice.Delta.Content}
+				}
+				if choice.Delta.ReasoningContent != "" {
+					events <- StreamEvent{Type: StreamReasoning, Content: choice.Delta.ReasoningContent}
+				}
+
+			case ProviderAnthropic:
+				switch eventType {
+				case "content_block_start":
+					var start anthropicContentBlockStart
+					if err := json.Unmarshal([]byte(data), &start); err != nil {
+						continue
+					}
+					if start.ContentBlock.Type == "tool_use" {
+						if anthropicAccum == nil {
+							anthropicAccum = make(map[int]struct {
+								ID   string
+								Name string
+								Args string
+							})
+						}
+						anthropicAccum[start.Index] = struct {
+							ID   string
+							Name string
+							Args string
+						}{
+							ID:   start.ContentBlock.ID,
+							Name: start.ContentBlock.Name,
+						}
+					}
+
+				case "content_block_delta":
+					var delta anthropicContentBlockDeltaEvt
+					if err := json.Unmarshal([]byte(data), &delta); err != nil {
+						continue
+					}
+					switch delta.Delta.Type {
+					case "input_json_delta":
+						if anthropicAccum != nil {
+							if entry, ok := anthropicAccum[delta.Index]; ok {
+								entry.Args += delta.Delta.PartialJSON
+								anthropicAccum[delta.Index] = entry
+							}
+						}
+					case "text_delta":
+						if delta.Delta.Text != "" {
+							events <- StreamEvent{Type: StreamDelta, Content: delta.Delta.Text}
+						}
+					case "thinking_delta":
+						if delta.Delta.Thinking != "" {
+							events <- StreamEvent{Type: StreamReasoning, Content: delta.Delta.Thinking}
+						}
+					}
+
+				case "message_delta":
+					var msgDelta anthropicMessageDeltaEvt
+					if err := json.Unmarshal([]byte(data), &msgDelta); err != nil {
+						continue
+					}
+					if msgDelta.Delta.StopReason == "tool_use" && len(anthropicAccum) > 0 {
+						indices := make([]int, 0, len(anthropicAccum))
+						for idx := range anthropicAccum {
+							indices = append(indices, idx)
+						}
+						sort.Ints(indices)
+						calls := make([]ToolCall, len(indices))
+						for i, idx := range indices {
+							entry := anthropicAccum[idx]
+							calls[i] = ToolCall{
+								ID:   entry.ID,
+								Type: "function",
+								Function: ToolCallFunction{
+									Name:      entry.Name,
+									Arguments: entry.Args,
+								},
+							}
+						}
+						pendingToolCalls = calls
+						anthropicAccum = nil
+					}
+
+				case "message_stop":
+					if pendingToolCalls != nil {
+						events <- StreamEvent{Type: StreamDone, ToolCalls: pendingToolCalls}
+					} else {
+						events <- StreamEvent{Type: StreamDone}
+					}
+					return
+				}
+			}
 			continue
 		}
 
@@ -177,47 +527,5 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 
 	if err := scanner.Err(); err != nil {
 		events <- StreamEvent{Type: StreamError, Err: fmt.Errorf("reading stream: %w", err)}
-	}
-}
-
-func emitEvent(events chan<- StreamEvent, provider, eventType, data string) {
-	switch provider {
-	case ProviderOpenAI, ProviderCustom:
-		var chunk openaiChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return
-		}
-		if len(chunk.Choices) > 0 {
-			content := chunk.Choices[0].Delta.Content
-			if content != "" {
-				events <- StreamEvent{Type: StreamDelta, Content: content}
-			}
-			reasoning := chunk.Choices[0].Delta.ReasoningContent
-			if reasoning != "" {
-				events <- StreamEvent{Type: StreamReasoning, Content: reasoning}
-			}
-		}
-
-	case ProviderAnthropic:
-		if eventType == "message_stop" {
-			events <- StreamEvent{Type: StreamDone}
-			return
-		}
-		if eventType == "content_block_delta" {
-			var chunk anthropicChunk
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				return
-			}
-			switch chunk.Delta.Type {
-			case "text_delta":
-				if chunk.Delta.Text != "" {
-					events <- StreamEvent{Type: StreamDelta, Content: chunk.Delta.Text}
-				}
-			case "thinking_delta":
-				if chunk.Delta.Thinking != "" {
-					events <- StreamEvent{Type: StreamReasoning, Content: chunk.Delta.Thinking}
-				}
-			}
-		}
 	}
 }
