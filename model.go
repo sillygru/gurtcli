@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 )
+
+var globalProgram *tea.Program
 
 type state int
 
@@ -65,6 +69,20 @@ type modelsFetchedMsg struct {
 	err    error
 }
 
+type chatStreamChunk struct {
+	content string
+}
+
+type chatStreamDone struct{}
+
+type chatStreamError struct {
+	err error
+}
+
+type streamState struct {
+	cancel context.CancelFunc
+}
+
 type model struct {
 	state       state
 	yolo        bool
@@ -87,6 +105,21 @@ type model struct {
 	keyInput     textinput.Model
 	manualInput  textinput.Model
 	spinner      spinner.Model
+
+	messages        []llm.Message
+	chatInput       textinput.Model
+	chatViewport    viewport.Model
+	isStreaming     bool
+	streamingContent strings.Builder
+	streamState     *streamState
+}
+
+func (m model) enterChatState() model {
+	m.chatInput.Focus()
+	m.chatViewport.SetContent(buildChatContent(m))
+	m.chatViewport.GotoBottom()
+	m.state = stateChat
+	return m
 }
 
 var providerItems = []list.Item{
@@ -145,6 +178,13 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	mi.Width = 60
 	mi.CharLimit = 100
 
+	ci := textinput.New()
+	ci.Placeholder = "Ask something..."
+	ci.Width = 60
+	ci.CharLimit = 4096
+
+	cv := viewport.New(0, 0)
+
 	sp := spinner.New()
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	sp.Spinner = spinner.Dot
@@ -187,7 +227,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		}
 	}
 
-	return model{
+	m := model{
 		state:        startState,
 		yolo:         yolo,
 		reconfigure:  reconfigure,
@@ -202,7 +242,17 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		keyInput:     ki,
 		manualInput:  mi,
 		spinner:      sp,
+		messages:     []llm.Message{},
+		chatInput:    ci,
+		chatViewport: cv,
+		streamState:  &streamState{},
 	}
+
+	if startState == stateChat {
+		m = m.enterChatState()
+	}
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {

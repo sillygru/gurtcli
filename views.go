@@ -133,8 +133,33 @@ func (m model) manualModelView() string {
 }
 
 func (m model) chatView() string {
-	return m.styles.header.Render("gurtcli") + "\n" +
-		"─" + strings.Repeat("─", 40) + "\n\n" +
-		"Chat interface goes here." + "\n\n" +
-		"> _"
+	var b strings.Builder
+
+	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString("\n")
+
+	dividerLen := m.width
+	if dividerLen < 4 {
+		dividerLen = 40
+	}
+	b.WriteString(strings.Repeat("─", dividerLen))
+	b.WriteString("\n")
+
+	b.WriteString(m.chatViewport.View())
+	b.WriteString("\n")
+
+	b.WriteString(strings.Repeat("─", dividerLen))
+	b.WriteString("\n")
+
+	b.WriteString("> ")
+	b.WriteString(m.chatInput.View())
+
+	help := "enter send • ↑↓ scroll • ctrl+c quit"
+	if m.isStreaming {
+		help = "ctrl+c cancel"
+	}
+	b.WriteString("\n")
+	b.WriteString(m.styles.dim.Render(help))
+
+	return b.String()
 }

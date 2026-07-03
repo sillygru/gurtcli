@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -28,10 +30,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.providerList.SetSize(msg.Width-4, h)
 		m.modelList.SetSize(msg.Width-4, h)
+
+		chatViewHeight := msg.Height - 5
+		if chatViewHeight < 4 {
+			chatViewHeight = 4
+		}
+		m.chatViewport.Width = msg.Width - 4
+		m.chatViewport.Height = chatViewHeight
+		m.chatInput.Width = msg.Width - 4
 		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
+			if m.state == stateChat && m.isStreaming {
+				if m.streamState.cancel != nil {
+					m.streamState.cancel()
+				}
+				return m, nil
+			}
 			return m, tea.Quit
 		}
 		switch m.state {
@@ -49,6 +65,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateError(msg)
 		case stateManualModel:
 			return m.updateManualModel(msg)
+		case stateChat:
+			return m.updateChat(msg)
 		}
 		return m, nil
 
@@ -67,11 +85,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateError
 			return m, nil
 		}
-		// Copy so we never mutate the tea.Msg value.
 		models := append([]string(nil), msg.models...)
-		// For OpenAI, only show text/chat models (gpt-<digit> or gpt-o<digit>).
-		// Also filter out models with date suffixes (e.g., gpt-5.5-pro-2026-04-23).
-		// For Anthropic, filter out models with date suffixes.
 		if m.provider == llm.ProviderOpenAI {
 			filtered := models[:0]
 			for _, name := range models {
@@ -96,6 +110,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.modelList.SetItems(items)
 		m.state = stateModelPick
+		return m, nil
+
+	case chatStreamChunk:
+		m.streamingContent.WriteString(msg.content)
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case chatStreamDone:
+		content := strings.TrimSpace(m.streamingContent.String())
+		if content != "" {
+			m.messages = append(m.messages, llm.Message{Role: "assistant", Content: content})
+		}
+		m.streamingContent.Reset()
+		m.isStreaming = false
+		m.streamState.cancel = nil
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		m.chatInput.Focus()
+		return m, nil
+
+	case chatStreamError:
+		m.streamingContent.Reset()
+		m.isStreaming = false
+		m.streamState.cancel = nil
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("_Error: %v_", msg.err),
+		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		m.chatInput.Focus()
 		return m, nil
 	}
 
@@ -127,8 +173,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				fetchModelsCmd(m.provider, m.apiKey, m.customURL),
 			)
 		}
-		m.state = stateChat
-		return m, nil
+		return m.enterChatState(), nil
 	}
 	if m.provider == "" {
 		m.state = stateProviderPick
@@ -150,8 +195,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
 		)
 	}
-	m.state = stateChat
-	return m, nil
+	return m.enterChatState(), nil
 }
 
 func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -173,8 +217,7 @@ func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key != "" {
 		m.apiKey = key
 		if m.modelName != "" {
-			m.state = stateChat
-			return m, nil
+			return m.enterChatState(), nil
 		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
@@ -205,8 +248,7 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key != "" {
 		m.apiKey = key
 		if m.modelName != "" {
-			m.state = stateChat
-			return m, nil
+			return m.enterChatState(), nil
 		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
@@ -242,8 +284,7 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.modelName != "" {
-		m.state = stateChat
-		return m, nil
+		return m.enterChatState(), nil
 	}
 
 	m.state = stateModelFetch
@@ -282,8 +323,7 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.state = stateChat
-	return m, nil
+	return m.enterChatState(), nil
 }
 
 func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -346,6 +386,98 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.state = stateChat
-	return m, nil
+	return m.enterChatState(), nil
+}
+
+func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "enter" {
+		if m.isStreaming {
+			return m, nil
+		}
+		input := strings.TrimSpace(m.chatInput.Value())
+		if input == "" {
+			return m, nil
+		}
+
+		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
+		m.chatInput.Reset()
+		m.isStreaming = true
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+
+		return m, startChatStreamCmd(m)
+	}
+
+	var cmd tea.Cmd
+	m.chatViewport, _ = m.chatViewport.Update(msg)
+	m.chatInput, cmd = m.chatInput.Update(msg)
+	return m, cmd
+}
+
+func startChatStreamCmd(m model) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.streamState.cancel = cancel
+
+		baseURL := m.customURL
+		req := llm.ChatRequest{
+			Model:    m.modelName,
+			Messages: m.messages,
+		}
+
+		events, err := llm.StreamChatCompletion(ctx, m.provider, m.apiKey, baseURL, req)
+		if err != nil {
+			cancel()
+			m.streamState.cancel = nil
+			return chatStreamError{err: err}
+		}
+
+		go func() {
+			for event := range events {
+				switch event.Type {
+				case llm.StreamDelta:
+					globalProgram.Send(chatStreamChunk{content: event.Content})
+				case llm.StreamDone:
+					globalProgram.Send(chatStreamDone{})
+					return
+				case llm.StreamError:
+					globalProgram.Send(chatStreamError{err: event.Err})
+					return
+				}
+			}
+			globalProgram.Send(chatStreamDone{})
+		}()
+
+		return nil
+	}
+}
+
+func buildChatContent(m model) string {
+	var b strings.Builder
+	if len(m.messages) == 0 && m.streamingContent.Len() == 0 {
+		b.WriteString(m.styles.dim.Render("  No messages yet. Send a message to start."))
+		b.WriteString("\n")
+		return b.String()
+	}
+	for _, msg := range m.messages {
+		switch msg.Role {
+		case "user":
+			b.WriteString(m.styles.dim.Render("you"))
+			b.WriteString("\n")
+			b.WriteString(msg.Content)
+			b.WriteString("\n\n")
+		case "assistant":
+			b.WriteString(m.styles.header.Render("gurtcli"))
+			b.WriteString("\n")
+			b.WriteString(msg.Content)
+			b.WriteString("\n\n")
+		}
+	}
+	if m.streamingContent.Len() > 0 {
+		b.WriteString(m.styles.header.Render("gurtcli"))
+		b.WriteString("\n")
+		b.WriteString(m.streamingContent.String())
+		b.WriteString("\n")
+	}
+	return b.String()
 }
