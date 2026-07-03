@@ -155,8 +155,10 @@ type model struct {
 	isStreaming     bool
 	streamingContent *strings.Builder
 	reasoning       reasoningState
-	streamState     *streamState
-	suggestions     suggestionState
+	streamState      *streamState
+	cancelRequested  bool
+	queuedMessage    string
+	suggestions      suggestionState
 }
 
 func (m model) enterChatState() model {

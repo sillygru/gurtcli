@@ -6,6 +6,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -55,6 +57,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == stateChat && m.isStreaming {
 				if m.streamState.cancel != nil {
 					m.streamState.cancel()
+					m.cancelRequested = true
 				}
 				return m, nil
 			}
@@ -152,6 +155,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case chatStreamDone:
+		if m.cancelRequested {
+			m.cancelRequested = false
+			m.streamingContent = nil
+			m.isStreaming = false
+			m.streamState.cancel = nil
+			m.reasoning = reasoningState{}
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "_Interrupted_",
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			m.chatInput.Focus()
+			if m.queuedMessage != "" {
+				qmsg := m.queuedMessage
+				m.queuedMessage = ""
+				m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
+				m.isStreaming = true
+				m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.GotoBottom()
+				return m, startChatStreamCmd(m)
+			}
+			return m, nil
+		}
+
 		contentStr := ""
 		if m.streamingContent != nil {
 			contentStr = strings.TrimSpace(m.streamingContent.String())
@@ -188,6 +217,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
+				if m.queuedMessage != "" {
+					qmsg := m.queuedMessage
+					m.queuedMessage = ""
+					m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
+					m.isStreaming = true
+					m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+					m.chatViewport.SetContent(buildChatContent(m))
+					m.chatViewport.GotoBottom()
+					return m, startChatStreamCmd(m)
+				}
 				return m, nil
 			}
 			return m.processToolCalls(msg.toolCalls)
@@ -204,16 +243,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
+		if m.queuedMessage != "" {
+			qmsg := m.queuedMessage
+			m.queuedMessage = ""
+			m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
+			m.isStreaming = true
+			m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, startChatStreamCmd(m)
+		}
 		return m, nil
 
 	case chatStreamError:
 		m.streamingContent = nil
 		m.isStreaming = false
 		m.streamState.cancel = nil
-		m.messages = append(m.messages, llm.Message{
-			Role:    "assistant",
-			Content: fmt.Sprintf("_Error: %v_", msg.err),
-		})
+		if m.cancelRequested {
+			m.cancelRequested = false
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "_Interrupted_",
+			})
+		} else {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("_Error: %v_", msg.err),
+			})
+		}
+		m.queuedMessage = ""
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
@@ -510,7 +568,11 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					ToolCallID: tc.ID,
 					Content:    "User denied this operation.",
 				})
-				return m.processToolCalls(remaining)
+				m.toolCallCycle = 0
+				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.GotoBottom()
+				m.chatInput.Focus()
+				return m, nil
 			case "a", "A":
 				m.alwaysAllowPerms = true
 				m = m.executeTool(tc)
@@ -521,6 +583,12 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.chatInput, cmd = m.chatInput.Update(msg)
 		return m, cmd
+	}
+
+	if msg.String() == "esc" && m.isStreaming && m.streamState.cancel != nil {
+		m.streamState.cancel()
+		m.cancelRequested = true
+		return m, nil
 	}
 
 	if m.suggestions.active && len(m.suggestions.items) > 0 && !m.isStreaming && m.pendingPerm == nil {
@@ -552,11 +620,13 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.String() == "enter" {
-		if m.isStreaming {
-			return m, nil
-		}
 		input := strings.TrimSpace(m.chatInput.Value())
 		if input == "" {
+			return m, nil
+		}
+		if m.isStreaming {
+			m.queuedMessage = input
+			m.chatInput.Reset()
 			return m, nil
 		}
 		m.chatInput.Reset()
@@ -838,6 +908,13 @@ func renderSystemPrompt(m model) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	agentsPath := filepath.Join(m.workspaceRoot, "AGENTS.md")
+	if data, err := os.ReadFile(agentsPath); err == nil && len(bytes.TrimSpace(data)) > 0 {
+		buf.WriteString("\n\n## AGENTS.md\n\n")
+		buf.Write(bytes.TrimSpace(data))
+	}
+
 	return buf.String(), nil
 }
 

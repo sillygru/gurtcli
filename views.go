@@ -184,7 +184,7 @@ func (m model) chatView() string {
 
 		help := "enter send • ↑↓ scroll • ctrl+c quit"
 		if m.isStreaming {
-			help = "ctrl+c cancel"
+			help = "esc cancel • ctrl+c quit"
 		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
 			b.WriteString("\n")
 			for i, item := range m.suggestions.items {
