@@ -32,16 +32,20 @@ const (
 )
 
 type styles struct {
-	header lipgloss.Style
-	dim    lipgloss.Style
-	err    lipgloss.Style
+	header           lipgloss.Style
+	dim              lipgloss.Style
+	err              lipgloss.Style
+	reasoningToggle  lipgloss.Style
+	reasoningContent lipgloss.Style
 }
 
 func defaultStyles() styles {
 	return styles{
-		header: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Padding(0, 1),
-		dim:    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
-		err:    lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true),
+		header:           lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Padding(0, 1),
+		dim:              lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
+		err:              lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true),
+		reasoningToggle:  lipgloss.NewStyle().Foreground(lipgloss.Color("243")),
+		reasoningContent: lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Padding(0, 2),
 	}
 }
 
@@ -73,10 +77,22 @@ type chatStreamChunk struct {
 	content string
 }
 
+type chatStreamReasoning struct {
+	content string
+}
+
 type chatStreamDone struct{}
 
 type chatStreamError struct {
 	err error
+}
+
+type reasoningState struct {
+	content   *strings.Builder
+	startTime time.Time
+	visible   bool
+	active    bool
+	duration  time.Duration
 }
 
 type streamState struct {
@@ -110,12 +126,15 @@ type model struct {
 	chatInput       textinput.Model
 	chatViewport    viewport.Model
 	isStreaming     bool
-	streamingContent strings.Builder
+	streamingContent *strings.Builder
+	reasoning       reasoningState
 	streamState     *streamState
 }
 
 func (m model) enterChatState() model {
 	m.chatInput.Focus()
+	m.reasoning = reasoningState{}
+	m.streamingContent = nil
 	m.chatViewport.SetContent(buildChatContent(m))
 	m.chatViewport.GotoBottom()
 	m.state = stateChat

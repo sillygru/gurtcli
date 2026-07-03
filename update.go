@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -112,27 +113,66 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateModelPick
 		return m, nil
 
+	case tea.MouseMsg:
+		if m.state != stateChat {
+			return m, nil
+		}
+		return m.updateMouse(msg)
+
 	case chatStreamChunk:
+		if m.streamingContent == nil {
+			m.streamingContent = new(strings.Builder)
+		}
 		m.streamingContent.WriteString(msg.content)
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
-	case chatStreamDone:
-		content := strings.TrimSpace(m.streamingContent.String())
-		if content != "" {
-			m.messages = append(m.messages, llm.Message{Role: "assistant", Content: content})
+	case chatStreamReasoning:
+		if m.reasoning.content == nil {
+			m.reasoning.content = new(strings.Builder)
 		}
-		m.streamingContent.Reset()
+		m.reasoning.content.WriteString(msg.content)
+		if !m.reasoning.active {
+			m.reasoning.active = true
+			m.reasoning.visible = true
+			m.reasoning.startTime = time.Now()
+		}
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case chatStreamDone:
+		contentStr := ""
+		if m.streamingContent != nil {
+			contentStr = strings.TrimSpace(m.streamingContent.String())
+		}
+		reasoningStr := ""
+		if m.reasoning.content != nil {
+			reasoningStr = m.reasoning.content.String()
+		}
+		if contentStr != "" || reasoningStr != "" {
+			msg := llm.Message{Role: "assistant", Content: contentStr}
+			if reasoningStr != "" {
+				msg.Reasoning = reasoningStr
+			}
+			m.messages = append(m.messages, msg)
+		}
+		m.streamingContent = nil
 		m.isStreaming = false
 		m.streamState.cancel = nil
+		if m.reasoning.active {
+			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
+			m.reasoning.active = false
+			m.reasoning.visible = false
+		}
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
 		return m, nil
 
 	case chatStreamError:
-		m.streamingContent.Reset()
+		m.streamingContent = nil
 		m.isStreaming = false
 		m.streamState.cancel = nil
 		m.messages = append(m.messages, llm.Message{
@@ -402,6 +442,7 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
 		m.chatInput.Reset()
 		m.isStreaming = true
+		m.reasoning = reasoningState{}
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 
@@ -412,6 +453,31 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.chatViewport, _ = m.chatViewport.Update(msg)
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	return m, cmd
+}
+
+func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+	if !m.reasoning.active && (m.reasoning.content == nil || m.reasoning.content.Len() == 0) {
+		return m, nil
+	}
+	viewportStartRow := 2
+	contentLine := m.chatViewport.YOffset + msg.Y - viewportStartRow
+	if contentLine < 0 {
+		return m, nil
+	}
+	content := buildChatContent(m)
+	lines := strings.Split(content, "\n")
+	if contentLine >= len(lines) {
+		return m, nil
+	}
+	line := lines[contentLine]
+	if strings.Contains(line, "[▶") || strings.Contains(line, "[▼") {
+		m.reasoning.visible = !m.reasoning.visible
+		m.chatViewport.SetContent(buildChatContent(m))
+	}
+	return m, nil
 }
 
 func startChatStreamCmd(m model) tea.Cmd {
@@ -437,6 +503,8 @@ func startChatStreamCmd(m model) tea.Cmd {
 				switch event.Type {
 				case llm.StreamDelta:
 					globalProgram.Send(chatStreamChunk{content: event.Content})
+				case llm.StreamReasoning:
+					globalProgram.Send(chatStreamReasoning{content: event.Content})
 				case llm.StreamDone:
 					globalProgram.Send(chatStreamDone{})
 					return
@@ -454,12 +522,34 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 func buildChatContent(m model) string {
 	var b strings.Builder
-	if len(m.messages) == 0 && m.streamingContent.Len() == 0 {
+	streamingLen := 0
+	if m.streamingContent != nil {
+		streamingLen = m.streamingContent.Len()
+	}
+	reasoningLen := 0
+	if m.reasoning.content != nil {
+		reasoningLen = m.reasoning.content.Len()
+	}
+
+	if len(m.messages) == 0 && streamingLen == 0 {
 		b.WriteString(m.styles.dim.Render("  No messages yet. Send a message to start."))
 		b.WriteString("\n")
 		return b.String()
 	}
-	for _, msg := range m.messages {
+
+	lastIsCurrent := false
+	if len(m.messages) > 0 {
+		last := m.messages[len(m.messages)-1]
+		lastIsCurrent = last.Role == "assistant" && reasoningLen > 0
+	}
+
+	// Render all finalized messages except the last one if it's the current response
+	skipLast := lastIsCurrent
+	for i, msg := range m.messages {
+		isLast := i == len(m.messages)-1
+		if isLast && skipLast {
+			continue
+		}
 		switch msg.Role {
 		case "user":
 			b.WriteString(m.styles.dim.Render("you"))
@@ -469,15 +559,50 @@ func buildChatContent(m model) string {
 		case "assistant":
 			b.WriteString(m.styles.header.Render("gurtcli"))
 			b.WriteString("\n")
+			if msg.Reasoning != "" {
+				b.WriteString(m.styles.reasoningToggle.Render("[▶ Show reasoning]"))
+				b.WriteString("\n")
+			}
 			b.WriteString(msg.Content)
 			b.WriteString("\n\n")
 		}
 	}
-	if m.streamingContent.Len() > 0 {
+
+	// Render current response (last assistant message reasoning or streaming)
+	if lastIsCurrent || m.reasoning.active || streamingLen > 0 {
 		b.WriteString(m.styles.header.Render("gurtcli"))
 		b.WriteString("\n")
-		b.WriteString(m.streamingContent.String())
+
+		if reasoningLen > 0 {
+			toggleChar := "▶"
+			statusText := "Thought for"
+			if m.reasoning.active {
+				toggleChar = "▼"
+				statusText = "Thinking"
+			} else if m.reasoning.visible {
+				toggleChar = "▼"
+			}
+
+			elapsed := m.reasoning.duration
+			if m.reasoning.active {
+				elapsed = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
+			}
+
+			b.WriteString(m.styles.reasoningToggle.Render(fmt.Sprintf("[%s %s %v]", toggleChar, statusText, elapsed)))
+			b.WriteString("\n")
+			if m.reasoning.visible {
+				b.WriteString(m.styles.reasoningContent.Render(m.reasoning.content.String()))
+				b.WriteString("\n")
+			}
+		}
+
+		if lastIsCurrent {
+			b.WriteString(m.messages[len(m.messages)-1].Content)
+		} else if streamingLen > 0 && m.streamingContent != nil {
+			b.WriteString(m.streamingContent.String())
+		}
 		b.WriteString("\n")
 	}
+
 	return b.String()
 }

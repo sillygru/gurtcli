@@ -12,8 +12,9 @@ import (
 )
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type ChatRequest struct {
@@ -25,6 +26,7 @@ type StreamEventType int
 
 const (
 	StreamDelta StreamEventType = iota
+	StreamReasoning
 	StreamDone
 	StreamError
 )
@@ -50,16 +52,21 @@ type anthropicChatBody struct {
 type openaiChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
 
+type anthropicDelta struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking string `json:"thinking"`
+}
+
 type anthropicChunk struct {
-	Type  string `json:"type"`
-	Delta struct {
-		Text string `json:"text"`
-	} `json:"delta"`
+	Type  string         `json:"type"`
+	Delta anthropicDelta `json:"delta"`
 }
 
 func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string, req ChatRequest) (<-chan StreamEvent, error) {
@@ -185,6 +192,10 @@ func emitEvent(events chan<- StreamEvent, provider, eventType, data string) {
 			if content != "" {
 				events <- StreamEvent{Type: StreamDelta, Content: content}
 			}
+			reasoning := chunk.Choices[0].Delta.ReasoningContent
+			if reasoning != "" {
+				events <- StreamEvent{Type: StreamReasoning, Content: reasoning}
+			}
 		}
 
 	case ProviderAnthropic:
@@ -197,8 +208,15 @@ func emitEvent(events chan<- StreamEvent, provider, eventType, data string) {
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				return
 			}
-			if chunk.Delta.Text != "" {
-				events <- StreamEvent{Type: StreamDelta, Content: chunk.Delta.Text}
+			switch chunk.Delta.Type {
+			case "text_delta":
+				if chunk.Delta.Text != "" {
+					events <- StreamEvent{Type: StreamDelta, Content: chunk.Delta.Text}
+				}
+			case "thinking_delta":
+				if chunk.Delta.Thinking != "" {
+					events <- StreamEvent{Type: StreamReasoning, Content: chunk.Delta.Thinking}
+				}
 			}
 		}
 	}
