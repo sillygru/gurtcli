@@ -22,9 +22,10 @@ func dir() (string, error) {
 }
 
 type Config struct {
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	CustomBaseURL string `json:"custom_base_url,omitempty"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	CustomBaseURL    string `json:"custom_base_url,omitempty"`
+	ReasoningVisible bool   `json:"reasoning_visible,omitempty"`
 }
 
 func Dir() (string, error) {

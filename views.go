@@ -194,7 +194,8 @@ func (m model) chatView() string {
 					prefix = "> "
 					style = m.styles.header
 				}
-				b.WriteString(style.Render(prefix + "/" + item))
+				b.WriteString(style.Render(prefix + "/" + item.name))
+				b.WriteString(m.styles.dim.Render("  " + item.description))
 				b.WriteString("\n")
 			}
 			help = "↑↓ navigate • tab select • esc dismiss"

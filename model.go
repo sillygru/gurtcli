@@ -99,11 +99,12 @@ type chatStreamError struct {
 }
 
 type reasoningState struct {
-	content   *strings.Builder
-	startTime time.Time
-	visible   bool
-	active    bool
-	duration  time.Duration
+	content        *strings.Builder
+	startTime      time.Time
+	visible        bool
+	active         bool
+	duration       time.Duration
+	defaultVisible bool
 }
 
 type pendingPerm struct {
@@ -116,7 +117,7 @@ type streamState struct {
 }
 
 type suggestionState struct {
-	items    []string
+	items    []slashCommand
 	selected int
 	active   bool
 }
@@ -313,6 +314,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		chatInput:    ci,
 		chatViewport: cv,
 		streamState:  &streamState{},
+	}
+
+	if cfg != nil && !reconfigure {
+		m.reasoning.defaultVisible = cfg.ReasoningVisible
+		m.reasoning.visible = cfg.ReasoningVisible
 	}
 
 	if startState == stateChat {

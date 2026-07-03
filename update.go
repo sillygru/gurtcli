@@ -144,7 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reasoning.content.WriteString(msg.content)
 		if !m.reasoning.active {
 			m.reasoning.active = true
-			m.reasoning.visible = false
+			m.reasoning.visible = m.reasoning.defaultVisible
 			m.reasoning.startTime = time.Now()
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -166,7 +166,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.reasoning.active {
 			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
 			m.reasoning.active = false
-			m.reasoning.visible = false
 			m.reasoning.content = nil
 		}
 
@@ -405,9 +404,10 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.modelName = selected.title
 
 	if err := config.Save(&config.Config{
-		Provider:      m.provider,
-		Model:         m.modelName,
-		CustomBaseURL: m.customURL,
+		Provider:         m.provider,
+		Model:            m.modelName,
+		CustomBaseURL:    m.customURL,
+		ReasoningVisible: m.reasoning.defaultVisible,
 	}); err != nil {
 		m.err = err
 		m.errChoice = 0
@@ -477,9 +477,10 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.modelName = name
 
 	if err := config.Save(&config.Config{
-		Provider:      m.provider,
-		Model:         m.modelName,
-		CustomBaseURL: m.customURL,
+		Provider:         m.provider,
+		Model:            m.modelName,
+		CustomBaseURL:    m.customURL,
+		ReasoningVisible: m.reasoning.defaultVisible,
 	}); err != nil {
 		m.err = err
 		m.errChoice = 0
@@ -539,8 +540,8 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tab", "enter":
 			sel := m.suggestions.selected
 			if sel >= 0 && sel < len(m.suggestions.items) {
-				m.chatInput.SetValue("/" + m.suggestions.items[sel] + " ")
-				m.chatInput.SetCursor(len("/" + m.suggestions.items[sel] + " "))
+				m.chatInput.SetValue("/" + m.suggestions.items[sel].name + " ")
+				m.chatInput.SetCursor(len("/" + m.suggestions.items[sel].name + " "))
 			}
 			m.suggestions = suggestionState{}
 			return m, nil
@@ -566,7 +567,7 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
 		m.isStreaming = true
-		m.reasoning = reasoningState{}
+		m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 
@@ -615,6 +616,11 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action == tea.MouseActionPress && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
+		var cmd tea.Cmd
+		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		return m, cmd
+	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
@@ -677,7 +683,31 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "reasoning":
-		m.reasoning.visible = !m.reasoning.visible
+		oldVisible := m.reasoning.visible
+		newVisible := !oldVisible
+		if len(parts) > 1 {
+			switch strings.ToLower(parts[1]) {
+			case "true", "yes":
+				newVisible = true
+				m.reasoning.defaultVisible = true
+			case "false", "no":
+				newVisible = false
+				m.reasoning.defaultVisible = false
+			}
+		}
+		m.reasoning.visible = newVisible
+		config.Save(&config.Config{
+			Provider:         m.provider,
+			Model:            m.modelName,
+			CustomBaseURL:    m.customURL,
+			ReasoningVisible: m.reasoning.defaultVisible,
+		})
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Reasoning changed to %s (was %s)",
+				map[bool]string{true: "visible", false: "hidden"}[newVisible],
+				map[bool]string{true: "visible", false: "hidden"}[oldVisible]),
+		})
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
@@ -716,10 +746,10 @@ func (m model) updateSuggestions() model {
 
 	input := strings.TrimPrefix(val, "/")
 
-	var matches []string
+	var matches []slashCommand
 	for _, sc := range slashCommands {
 		if strings.HasPrefix(sc.name, input) {
-			matches = append(matches, sc.name)
+			matches = append(matches, sc)
 		}
 	}
 
