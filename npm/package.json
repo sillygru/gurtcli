@@ -1,0 +1,23 @@
+{
+  "name": "gurtcli",
+  "version": "0.1.0",
+  "description": "A coding agent in your terminal. Type what you want. It does the rest.",
+  "bin": {
+    "gurtcli": "cli.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sillygru/gurtcli.git"
+  },
+  "homepage": "https://github.com/sillygru/gurtcli",
+  "bugs": {
+    "url": "https://github.com/sillygru/gurtcli/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

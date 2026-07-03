@@ -1,6 +1,8 @@
 gurtcli
 gurt
 /tmp/
+/dist/
+npm/bin/
 
 # IDE
 .idea/

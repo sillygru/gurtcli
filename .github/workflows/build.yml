@@ -14,21 +14,25 @@ jobs:
         with:
           go-version: '1.26'
 
-      - name: Get build count
-        run: |
-          LATEST_TAG=$(git describe --tags --match='v*' --abbrev=0 2>/dev/null || true)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "COMMIT_COUNT=1" >> $GITHUB_ENV
-          else
-            COMMITS=$(git rev-list --count "$LATEST_TAG"..HEAD)
-            echo "COMMIT_COUNT=$((COMMITS + 1))" >> $GITHUB_ENV
-          fi
-
       - name: Build
-        run: |
-          go build -ldflags "-X main.CommitCount=${{ env.COMMIT_COUNT }}" -o gurtcli .
+        run: go build ./...
 
-      - uses: actions/upload-artifact@v4
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: gurtcli-linux-amd64
-          path: gurtcli
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
