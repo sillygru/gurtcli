@@ -109,7 +109,13 @@ func main() {
 	yolo := flag.Bool("yolo", false, "skip permission prompts")
 	dangerous := flag.Bool("dangerously-skip-permissions", false, "skip permission prompts")
 	modelArg := flag.String("model", "", "model to use")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(VersionString())
+		os.Exit(0)
+	}
 
 	skipPerms := *yolo || *dangerous
 

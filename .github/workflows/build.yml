@@ -1,0 +1,34 @@
+name: Build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Get build count
+        run: |
+          LATEST_TAG=$(git describe --tags --match='v*' --abbrev=0 2>/dev/null || true)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "COMMIT_COUNT=1" >> $GITHUB_ENV
+          else
+            COMMITS=$(git rev-list --count "$LATEST_TAG"..HEAD)
+            echo "COMMIT_COUNT=$((COMMITS + 1))" >> $GITHUB_ENV
+          fi
+
+      - name: Build
+        run: |
+          go build -ldflags "-X main.CommitCount=${{ env.COMMIT_COUNT }}" -o gurtcli .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gurtcli-linux-amd64
+          path: gurtcli
