@@ -56,12 +56,18 @@ type errorAction int
 
 const (
 	errorRetry errorAction = iota
+	errorChangeURL
 	errorChangeKey
 	errorManual
 	errorQuit
 )
 
-var errorActions = []string{"Retry", "Change API key", "Enter model manually", "Quit"}
+func (m model) errorActions() []string {
+	if m.provider == llm.ProviderCustom {
+		return []string{"Retry", "Change custom URL", "Change API key", "Enter model manually", "Quit"}
+	}
+	return []string{"Retry", "Change API key", "Enter model manually", "Quit"}
+}
 
 type item struct {
 	title, desc string
@@ -109,6 +115,12 @@ type streamState struct {
 	cancel context.CancelFunc
 }
 
+type suggestionState struct {
+	items    []string
+	selected int
+	active   bool
+}
+
 type model struct {
 	state           state
 	yolo            bool
@@ -143,6 +155,7 @@ type model struct {
 	streamingContent *strings.Builder
 	reasoning       reasoningState
 	streamState     *streamState
+	suggestions     suggestionState
 }
 
 func (m model) enterChatState() model {
@@ -172,6 +185,24 @@ func providerFromIndex(idx int) string {
 	default:
 		return ""
 	}
+}
+
+type slashCommand struct {
+	name        string
+	description string
+}
+
+var slashCommands = []slashCommand{
+	{name: "auth", description: "Change API key for current provider"},
+	{name: "exit", description: "Quit the application"},
+	{name: "help", description: "Show available commands"},
+	{name: "model", description: "Change model for current provider"},
+	{name: "provider", description: "Change provider and model"},
+	{name: "reasoning", description: "Toggle reasoning display"},
+}
+
+func (m model) isMidSession() bool {
+	return len(m.messages) > 0
 }
 
 func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) model {

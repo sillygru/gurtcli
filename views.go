@@ -104,7 +104,7 @@ func (m model) errorView() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.err.Error())
 	b.WriteString("\n\n")
-	for i, action := range errorActions {
+	for i, action := range m.errorActions() {
 		prefix := "  "
 		if i == m.errChoice {
 			prefix = "> "
@@ -171,6 +171,19 @@ func (m model) chatView() string {
 		help := "enter send • ↑↓ scroll • ctrl+c quit"
 		if m.isStreaming {
 			help = "ctrl+c cancel"
+		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
+			b.WriteString("\n")
+			for i, item := range m.suggestions.items {
+				prefix := "  "
+				style := m.styles.dim
+				if i == m.suggestions.selected {
+					prefix = "> "
+					style = m.styles.header
+				}
+				b.WriteString(style.Render(prefix + "/" + item))
+				b.WriteString("\n")
+			}
+			help = "↑↓ navigate • tab select • esc dismiss"
 		}
 		b.WriteString("\n")
 		b.WriteString(m.styles.dim.Render(help))

@@ -144,7 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reasoning.content.WriteString(msg.content)
 		if !m.reasoning.active {
 			m.reasoning.active = true
-			m.reasoning.visible = true
+			m.reasoning.visible = false
 			m.reasoning.startTime = time.Now()
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -277,6 +277,9 @@ func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.providerList, cmd = m.providerList.Update(msg)
 
+	if msg.String() == "esc" {
+		return m.enterChatState(), nil
+	}
 	if msg.String() != "enter" {
 		return m, cmd
 	}
@@ -287,6 +290,7 @@ func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.urlInput.Focus()
 		return m, nil
 	}
+	m.customURL = ""
 
 	key, _ := config.GetAPIKey(m.provider, m.customURL)
 	if key != "" {
@@ -310,6 +314,10 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.urlInput, cmd = m.urlInput.Update(msg)
 
+	if msg.String() == "esc" {
+		m.state = stateProviderPick
+		return m, nil
+	}
 	if msg.String() != "enter" {
 		return m, cmd
 	}
@@ -341,6 +349,15 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.keyInput, cmd = m.keyInput.Update(msg)
 
+	if msg.String() == "esc" {
+		if m.provider == llm.ProviderCustom {
+			m.state = stateCustomURL
+			m.urlInput.Focus()
+		} else {
+			m.state = stateProviderPick
+		}
+		return m, nil
+	}
 	if msg.String() != "enter" {
 		return m, cmd
 	}
@@ -374,8 +391,7 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.modelList, cmd = m.modelList.Update(msg)
 
 	if msg.String() == "esc" {
-		m.state = stateProviderPick
-		return m, nil
+		return m.enterChatState(), nil
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -402,15 +418,16 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	acts := m.errorActions()
 	switch msg.String() {
 	case "up":
 		m.errChoice--
 		if m.errChoice < 0 {
-			m.errChoice = len(errorActions) - 1
+			m.errChoice = len(acts) - 1
 		}
 	case "down":
 		m.errChoice++
-		if m.errChoice >= len(errorActions) {
+		if m.errChoice >= len(acts) {
 			m.errChoice = 0
 		}
 	case "enter":
@@ -421,6 +438,11 @@ func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.spinner.Tick,
 				fetchModelsCmd(m.provider, m.apiKey, m.customURL),
 			)
+		case errorChangeURL:
+			m.state = stateCustomURL
+			m.urlInput.Reset()
+			m.urlInput.Focus()
+			return m, nil
 		case errorChangeKey:
 			m.state = stateAPIKeyInput
 			m.keyInput.Focus()
@@ -440,6 +462,9 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.manualInput, cmd = m.manualInput.Update(msg)
 
+	if msg.String() == "esc" && m.isMidSession() {
+		return m.enterChatState(), nil
+	}
 	if msg.String() != "enter" {
 		return m, cmd
 	}
@@ -496,6 +521,34 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.suggestions.active && len(m.suggestions.items) > 0 && !m.isStreaming && m.pendingPerm == nil {
+		switch msg.String() {
+		case "up":
+			m.suggestions.selected--
+			if m.suggestions.selected < 0 {
+				m.suggestions.selected = len(m.suggestions.items) - 1
+			}
+			return m, nil
+		case "down":
+			m.suggestions.selected++
+			if m.suggestions.selected >= len(m.suggestions.items) {
+				m.suggestions.selected = 0
+			}
+			return m, nil
+		case "tab", "enter":
+			sel := m.suggestions.selected
+			if sel >= 0 && sel < len(m.suggestions.items) {
+				m.chatInput.SetValue("/" + m.suggestions.items[sel] + " ")
+				m.chatInput.SetCursor(len("/" + m.suggestions.items[sel] + " "))
+			}
+			m.suggestions = suggestionState{}
+			return m, nil
+		case "esc":
+			m.suggestions = suggestionState{}
+			return m, nil
+		}
+	}
+
 	if msg.String() == "enter" {
 		if m.isStreaming {
 			return m, nil
@@ -504,9 +557,13 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if input == "" {
 			return m, nil
 		}
+		m.chatInput.Reset()
+
+		if strings.HasPrefix(input, "/") {
+			return m.handleSlashCommand(input)
+		}
 
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
-		m.chatInput.Reset()
 		m.isStreaming = true
 		m.reasoning = reasoningState{}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -518,6 +575,7 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.chatViewport, _ = m.chatViewport.Update(msg)
 	m.chatInput, cmd = m.chatInput.Update(msg)
+	m = m.updateSuggestions()
 	return m, cmd
 }
 
@@ -578,6 +636,108 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContent(m))
 	}
 	return m, nil
+}
+
+func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
+	m.suggestions = suggestionState{}
+	parts := strings.Fields(input)
+	cmd := strings.TrimPrefix(parts[0], "/")
+
+	switch cmd {
+	case "model":
+		if m.isStreaming {
+			return m, nil
+		}
+		m.state = stateModelFetch
+		return m, tea.Batch(
+			m.spinner.Tick,
+			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+		)
+
+	case "provider":
+		if m.isStreaming {
+			return m, nil
+		}
+		m.modelName = ""
+		m.customURL = ""
+		m.state = stateProviderPick
+		return m, nil
+
+	case "auth":
+		if m.isStreaming {
+			return m, nil
+		}
+		m.state = stateAPIKeyInput
+		m.keyInput.Reset()
+		m.keyInput.Focus()
+		return m, nil
+
+	case "exit":
+		return m, tea.Quit
+
+	case "reasoning":
+		m.reasoning.visible = !m.reasoning.visible
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case "help":
+		var b strings.Builder
+		b.WriteString("Available commands:\n")
+		for _, sc := range slashCommands {
+			fmt.Fprintf(&b, "  /%s - %s\n", sc.name, sc.description)
+		}
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: b.String(),
+		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	default:
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("_Unknown command: /%s. Type /help for available commands._", cmd),
+		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+	}
+}
+
+func (m model) updateSuggestions() model {
+	val := m.chatInput.Value()
+	if !strings.HasPrefix(val, "/") || m.isStreaming || m.pendingPerm != nil {
+		m.suggestions = suggestionState{}
+		return m
+	}
+
+	input := strings.TrimPrefix(val, "/")
+
+	var matches []string
+	for _, sc := range slashCommands {
+		if strings.HasPrefix(sc.name, input) {
+			matches = append(matches, sc.name)
+		}
+	}
+
+	if len(matches) == 0 {
+		m.suggestions = suggestionState{}
+		return m
+	}
+
+	selected := m.suggestions.selected
+	if selected < 0 || selected >= len(matches) {
+		selected = 0
+	}
+
+	m.suggestions = suggestionState{
+		items:    matches,
+		selected: selected,
+		active:   true,
+	}
+	return m
 }
 
 func startChatStreamCmd(m model) tea.Cmd {
