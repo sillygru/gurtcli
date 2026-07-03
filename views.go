@@ -111,7 +111,7 @@ func (m model) errorView() string {
 		}
 		style := m.styles.dim
 		if i == m.errChoice {
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+			style = m.styles.header
 		}
 		b.WriteString(style.Render(prefix + action))
 		b.WriteString("\n")
@@ -138,7 +138,7 @@ func (m model) helpWithStatus(help string) string {
 		providerLabel = "Custom"
 	}
 	helpRendered := m.styles.dim.Render(help)
-	statusRendered := m.styles.dim.Render(fmt.Sprintf("%s • %s", providerLabel, m.modelName))
+	statusRendered := m.styles.statusBar.Render(fmt.Sprintf("%s • %s", providerLabel, m.modelName))
 	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
 	if pad < 1 {
 		pad = 1
@@ -156,30 +156,41 @@ func (m model) chatView() string {
 	if dividerLen < 4 {
 		dividerLen = 40
 	}
-	b.WriteString(strings.Repeat("─", dividerLen))
+	b.WriteString(m.styles.divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")
 
 	b.WriteString(m.chatViewport.View())
 	b.WriteString("\n")
 
-	b.WriteString(strings.Repeat("─", dividerLen))
+	b.WriteString(m.styles.divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")
 
 	if m.pendingPerm != nil {
 		tc := m.pendingPerm.toolCall
-		args := tc.Function.Arguments
-		if len(args) > 60 {
-			args = args[:60] + "..."
+
+		boxW := m.width - 2
+		if boxW < 30 {
+			boxW = 30
 		}
-		b.WriteString(m.styles.dim.Render(fmt.Sprintf("Allow %s(%s)?", tc.Function.Name, args)))
-		b.WriteString("\n")
-		b.WriteString("> ")
-		b.WriteString(m.chatInput.View())
-		help := "(y)es / (n)o / allow for (a)ll: "
-		b.WriteString("\n")
-		b.WriteString(m.helpWithStatus(help))
+		permBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(cpMauve)).
+			Width(boxW).
+			Padding(1, 1)
+
+		var detailBuf strings.Builder
+		detailBuf.WriteString(m.styles.toolLabel.Render(fmt.Sprintf("  %s", tc.Function.Name)))
+		detailBuf.WriteString("\n")
+		renderToolCallArgs(&detailBuf, m, tc)
+
+		content := "\n" +
+			detailBuf.String() +
+			m.styles.inputPrompt.Render("❯ ") + m.chatInput.View() + "\n" +
+			m.styles.dim.Render("(y)es / (n)o / allow for (a)ll")
+
+		b.WriteString(permBox.Render(content))
 	} else {
-		b.WriteString("> ")
+		b.WriteString(m.styles.inputPrompt.Render("❯ "))
 		b.WriteString(m.chatInput.View())
 
 		help := "enter send • ↑↓ scroll • ctrl+c quit"

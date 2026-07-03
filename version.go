@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-var Version = "0.5.3"
+var Version = "0.6.0"
 var CommitCount = "0"
 
 func VersionString() string {

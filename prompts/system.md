@@ -28,6 +28,8 @@ Delete a file from the filesystem. The path must be within the workspace root. C
 ### run_bash
 Execute a shell command and return its output. Captures both stdout and stderr. Use this to build, test, lint, format, or run shell utilities. Supports a configurable timeout (default 30s). Prefer non-destructive commands and ask the user before running commands that could have side effects.
 
+**Important:** Always provide a concise `title` field that describes what the command does (e.g. "Install dependencies", "Run tests", "Build project"). This is shown to the user in the UI.
+
 ## Operational Rules
 
 1. **Read first, edit second** — always read a file before making changes to it.

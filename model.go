@@ -16,6 +16,24 @@ import (
 	"github.com/sillygru/gurtcli/llm"
 )
 
+// Catppuccin Mocha color palette (purple-emphasized)
+const (
+	cpMauve    = "#cba6f7"
+	cpLavender = "#b4befe"
+	cpPink     = "#f5c2e7"
+	cpSubtext1 = "#bac2de"
+	cpSubtext0 = "#a6adc8"
+	cpOverlay2 = "#9399b2"
+	cpOverlay1 = "#7f849c"
+	cpOverlay0 = "#6c7086"
+	cpSurface2 = "#585b70"
+	cpSurface1 = "#45475a"
+	cpSurface0 = "#313244"
+	cpText     = "#cdd6f4"
+	cpRed      = "#f38ba8"
+	cpGreen    = "#a6e3a1"
+)
+
 const maxToolCallCycles = 25
 
 var globalProgram *tea.Program
@@ -40,15 +58,33 @@ type styles struct {
 	err              lipgloss.Style
 	reasoningToggle  lipgloss.Style
 	reasoningContent lipgloss.Style
+	divider          lipgloss.Style
+	userLabel        lipgloss.Style
+	inputPrompt      lipgloss.Style
+	toolLabel        lipgloss.Style
+	diffAdd          lipgloss.Style
+	diffDel          lipgloss.Style
+	permPrompt       lipgloss.Style
+	permKey          lipgloss.Style
+	statusBar        lipgloss.Style
 }
 
 func defaultStyles() styles {
 	return styles{
-		header:           lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Padding(0, 1),
-		dim:              lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
-		err:              lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true),
-		reasoningToggle:  lipgloss.NewStyle().Foreground(lipgloss.Color("243")),
-		reasoningContent: lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Padding(0, 2),
+		header:           lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)).Padding(0, 1),
+		dim:              lipgloss.NewStyle().Foreground(lipgloss.Color(cpOverlay1)),
+		err:              lipgloss.NewStyle().Foreground(lipgloss.Color(cpRed)).Bold(true),
+		reasoningToggle:  lipgloss.NewStyle().Foreground(lipgloss.Color(cpSubtext1)),
+		reasoningContent: lipgloss.NewStyle().Foreground(lipgloss.Color(cpOverlay0)).Padding(0, 2),
+		divider:          lipgloss.NewStyle().Foreground(lipgloss.Color(cpSurface2)),
+		userLabel:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpLavender)),
+		inputPrompt:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)),
+		toolLabel:        lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(cpPink)),
+		diffAdd:          lipgloss.NewStyle().Foreground(lipgloss.Color(cpGreen)),
+		diffDel:          lipgloss.NewStyle().Foreground(lipgloss.Color(cpRed)),
+		permPrompt:       lipgloss.NewStyle().Foreground(lipgloss.Color(cpText)),
+		permKey:          lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)),
+		statusBar:        lipgloss.NewStyle().Foreground(lipgloss.Color(cpSubtext0)),
 	}
 }
 
@@ -213,6 +249,16 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 
 	pd := list.NewDefaultDelegate()
 	pd.ShowDescription = true
+	pd.Styles.SelectedTitle = pd.Styles.SelectedTitle.
+		Foreground(lipgloss.Color(cpMauve)).
+		Background(lipgloss.Color(cpSurface0)).
+		Bold(true)
+	pd.Styles.SelectedDesc = pd.Styles.SelectedDesc.
+		Foreground(lipgloss.Color(cpOverlay2))
+	pd.Styles.NormalTitle = pd.Styles.NormalTitle.
+		Foreground(lipgloss.Color(cpText))
+	pd.Styles.NormalDesc = pd.Styles.NormalDesc.
+		Foreground(lipgloss.Color(cpOverlay1))
 	pl := list.New(providerItems, pd, 0, 0)
 	pl.Title = "Pick a provider"
 	pl.SetShowHelp(false)
@@ -222,6 +268,12 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 
 	md := list.NewDefaultDelegate()
 	md.ShowDescription = false
+	md.Styles.SelectedTitle = md.Styles.SelectedTitle.
+		Foreground(lipgloss.Color(cpMauve)).
+		Background(lipgloss.Color(cpSurface0)).
+		Bold(true)
+	md.Styles.NormalTitle = md.Styles.NormalTitle.
+		Foreground(lipgloss.Color(cpText))
 	ml := list.New(nil, md, 0, 0)
 	ml.Title = "Pick a model"
 	ml.SetShowHelp(false)
@@ -253,7 +305,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	cv := viewport.New(0, 0)
 
 	sp := spinner.New()
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(cpMauve))
 	sp.Spinner = spinner.Dot
 
 	cfg, _ := config.Load()

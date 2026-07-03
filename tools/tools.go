@@ -55,6 +55,7 @@ type deleteFileArgs struct {
 type runBashArgs struct {
 	Command string `json:"command"`
 	Timeout int    `json:"timeout"`
+	Title   string `json:"title"`
 }
 
 func Definitions() []llm.Tool {
@@ -129,9 +130,10 @@ func Definitions() []llm.Tool {
 					"type": "object",
 					"properties": {
 						"command": { "type": "string", "description": "Shell command to execute" },
-						"timeout":  { "type": "integer", "description": "Timeout in milliseconds (default 30000)" }
+						"timeout":  { "type": "integer", "description": "Timeout in milliseconds (default 30000)" },
+						"title":   { "type": "string", "description": "Brief human-readable description of what this command does (e.g. 'Install dependencies', 'Run tests')" }
 					},
-					"required": ["command"]
+					"required": ["command", "title"]
 				}`),
 			},
 		},

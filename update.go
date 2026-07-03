@@ -950,7 +950,7 @@ func buildChatContent(m model) string {
 		}
 		switch msg.Role {
 		case "user":
-			b.WriteString(m.styles.dim.Render("you"))
+			b.WriteString(m.styles.userLabel.Render("you"))
 			b.WriteString("\n")
 			b.WriteString(msg.Content)
 			b.WriteString("\n\n")
@@ -959,15 +959,22 @@ func buildChatContent(m model) string {
 			b.WriteString("\n")
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					b.WriteString(m.styles.dim.Render(fmt.Sprintf("  [tool: %s]", tc.Function.Name)))
+					b.WriteString(m.styles.toolLabel.Render(fmt.Sprintf("  %s", tc.Function.Name)))
 					b.WriteString("\n")
+					renderToolCallArgs(&b, m, tc)
 				}
 			}
 			if msg.Reasoning != "" {
 				b.WriteString(m.styles.reasoningToggle.Render("[▶ Show reasoning]"))
 				b.WriteString("\n")
 			}
-			b.WriteString(msg.Content)
+			if msg.Content != "" {
+				lines := strings.Split(msg.Content, "\n")
+				for i, line := range lines {
+					lines[i] = m.styles.divider.Render("│") + " " + line
+				}
+				b.WriteString(strings.Join(lines, "\n"))
+			}
 			b.WriteString("\n\n")
 		case "tool":
 			b.WriteString("  ")
@@ -1005,12 +1012,77 @@ func buildChatContent(m model) string {
 		}
 
 		if lastIsCurrent {
-			b.WriteString(m.messages[len(m.messages)-1].Content)
+			content := m.messages[len(m.messages)-1].Content
+			if content != "" {
+				lines := strings.Split(content, "\n")
+				for i, line := range lines {
+					lines[i] = m.styles.divider.Render("│") + " " + line
+				}
+				b.WriteString(strings.Join(lines, "\n"))
+			}
 		} else if streamingLen > 0 && m.streamingContent != nil {
-			b.WriteString(m.streamingContent.String())
+			content := m.streamingContent.String()
+			if content != "" {
+				lines := strings.Split(content, "\n")
+				for i, line := range lines {
+					lines[i] = m.styles.divider.Render("│") + " " + line
+				}
+				b.WriteString(strings.Join(lines, "\n"))
+			}
 		}
 		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+func renderToolCallArgs(b *strings.Builder, m model, tc llm.ToolCall) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return
+	}
+
+	switch tc.Function.Name {
+	case "run_bash":
+		if title, ok := args["title"].(string); ok && title != "" {
+			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", title)))
+			b.WriteString("\n")
+		}
+		if cmd, ok := args["command"].(string); ok && cmd != "" {
+			b.WriteString(fmt.Sprintf("  $ %s", cmd))
+			b.WriteString("\n")
+		}
+
+	case "edit_file":
+		if path, ok := args["filePath"].(string); ok && path != "" {
+			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", path)))
+			b.WriteString("\n")
+		}
+		oldStr, _ := args["oldString"].(string)
+		newStr, _ := args["newString"].(string)
+		if oldStr != "" || newStr != "" {
+			oldLines := strings.Split(oldStr, "\n")
+			newLines := strings.Split(newStr, "\n")
+			for _, l := range oldLines {
+				b.WriteString(m.styles.diffDel.Render(fmt.Sprintf("  - %s", l)))
+				b.WriteString("\n")
+			}
+			for _, l := range newLines {
+				b.WriteString(m.styles.diffAdd.Render(fmt.Sprintf("  + %s", l)))
+				b.WriteString("\n")
+			}
+		}
+
+	case "write_file":
+		if path, ok := args["filePath"].(string); ok && path != "" {
+			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", path)))
+			b.WriteString("\n")
+		}
+
+	default:
+		if path, ok := args["filePath"].(string); ok && path != "" {
+			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", path)))
+			b.WriteString("\n")
+		}
+	}
 }
