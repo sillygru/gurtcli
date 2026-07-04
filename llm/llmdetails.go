@@ -25,8 +25,14 @@ type providerModels struct {
 }
 
 // FetchLLMDetails fetches llmdetails.json from GitHub, falling back to the
-// embedded copy on failure. Returns a map keyed by model ID for fast lookup.
-func FetchLLMDetails(ctx context.Context) (map[string]ModelInfo, error) {
+// embedded copy on failure. If forceLocal is true, it skips the remote fetch
+// and uses the embedded copy directly.
+func FetchLLMDetails(ctx context.Context, forceLocal bool) (map[string]ModelInfo, error) {
+	if forceLocal {
+		LogDebug("FetchLLMDetails: force-local enabled, using embedded")
+		return parseLLMDetails(embeddedLLMDetails)
+	}
+
 	data, err := fetchRemoteLLMDetails(ctx)
 	if err != nil {
 		LogDebug("FetchLLMDetails: remote fetch failed, using embedded: %v", err)
@@ -217,6 +223,30 @@ func (m ModelInfo) HasEffort() bool {
 	return m.Capabilities.Effort.Supported
 }
 
+func (m ModelInfo) HasGranularThinkingLevels() bool {
+	for _, level := range m.Capabilities.ThinkingLevels {
+		switch level {
+		case "none", "enabled", "disabled", "adaptive":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func (m ModelInfo) HasAdjustableReasoning() bool {
+	return m.HasGranularThinkingLevels() || m.HasExplicitEffort()
+}
+
+func (m ModelInfo) HasAdjustableThinking() bool {
+	return m.HasGranularThinkingLevels()
+}
+
+func (m ModelInfo) HasExplicitEffort() bool {
+	return len(m.Capabilities.EffortLevels) > 0
+}
+
 func (m ModelInfo) ThinkingEffortLevels() []string {
 	return m.Capabilities.Effort.EffortLevels()
 }
@@ -226,9 +256,22 @@ func (m ModelInfo) ThinkingHasNone() bool {
 }
 
 func (m ModelInfo) ReasoningLevelOptions() []string {
-	levels := m.Capabilities.Effort.EffortLevels()
+	var opts []string
 	if m.ThinkingHasNone() {
-		levels = append([]string{"none"}, levels...)
+		opts = append(opts, "none")
 	}
-	return levels
+	if m.Capabilities.Thinking.Types.Adaptive.Supported {
+		opts = append(opts, "adaptive")
+	}
+	seen := make(map[string]bool, len(opts))
+	for _, o := range opts {
+		seen[o] = true
+	}
+	for _, level := range m.Capabilities.Effort.EffortLevels() {
+		if !seen[level] {
+			opts = append(opts, level)
+			seen[level] = true
+		}
+	}
+	return opts
 }

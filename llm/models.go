@@ -52,6 +52,7 @@ type ModelCapabilities struct {
 	StructuredOutputs SimpleCapability              `json:"structured_outputs"`
 	Thinking          ThinkingCapabilities          `json:"thinking"`
 	ThinkingLevels    []string                      `json:"-"`
+	EffortLevels      []string                      `json:"-"`
 }
 
 func (c *ModelCapabilities) UnmarshalJSON(data []byte) error {
@@ -119,6 +120,7 @@ func (c *ModelCapabilities) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(val, &arr); err != nil {
 				continue
 			}
+			c.EffortLevels = arr
 			for _, s := range arr {
 				switch s {
 				case "minimal":

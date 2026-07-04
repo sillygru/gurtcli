@@ -143,7 +143,7 @@ func (m model) reasoningConfigView() string {
 	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
 	b.WriteString("\n\n")
 
-	if len(m.thinkingOptions) > 0 {
+	if len(m.thinkingOptions) > 0 && len(m.effortOptions) > 0 {
 		// Two-field mode: Thinking + Effort (Anthropic)
 		think := m.thinkingType
 		thinkLine := fmt.Sprintf("  Thinking:  %s", think)
@@ -163,7 +163,20 @@ func (m model) reasoningConfigView() string {
 
 		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
 		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc skip"))
+		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc go back"))
+	} else if len(m.thinkingOptions) > 0 {
+		// Thinking-only mode (no effort levels)
+		think := m.thinkingType
+		thinkLine := fmt.Sprintf("  Thinking:  %s", think)
+		if m.reasoningField == 0 {
+			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(think), m.theme.Dim.Render("← →"))
+		}
+		b.WriteString(thinkLine)
+		b.WriteString("\n\n")
+
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+		b.WriteString("\n")
+		b.WriteString(m.theme.Dim.Render("←/→ change • enter confirm • esc go back"))
 	} else {
 		// Single-field mode: Reasoning effort (OpenAI)
 		effort := m.effortLevel
@@ -176,7 +189,7 @@ func (m model) reasoningConfigView() string {
 
 		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
 		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("←/→ change • enter confirm • esc skip"))
+		b.WriteString(m.theme.Dim.Render("←/→ change • enter confirm • esc go back"))
 	}
 	return b.String()
 }

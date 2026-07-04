@@ -855,32 +855,16 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.provider {
 	case llm.ProviderAnthropic:
 		m.thinkingOptions = nil
-		if selected.info.Capabilities.Thinking.Types.Adaptive.Supported {
-			m.thinkingOptions = append(m.thinkingOptions, "adaptive")
-		}
-		if selected.info.Capabilities.Thinking.Types.Enabled.Supported {
-			m.thinkingOptions = append(m.thinkingOptions, "enabled")
-		}
-		m.effortOptions = nil
-		eff := selected.info.Capabilities.Effort
-		if eff.Low.Supported {
-			m.effortOptions = append(m.effortOptions, "low")
-		}
-		if eff.Medium.Supported {
-			m.effortOptions = append(m.effortOptions, "medium")
-		}
-		if eff.High.Supported {
-			m.effortOptions = append(m.effortOptions, "high")
-		}
-		if eff.XHigh.Supported {
-			m.effortOptions = append(m.effortOptions, "xhigh")
-		}
-		if eff.Max.Supported {
-			m.effortOptions = append(m.effortOptions, "max")
+		for _, level := range selected.info.Capabilities.ThinkingLevels {
+			if level == "enabled" || level == "adaptive" {
+				m.thinkingOptions = append(m.thinkingOptions, level)
+			}
 		}
 		if len(m.thinkingOptions) == 0 {
 			m.thinkingOptions = []string{"adaptive", "enabled", "disabled"}
 		}
+
+		m.effortOptions = append([]string(nil), selected.info.Capabilities.EffortLevels...)
 		if len(m.effortOptions) == 0 {
 			m.effortOptions = []string{"low", "medium", "high"}
 		}
@@ -892,91 +876,17 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.effortLevel == "" {
 			m.effortLevel = m.effortOptions[0]
 		}
+		goto validateAndShow
 
-		m.state = stateReasoningConfig
-		return m, nil
-
-	case llm.ProviderOpenAI, llm.ProviderGemini:
+	case llm.ProviderOpenAI, llm.ProviderGemini, llm.ProviderCustom:
 		m.thinkingOptions = nil
-		m.effortOptions = nil
-		eff := selected.info.Capabilities.Effort
-		if eff.Minimal.Supported {
-			m.effortOptions = append(m.effortOptions, "minimal")
-		}
-		if eff.Low.Supported {
-			m.effortOptions = append(m.effortOptions, "low")
-		}
-		if eff.Medium.Supported {
-			m.effortOptions = append(m.effortOptions, "medium")
-		}
-		if eff.High.Supported {
-			m.effortOptions = append(m.effortOptions, "high")
-		}
-		if eff.XHigh.Supported {
-			m.effortOptions = append(m.effortOptions, "xhigh")
-		}
-		if eff.Max.Supported {
-			m.effortOptions = append(m.effortOptions, "max")
-		}
-		if selected.info.ThinkingHasNone() {
-			m.effortOptions = append([]string{"none"}, m.effortOptions...)
-		}
-
-		// Migration: clear thinkingType for non-Anthropic (it was set by a
-		// previous two-field approach, but OpenAI/Gemini only have one level)
 		m.thinkingType = ""
+		m.effortOptions = selected.info.ReasoningLevelOptions()
 
 		if len(m.effortOptions) == 0 {
 			break
 		}
-
-		m.reasoningField = 0
-		if m.effortLevel == "" {
-			m.effortLevel = m.effortOptions[0]
-		}
-
-		m.state = stateReasoningConfig
-		return m, nil
-
-	case llm.ProviderCustom:
-		m.thinkingOptions = nil
-		m.effortOptions = nil
-		eff := selected.info.Capabilities.Effort
-		if eff.Minimal.Supported {
-			m.effortOptions = append(m.effortOptions, "minimal")
-		}
-		if eff.Low.Supported {
-			m.effortOptions = append(m.effortOptions, "low")
-		}
-		if eff.Medium.Supported {
-			m.effortOptions = append(m.effortOptions, "medium")
-		}
-		if eff.High.Supported {
-			m.effortOptions = append(m.effortOptions, "high")
-		}
-		if eff.XHigh.Supported {
-			m.effortOptions = append(m.effortOptions, "xhigh")
-		}
-		if eff.Max.Supported {
-			m.effortOptions = append(m.effortOptions, "max")
-		}
-		if selected.info.ThinkingHasNone() {
-			m.effortOptions = append([]string{"none"}, m.effortOptions...)
-		}
-
-		m.thinkingType = ""
-
-		if len(m.effortOptions) == 0 {
-			break
-		}
-
-		m.reasoningField = 0
-		if m.effortLevel == "" {
-			m.effortLevel = m.effortOptions[0]
-		}
-
-		m.state = stateReasoningConfig
-		return m, nil
+		goto validateAndShow
 	}
 
 	if err := saveConfig(m); err != nil {
@@ -987,6 +897,42 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m.enterChatState(), nil
+
+validateAndShow:
+	if len(m.thinkingOptions) > 0 && m.thinkingType == "" {
+		m.thinkingType = m.thinkingOptions[0]
+	}
+	if len(m.effortOptions) > 0 && m.effortLevel == "" {
+		m.effortLevel = m.effortOptions[0]
+	}
+	if len(m.effortOptions) > 0 {
+		valid := false
+		for _, opt := range m.effortOptions {
+			if opt == m.effortLevel {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			m.effortLevel = m.effortOptions[0]
+		}
+	}
+	if len(m.thinkingOptions) > 0 {
+		valid := false
+		for _, opt := range m.thinkingOptions {
+			if opt == m.thinkingType {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			m.thinkingType = m.thinkingOptions[0]
+		}
+	}
+
+	m.reasoningField = 0
+	m.state = stateReasoningConfig
+	return m, nil
 }
 
 func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1476,6 +1422,46 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Custom provider with thinking types
+		if m.provider == llm.ProviderCustom && (model.Capabilities.Thinking.Types.Enabled.Supported || model.Capabilities.Thinking.Types.Adaptive.Supported) {
+			opts := model.ThinkingTypeOptions()
+			partsStr := strings.Join(opts, ", ")
+			if len(parts) < 2 {
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Current thinking type: %s\nUsage: /thinking <type>  (%s)", m.thinkingType, partsStr),
+				})
+				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.GotoBottom()
+				return m, nil
+			}
+			newType := strings.ToLower(parts[1])
+			valid := false
+			for _, opt := range opts {
+				if newType == opt {
+					valid = true
+					break
+				}
+			}
+			if valid {
+				oldType := m.thinkingType
+				m.thinkingType = newType
+				saveConfig(m)
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
+				})
+			} else {
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
+				})
+			}
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+
 		// OpenAI/Gemini: /thinking sets the reasoning effort level
 		opts := model.ReasoningLevelOptions()
 		if len(opts) == 0 {
@@ -1728,8 +1714,22 @@ func startChatStreamCmd(m model) tea.Cmd {
 		}
 
 		reasoningEffort := ""
-		if (m.provider == llm.ProviderOpenAI || m.provider == llm.ProviderGemini || m.provider == llm.ProviderCustom) && m.effortLevel != "" && m.effortLevel != "none" {
+		if m.provider == llm.ProviderCustom {
+			if m.thinkingType == "disabled" {
+				// Thinking disabled, don't send reasoning_effort
+			} else if m.thinkingType == "enabled" && m.effortLevel != "" && m.effortLevel != "none" {
+				reasoningEffort = m.effortLevel
+			} else if m.thinkingType == "enabled" {
+				reasoningEffort = "high"
+			} else if m.effortLevel != "" && m.effortLevel != "none" {
+				reasoningEffort = m.effortLevel
+			}
+		} else if (m.provider == llm.ProviderOpenAI || m.provider == llm.ProviderGemini) && m.effortLevel != "" && m.effortLevel != "none" {
 			reasoningEffort = m.effortLevel
+		}
+
+		if reasoningEffort == "enabled" {
+			reasoningEffort = "high"
 		}
 
 		req := llm.ChatRequest{

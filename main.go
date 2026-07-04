@@ -14,6 +14,7 @@ func main() {
 	modelFlag := flag.String("model", "", "model to use")
 	providerFlag := flag.String("provider", "", "provider to use (openai, anthropic, custom)")
 	reconfigure := flag.Bool("reconfigure", false, "force provider and model setup")
+	forceLocal := flag.Bool("force-local", false, "use embedded llmdetails.json instead of fetching from GitHub")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -24,7 +25,7 @@ func main() {
 
 	skipPerms := *yolo || *dangerous
 
-	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure)
+	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure, *forceLocal)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	globalProgram = p
 	if _, err := p.Run(); err != nil {

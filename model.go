@@ -86,15 +86,13 @@ func (m modelItem) Title() string {
 func (m modelItem) Description() string {
 	var tags []string
 	if m.info.HasThinkingSupport() {
-		tags = append(tags, "thinking")
+		tags = append(tags, "reasoning")
+		if m.info.HasAdjustableReasoning() {
+			tags = append(tags, "adjustable")
+		}
 		if m.info.Capabilities.Thinking.Types.Adaptive.Supported {
 			tags = append(tags, "adaptive")
 		}
-	}
-	// Anthropic and custom models from llmdetails can have explicit effort
-	// levels; OpenAI and Gemini's thinking levels ARE the effort levels.
-	if (m.provider == llm.ProviderAnthropic || m.provider == llm.ProviderCustom) && m.info.Capabilities.Effort.Supported {
-		tags = append(tags, "effort")
 	}
 	desc := m.info.ID
 	if len(tags) > 0 {
@@ -182,6 +180,7 @@ type model struct {
 	state            state
 	yolo             bool
 	reconfigure      bool
+	forceLocal       bool
 	theme            ui.Theme
 	width            int
 	height           int
@@ -351,7 +350,7 @@ func (m model) smallModelForProvider() string {
 	}
 }
 
-func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) model {
+func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, forceLocal bool) model {
 	cleanOldBinary()
 	s := ui.DefaultTheme()
 
@@ -502,6 +501,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	m := model{
 		state:              startState,
 		yolo:               yolo,
+		forceLocal:         forceLocal,
 		reconfigure:        reconfigure,
 		theme:              s,
 		provider:           provider,
@@ -622,7 +622,7 @@ func (m model) persistSessionCmd() tea.Cmd {
 
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	cmds = append(cmds, prefetchLLMDetailsCmd())
+	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal))
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
 	}
@@ -632,12 +632,12 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func prefetchLLMDetailsCmd() tea.Cmd {
+func prefetchLLMDetailsCmd(forceLocal bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		details, err := llm.FetchLLMDetails(ctx)
+		details, err := llm.FetchLLMDetails(ctx, forceLocal)
 		if err != nil || len(details) == 0 {
 			llm.LogDebug("prefetchLLMDetailsCmd: failed, will fetch later if needed: %v", err)
 			return nil
@@ -666,7 +666,7 @@ func (m model) fetchModelsCmd() tea.Cmd {
 		}
 
 		llm.LogDebug("fetchModelsCmd: prefetched not ready, fetching inline (%d models)", len(models))
-		details, err := llm.FetchLLMDetails(ctx)
+		details, err := llm.FetchLLMDetails(ctx, m.forceLocal)
 		if err == nil && len(details) > 0 {
 			models = llm.EnrichModels(models, details, m.provider)
 		} else {
