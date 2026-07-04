@@ -210,7 +210,9 @@ func (m model) manualModelView() string {
 
 func (m model) helpWithStatus(help string) string {
 	providerLabel := llm.DisplayName(m.provider)
-	if m.provider == llm.ProviderCustom {
+	if m.savedEndpointName != "" {
+		providerLabel = m.savedEndpointName
+	} else if m.provider == llm.ProviderCustom {
 		providerLabel = "Custom"
 	}
 	helpRendered := m.styles.dim.Render(help)
