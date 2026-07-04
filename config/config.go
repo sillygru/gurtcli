@@ -65,6 +65,9 @@ type Config struct {
 	ThinkingType       string          `json:"thinking_type,omitempty"`
 	EffortLevel        string          `json:"effort_level,omitempty"`
 	MaxTokens          int             `json:"max_tokens,omitempty"`
+
+	UpdateVersion    string `json:"update_version,omitempty"`
+	UpdateTempBinary string `json:"update_temp_binary,omitempty"`
 }
 
 func Dir() (string, error) {

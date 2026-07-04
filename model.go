@@ -287,6 +287,10 @@ type model struct {
 	maxInputTokens int
 	inputTokens    int
 	outputTokens   int
+
+	updateAvailable    bool
+	latestVersion      string
+	updateCheckStarted bool
 }
 
 func (m model) enterChatState() model {
@@ -317,6 +321,7 @@ type providerPickKind int
 const (
 	pickOpenAI providerPickKind = iota
 	pickAnthropic
+	pickGemini
 	pickSavedEndpoint
 	pickCustom
 )
@@ -330,6 +335,7 @@ func buildProviderItems(endpoints []config.SavedEndpoint) []list.Item {
 	items := []list.Item{
 		item{title: "OpenAI", desc: "GPT-5.5, GPT-5.4, GPT-5.4-mini, ..."},
 		item{title: "Anthropic", desc: "fable 5, opus 4.8, sonnet 5, ..."},
+		item{title: "Google Gemini", desc: "Gemini 3.5 Flash, Gemini 2.5 Pro, ..."},
 	}
 	for _, ep := range endpoints {
 		items = append(items, item{title: ep.Name, desc: ep.BaseURL})
@@ -345,9 +351,12 @@ func resolveProviderPick(endpoints []config.SavedEndpoint, idx int) providerPick
 	if idx == 1 {
 		return providerPickResult{kind: pickAnthropic}
 	}
+	if idx == 2 {
+		return providerPickResult{kind: pickGemini}
+	}
 	savedCount := len(endpoints)
-	if idx >= 2 && idx < 2+savedCount {
-		return providerPickResult{kind: pickSavedEndpoint, savedEndpointIdx: idx - 2}
+	if idx >= 3 && idx < 3+savedCount {
+		return providerPickResult{kind: pickSavedEndpoint, savedEndpointIdx: idx - 3}
 	}
 	return providerPickResult{kind: pickCustom}
 }
@@ -368,6 +377,7 @@ var slashCommands = []slashCommand{
 	{name: "session", description: "Switch to a saved session"},
 	{name: "thinking", description: "Set thinking type (adaptive/enabled/disabled)"},
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
+	{name: "update", description: "Update to the latest version"},
 }
 
 func (m model) isMidSession() bool {
@@ -375,6 +385,7 @@ func (m model) isMidSession() bool {
 }
 
 func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) model {
+	cleanOldBinary()
 	s := defaultStyles()
 
 	cfg, _ := config.Load()
@@ -488,7 +499,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	}
 
 	// If provider arg matches a saved endpoint name, load its URL
-	if savedEndpointName == "" && provider != "" && (provider != llm.ProviderOpenAI && provider != llm.ProviderAnthropic && provider != llm.ProviderCustom) {
+	if savedEndpointName == "" && provider != "" && (provider != llm.ProviderOpenAI && provider != llm.ProviderAnthropic && provider != llm.ProviderGemini && provider != llm.ProviderCustom) {
 		if cfg != nil {
 			if ep, ok := cfg.GetSavedEndpoint(provider); ok {
 				provider = llm.ProviderCustom

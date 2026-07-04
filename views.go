@@ -270,6 +270,11 @@ func (m model) chatView() string {
 	b.WriteString(m.styles.header.Render("gurtcli"))
 	b.WriteString("\n")
 
+	if m.updateAvailable {
+		b.WriteString(m.styles.statusBar.Render(fmt.Sprintf("  Update %s available! Run /update to update", m.latestVersion)))
+		b.WriteString("\n")
+	}
+
 	dividerLen := m.width
 	if dividerLen < 4 {
 		dividerLen = 40

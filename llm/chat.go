@@ -428,7 +428,7 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 			}
 
 			switch provider {
-			case ProviderOpenAI, ProviderCustom:
+			case ProviderOpenAI, ProviderGemini, ProviderCustom:
 				var chunk openaiChunk
 				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 					continue

@@ -16,6 +16,7 @@ type SimpleCapability struct {
 
 type EffortCapabilities struct {
 	Supported bool             `json:"supported"`
+	Minimal   SimpleCapability `json:"minimal"`
 	Low       SimpleCapability `json:"low"`
 	Medium    SimpleCapability `json:"medium"`
 	High      SimpleCapability `json:"high"`
@@ -107,6 +108,9 @@ func (c *ModelCapabilities) UnmarshalJSON(data []byte) error {
 				case "max":
 					c.Effort.Max.Supported = true
 					c.Effort.Supported = true
+				case "minimal":
+					c.Effort.Minimal.Supported = true
+					c.Effort.Supported = true
 				}
 			}
 
@@ -117,6 +121,9 @@ func (c *ModelCapabilities) UnmarshalJSON(data []byte) error {
 			}
 			for _, s := range arr {
 				switch s {
+				case "minimal":
+					c.Effort.Minimal.Supported = true
+					c.Effort.Supported = true
 				case "low":
 					c.Effort.Low.Supported = true
 					c.Effort.Supported = true
@@ -190,12 +197,17 @@ func IsTextChatModel(id string) bool {
 	return len(rest) >= 2 && rest[0] == 'o' && rest[1] >= '0' && rest[1] <= '9'
 }
 
+const geminiModelsURL = "https://generativelanguage.googleapis.com/v1beta/models"
+
 func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]ModelInfo, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL(provider)
 	}
 
 	reqURL := strings.TrimSuffix(baseURL, "/") + "/models"
+	if provider == ProviderGemini {
+		reqURL = geminiModelsURL
+	}
 
 	var models []ModelInfo
 	var lastErr error
@@ -218,6 +230,18 @@ func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]Model
 	return nil, fmt.Errorf("fetching models (3 attempts): %w", lastErr)
 }
 
+type geminiModelEntry struct {
+	Name               string   `json:"name"`
+	DisplayName        string   `json:"displayName"`
+	InputTokenLimit    int      `json:"inputTokenLimit"`
+	OutputTokenLimit   int      `json:"outputTokenLimit"`
+	SupportedMethods   []string `json:"supportedGenerationMethods"`
+}
+
+type geminiModelsResponse struct {
+	Models []geminiModelEntry `json:"models"`
+}
+
 func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -228,6 +252,8 @@ func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]Model
 	case ProviderAnthropic:
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
+	case ProviderGemini:
+		req.Header.Set("x-goog-api-key", apiKey)
 	default:
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -247,6 +273,10 @@ func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]Model
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
+	if provider == ProviderGemini {
+		return parseGeminiModelsResponse(resp.Body)
+	}
+
 	var result modelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
@@ -264,4 +294,46 @@ func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]Model
 	}
 
 	return models, nil
+}
+
+func parseGeminiModelsResponse(r io.Reader) ([]ModelInfo, error) {
+	var result geminiModelsResponse
+	if err := json.NewDecoder(r).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding Gemini models response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Models))
+	for _, m := range result.Models {
+		id := strings.TrimPrefix(m.Name, "models/")
+		if id == "" || id == m.Name {
+			continue
+		}
+		if !isGeminiChatModel(id, m.SupportedMethods) {
+			continue
+		}
+		models = append(models, ModelInfo{
+			ID:             id,
+			DisplayName:    m.DisplayName,
+			MaxInputTokens: m.InputTokenLimit,
+			MaxTokens:      m.OutputTokenLimit,
+		})
+	}
+
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no chat models returned by Gemini API")
+	}
+
+	return models, nil
+}
+
+func isGeminiChatModel(id string, methods []string) bool {
+	if !strings.HasPrefix(id, "gemini-") {
+		return false
+	}
+	for _, m := range methods {
+		if m == "generateContent" {
+			return true
+		}
+	}
+	return false
 }

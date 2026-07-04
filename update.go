@@ -129,6 +129,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			models = filtered
+		} else if m.provider == llm.ProviderGemini {
+			filtered := models[:0]
+			for _, model := range models {
+				id := strings.ToLower(model.ID)
+				if !strings.HasPrefix(id, "gemini-") || hasDateSuffix(model.ID) {
+					continue
+				}
+				if strings.Contains(id, "banana") || strings.Contains(id, "image") || strings.Contains(id, "computer") || strings.Contains(id, "robotics") || strings.Contains(id, "tts") || strings.Contains(id, "custom") || strings.Contains(id, "latest") || strings.Contains(id, "omni") || strings.Contains(id, "00") {
+					continue
+				}
+				filtered = append(filtered, model)
+			}
+			models = filtered
+		}
+		if m.provider == llm.ProviderGemini {
+			for i, j := 0, len(models)-1; i < j; i, j = i+1, j-1 {
+				models[i], models[j] = models[j], models[i]
+			}
 		}
 		if m.provider == llm.ProviderOpenAI {
 			for i, j := 0, len(models)-1; i < j; i, j = i+1, j-1 {
@@ -305,6 +323,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatInput.Focus()
 		return m, m.persistSessionCmd()
 
+	case updateCheckResult:
+		if msg.err != nil || msg.latestVersion == "" {
+			return m, nil
+		}
+
+		if !msg.needsUpdate {
+			if cfg, _ := config.Load(); cfg != nil && cfg.UpdateVersion != "" {
+				cfg.UpdateVersion = ""
+				config.Save(cfg)
+			}
+			return m, nil
+		}
+
+		cfg, _ := config.Load()
+		if cfg != nil && cfg.UpdateVersion == msg.latestVersion {
+			return m, performUpdateCmd(msg.latestVersion)
+		}
+
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+		cfg.UpdateVersion = msg.latestVersion
+		if err := config.Save(cfg); err != nil {
+			return m, nil
+		}
+
+		m.updateAvailable = true
+		m.latestVersion = msg.latestVersion
+		return m, nil
+
+	case updatePerformResult:
+		if msg.upToDate {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "You're already on the latest version.",
+			})
+		} else if msg.err != nil {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("_Update failed: %v_", msg.err),
+			})
+		}
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
 	case sessionSaveErrorMsg:
 		m.messages = append(m.messages, llm.Message{
 			Role:    "assistant",
@@ -444,6 +508,12 @@ func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case pickAnthropic:
 		m.provider = llm.ProviderAnthropic
+		m.customURL = ""
+		m.savedEndpointName = ""
+		return m.continueProviderPick()
+
+	case pickGemini:
+		m.provider = llm.ProviderGemini
 		m.customURL = ""
 		m.savedEndpointName = ""
 		return m.continueProviderPick()
@@ -766,10 +836,13 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateReasoningConfig
 		return m, nil
 
-	case llm.ProviderOpenAI:
+	case llm.ProviderOpenAI, llm.ProviderGemini:
 		m.thinkingOptions = nil
 		m.effortOptions = nil
 		eff := selected.info.Capabilities.Effort
+		if eff.Minimal.Supported {
+			m.effortOptions = append(m.effortOptions, "minimal")
+		}
 		if eff.Low.Supported {
 			m.effortOptions = append(m.effortOptions, "low")
 		}
@@ -790,7 +863,6 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		if len(m.effortOptions) == 0 {
-			// Model has no reasoning support — skip config
 			break
 		}
 
@@ -1008,6 +1080,15 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if !m.updateCheckStarted {
+		m.updateCheckStarted = true
+		m2, cmd := m.handleChatMessage(msg)
+		return m2, tea.Batch(checkForUpdateCmd(), cmd)
+	}
+	return m.handleChatMessage(msg)
+}
+
+func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pendingPerm != nil {
 		if msg.String() == "enter" {
 			input := strings.TrimSpace(m.chatInput.Value())
@@ -1270,7 +1351,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if len(parts) < 2 {
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (low, medium, high, xhigh, max)", m.effortLevel),
+				Content: fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (minimal, low, medium, high, xhigh, max)", m.effortLevel),
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1278,7 +1359,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		newEffort := strings.ToLower(parts[1])
 		switch newEffort {
-		case "low", "medium", "high", "xhigh", "max":
+		case "minimal", "low", "medium", "high", "xhigh", "max":
 			oldEffort := m.effortLevel
 			m.effortLevel = newEffort
 			saveConfig(m)
@@ -1289,7 +1370,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		default:
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Unknown effort level: %s. Available: low, medium, high, xhigh, max", newEffort),
+				Content: fmt.Sprintf("Unknown effort level: %s. Available: minimal, low, medium, high, xhigh, max", newEffort),
 			})
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -1343,6 +1424,15 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m = m.resetToNewSession()
 		m = m.enterChatState()
 		return m, saveCmd
+
+	case "update":
+		if m.isStreaming {
+			return m, nil
+		}
+		if m.latestVersion == "" {
+			return m, checkAndUpdateCmd()
+		}
+		return m, performUpdateCmd(m.latestVersion)
 
 	default:
 		m.messages = append(m.messages, llm.Message{
@@ -1410,7 +1500,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 		}
 
 		reasoningEffort := ""
-		if m.provider == llm.ProviderOpenAI && m.effortLevel != "" && m.effortLevel != "none" {
+		if (m.provider == llm.ProviderOpenAI || m.provider == llm.ProviderGemini) && m.effortLevel != "" && m.effortLevel != "none" {
 			reasoningEffort = m.effortLevel
 		}
 

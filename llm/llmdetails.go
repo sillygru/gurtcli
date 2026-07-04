@@ -16,6 +16,7 @@ var embeddedLLMDetails []byte
 type llmDetailsFile struct {
 	OpenAI    providerModels `json:"OpenAI"`
 	Anthropic providerModels `json:"Anthropic"`
+	Gemini    providerModels `json:"Gemini"`
 }
 
 type providerModels struct {
@@ -90,6 +91,11 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 			result[m.ID] = m
 		}
 	}
+	for _, m := range file.Gemini.Data {
+		if m.ID != "" {
+			result[m.ID] = m
+		}
+	}
 	return result, nil
 }
 
@@ -125,11 +131,14 @@ func hasNoneThinking(levels []string) bool {
 }
 
 func IsProviderOpenAI(provider string) bool {
-	return provider == ProviderOpenAI || provider == ProviderCustom
+	return provider == ProviderOpenAI || provider == ProviderCustom || provider == ProviderGemini
 }
 
 func (e EffortCapabilities) EffortLevels() []string {
 	var levels []string
+	if e.Minimal.Supported {
+		levels = append(levels, "minimal")
+	}
 	if e.Low.Supported {
 		levels = append(levels, "low")
 	}

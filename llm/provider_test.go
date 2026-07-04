@@ -9,6 +9,7 @@ func TestDisplayName(t *testing.T) {
 	}{
 		{ProviderOpenAI, "OpenAI"},
 		{ProviderAnthropic, "Anthropic"},
+		{ProviderGemini, "Google Gemini"},
 		{ProviderCustom, "Custom (OpenAI-compatible)"},
 		{"unknown", "unknown"},
 	}
@@ -28,6 +29,7 @@ func TestDefaultBaseURL(t *testing.T) {
 	}{
 		{ProviderOpenAI, "https://api.openai.com/v1"},
 		{ProviderAnthropic, "https://api.anthropic.com/v1"},
+		{ProviderGemini, "https://generativelanguage.googleapis.com/v1beta/openai/"},
 		{ProviderCustom, ""},
 		{"unknown", ""},
 	}
@@ -41,10 +43,10 @@ func TestDefaultBaseURL(t *testing.T) {
 }
 
 func TestProvidersList(t *testing.T) {
-	if len(Providers) != 3 {
-		t.Errorf("len(Providers) = %d, want 3", len(Providers))
+	if len(Providers) != 4 {
+		t.Errorf("len(Providers) = %d, want 4", len(Providers))
 	}
-	want := []string{"openai", "anthropic", "custom"}
+	want := []string{"openai", "anthropic", "gemini", "custom"}
 	for i, p := range Providers {
 		if p != want[i] {
 			t.Errorf("Providers[%d] = %q, want %q", i, p, want[i])
