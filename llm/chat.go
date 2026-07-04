@@ -20,11 +20,19 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
+type ThinkingConfig struct {
+	Type        string `json:"type"`
+	BudgetTokens int   `json:"budget_tokens,omitempty"`
+}
+
 type ChatRequest struct {
-	Model        string    `json:"model"`
-	Messages     []Message `json:"messages"`
-	SystemPrompt string    `json:"-"`
-	Tools        []Tool    `json:"-"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	SystemPrompt   string          `json:"-"`
+	Tools          []Tool          `json:"-"`
+	Thinking       *ThinkingConfig `json:"-"`
+	ReasoningEffort string         `json:"-"`
+	MaxTokens      int             `json:"-"`
 }
 
 type Tool struct {
@@ -67,18 +75,21 @@ type StreamEvent struct {
 }
 
 type openaiChatBody struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
-	Tools    []Tool    `json:"tools,omitempty"`
+	Model           string    `json:"model"`
+	Messages        []Message `json:"messages"`
+	Stream          bool      `json:"stream"`
+	Tools           []Tool    `json:"tools,omitempty"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
 }
 
 type anthropicChatBody struct {
-	Model    string              `json:"model"`
-	Messages []anthropicMessage  `json:"messages"`
-	Stream   bool               `json:"stream"`
-	System   string             `json:"system,omitempty"`
-	Tools    []Tool             `json:"tools,omitempty"`
+	Model     string              `json:"model"`
+	Messages  []anthropicMessage  `json:"messages"`
+	MaxTokens int                `json:"max_tokens"`
+	Stream    bool                `json:"stream"`
+	System    string              `json:"system,omitempty"`
+	Tools     []Tool              `json:"tools,omitempty"`
+	Thinking  *ThinkingConfig     `json:"thinking,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -250,12 +261,18 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 		if len(msgs) > 0 && msgs[0].Role == "system" {
 			msgs = msgs[1:]
 		}
+		maxTokens := req.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = 128000
+		}
 		bodyBytes, err = json.Marshal(anthropicChatBody{
-			Model:    req.Model,
-			Messages: convertToAnthropicMessages(msgs),
-			Stream:   true,
-			System:   req.SystemPrompt,
-			Tools:    req.Tools,
+			Model:     req.Model,
+			Messages:  convertToAnthropicMessages(msgs),
+			MaxTokens: maxTokens,
+			Stream:    true,
+			System:    req.SystemPrompt,
+			Tools:     req.Tools,
+			Thinking:  req.Thinking,
 		})
 	default:
 		msgs := make([]Message, 0, len(req.Messages)+1)
@@ -264,10 +281,11 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 		}
 		msgs = append(msgs, req.Messages...)
 		bodyBytes, err = json.Marshal(openaiChatBody{
-			Model:    req.Model,
-			Messages: msgs,
-			Stream:   true,
-			Tools:    req.Tools,
+			Model:           req.Model,
+			Messages:        msgs,
+			Stream:          true,
+			Tools:           req.Tools,
+			ReasoningEffort: req.ReasoningEffort,
 		})
 	}
 	if err != nil {

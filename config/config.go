@@ -26,6 +26,9 @@ type Config struct {
 	Model            string `json:"model"`
 	CustomBaseURL    string `json:"custom_base_url,omitempty"`
 	ReasoningVisible bool   `json:"reasoning_visible,omitempty"`
+	ThinkingType     string `json:"thinking_type,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	MaxTokens        int    `json:"max_tokens,omitempty"`
 }
 
 func Dir() (string, error) {

@@ -10,10 +10,62 @@ import (
 	"time"
 )
 
+type SimpleCapability struct {
+	Supported bool `json:"supported"`
+}
+
+type EffortCapabilities struct {
+	Supported bool             `json:"supported"`
+	Low       SimpleCapability `json:"low"`
+	Medium    SimpleCapability `json:"medium"`
+	High      SimpleCapability `json:"high"`
+	XHigh     SimpleCapability `json:"xhigh"`
+	Max       SimpleCapability `json:"max"`
+}
+
+type ThinkingCapabilities struct {
+	Supported bool                     `json:"supported"`
+	Types     ThinkingTypeCapabilities `json:"types"`
+}
+
+type ThinkingTypeCapabilities struct {
+	Enabled  SimpleCapability `json:"enabled"`
+	Adaptive SimpleCapability `json:"adaptive"`
+}
+
+type ContextManagementCapabilities struct {
+	Supported             bool             `json:"supported"`
+	ClearToolUses20250919 SimpleCapability `json:"clear_tool_uses_20250919"`
+	ClearThinking20251015 SimpleCapability `json:"clear_thinking_20251015"`
+	Compact20260112       SimpleCapability `json:"compact_20260112"`
+}
+
+type ModelCapabilities struct {
+	Batch             SimpleCapability              `json:"batch"`
+	Citations         SimpleCapability              `json:"citations"`
+	CodeExecution     SimpleCapability              `json:"code_execution"`
+	ContextManagement ContextManagementCapabilities `json:"context_management"`
+	Effort            EffortCapabilities            `json:"effort"`
+	ImageInput        SimpleCapability              `json:"image_input"`
+	PDFInput          SimpleCapability              `json:"pdf_input"`
+	StructuredOutputs SimpleCapability              `json:"structured_outputs"`
+	Thinking          ThinkingCapabilities          `json:"thinking"`
+}
+
+type ModelInfo struct {
+	ID             string            `json:"id"`
+	DisplayName    string            `json:"display_name"`
+	CreatedAt      string            `json:"created_at"`
+	MaxInputTokens int               `json:"max_input_tokens"`
+	MaxTokens      int               `json:"max_tokens"`
+	Capabilities   ModelCapabilities `json:"capabilities"`
+}
+
 type modelsResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
+	Data    []ModelInfo `json:"data"`
+	HasMore bool        `json:"has_more"`
+	FirstID string      `json:"first_id"`
+	LastID  string      `json:"last_id"`
 }
 
 // IsTextChatModel reports whether the given model ID is an OpenAI text/chat model.
@@ -33,14 +85,14 @@ func IsTextChatModel(id string) bool {
 	return len(rest) >= 2 && rest[0] == 'o' && rest[1] >= '0' && rest[1] <= '9'
 }
 
-func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]string, error) {
+func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]ModelInfo, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL(provider)
 	}
 
 	reqURL := strings.TrimSuffix(baseURL, "/") + "/models"
 
-	var models []string
+	var models []ModelInfo
 	var lastErr error
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -61,7 +113,7 @@ func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]strin
 	return nil, fmt.Errorf("fetching models (3 attempts): %w", lastErr)
 }
 
-func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]string, error) {
+func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -95,10 +147,10 @@ func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]strin
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
-	models := make([]string, 0, len(result.Data))
+	models := make([]ModelInfo, 0, len(result.Data))
 	for _, m := range result.Data {
 		if m.ID != "" {
-			models = append(models, m.ID)
+			models = append(models, m)
 		}
 	}
 

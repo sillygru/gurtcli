@@ -22,6 +22,8 @@ func (m model) View() string {
 		return m.modelFetchView()
 	case stateModelPick:
 		return m.modelPickView()
+	case stateReasoningConfig:
+		return m.reasoningConfigView()
 	case stateError:
 		return m.errorView()
 	case stateManualModel:
@@ -93,6 +95,37 @@ func (m model) modelPickView() string {
 	b.WriteString(m.modelList.View())
 	b.WriteString("\n")
 	b.WriteString(m.styles.dim.Render("Type to filter • ↑/↓ navigate • enter select • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) reasoningConfigView() string {
+	var b strings.Builder
+	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.header.Render(m.modelName))
+	b.WriteString("\n")
+	b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+	b.WriteString("\n\n")
+
+	think := m.thinkingType
+	thinkLine := fmt.Sprintf("  Thinking:  %s", think)
+	if m.reasoningField == 0 {
+		thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(think), m.styles.dim.Render("← →"))
+	}
+	b.WriteString(thinkLine)
+	b.WriteString("\n")
+
+	effort := m.effortLevel
+	effortLine := fmt.Sprintf("  Effort:    %s", effort)
+	if m.reasoningField == 1 {
+		effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(effort), m.styles.dim.Render("← →"))
+	}
+	b.WriteString(effortLine)
+	b.WriteString("\n\n")
+
+	b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+	b.WriteString("\n")
+	b.WriteString(m.styles.dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc skip"))
 	return b.String()
 }
 

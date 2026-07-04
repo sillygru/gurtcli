@@ -19,12 +19,10 @@ func TestFetchModelsOpenAI(t *testing.T) {
 			return
 		}
 		resp := modelsResponse{
-			Data: []struct {
-				ID string `json:"id"`
-			}{
-				{ID: "gpt-5.5"},
-				{ID: "gpt-5.4"},
-				{ID: "gpt-5.4-mini"},
+			Data: []ModelInfo{
+				{ID: "gpt-5.5", DisplayName: "GPT-5.5"},
+				{ID: "gpt-5.4", DisplayName: "GPT-5.4"},
+				{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini"},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -36,10 +34,13 @@ func TestFetchModelsOpenAI(t *testing.T) {
 		t.Fatalf("FetchModels() returned error: %v", err)
 	}
 	if len(models) != 3 {
-		t.Errorf("got %d models, want 3", len(models))
+		t.Fatalf("got %d models, want 3", len(models))
 	}
-	if models[0] != "gpt-5.5" {
-		t.Errorf("models[0] = %q, want %q", models[0], "gpt-5.5")
+	if models[0].ID != "gpt-5.5" {
+		t.Errorf("models[0].ID = %q, want %q", models[0].ID, "gpt-5.5")
+	}
+	if models[0].DisplayName != "GPT-5.5" {
+		t.Errorf("models[0].DisplayName = %q, want %q", models[0].DisplayName, "GPT-5.5")
 	}
 }
 
@@ -54,11 +55,9 @@ func TestFetchModelsAnthropic(t *testing.T) {
 			return
 		}
 		resp := modelsResponse{
-			Data: []struct {
-				ID string `json:"id"`
-			}{
-				{ID: "claude-sonnet-5"},
-				{ID: "claude-opus-4-8"},
+			Data: []ModelInfo{
+				{ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5"},
+				{ID: "claude-opus-4-8", DisplayName: "Claude Opus 4.8"},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -88,9 +87,7 @@ func TestFetchModelsUnauthorized(t *testing.T) {
 
 func TestFetchModelsEmptyList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := modelsResponse{Data: []struct {
-			ID string `json:"id"`
-		}{}}
+		resp := modelsResponse{Data: []ModelInfo{}}
 		json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
@@ -123,14 +120,11 @@ func TestIsTextChatModel(t *testing.T) {
 		id   string
 		want bool
 	}{
-		// Match: current OpenAI models for agentic coding (mid-2026)
-		{"gpt-5.5", true},     // flagship
-		{"gpt-5.4", true},     // balanced
-		{"gpt-5.4-mini", true}, // efficiency
-		// Case insensitive
+		{"gpt-5.5", true},
+		{"gpt-5.4", true},
+		{"gpt-5.4-mini", true},
 		{"GPT-5.5", true},
 		{"Gpt-5.4", true},
-		// Excluded: real but non-text or non-GPT models
 		{"claude-fable-5", false},
 		{"claude-opus-4-8", false},
 		{"claude-sonnet-5", false},
@@ -140,7 +134,6 @@ func TestIsTextChatModel(t *testing.T) {
 		{"whisper-1", false},
 		{"text-embedding-3-small", false},
 		{"text-embedding-3-large", false},
-		// Excluded: gpt- prefix but doesn't fit digit/o-digit pattern
 		{"gpt-", false},
 		{"gpt-foo", false},
 		{"gpt-o", false},
@@ -163,10 +156,8 @@ func TestFetchModelsCustom(t *testing.T) {
 			return
 		}
 		resp := modelsResponse{
-			Data: []struct {
-				ID string `json:"id"`
-			}{
-				{ID: "my-model-v1"},
+			Data: []ModelInfo{
+				{ID: "my-model-v1", DisplayName: "My Model V1"},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)

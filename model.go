@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
@@ -47,6 +47,7 @@ const (
 	stateAPIKeyInput
 	stateModelFetch
 	stateModelPick
+	stateReasoningConfig
 	stateError
 	stateManualModel
 	stateChat
@@ -100,7 +101,7 @@ const (
 
 func (m model) errorActions() []string {
 	if m.provider == llm.ProviderCustom {
-		return []string{"Retry", "Change custom URL", "Change API key", "Enter model manually", "Quit"}
+		return []string{"Retry", "Change URL & API key", "Change API key only", "Enter model manually", "Quit"}
 	}
 	return []string{"Retry", "Change API key", "Enter model manually", "Quit"}
 }
@@ -113,8 +114,39 @@ func (i item) FilterValue() string { return i.title }
 func (i item) Title() string       { return i.title }
 func (i item) Description() string { return i.desc }
 
+type modelItem struct {
+	info llm.ModelInfo
+}
+
+func (m modelItem) FilterValue() string { return m.info.ID + " " + m.info.DisplayName }
+func (m modelItem) Title() string {
+	if m.info.DisplayName != "" {
+		return m.info.DisplayName
+	}
+	return m.info.ID
+}
+func (m modelItem) Description() string {
+	var tags []string
+	if m.info.Capabilities.Thinking.Supported {
+		if m.info.Capabilities.Thinking.Types.Adaptive.Supported {
+			tags = append(tags, "adaptive")
+		}
+		if m.info.Capabilities.Thinking.Types.Enabled.Supported {
+			tags = append(tags, "thinking")
+		}
+	}
+	if m.info.Capabilities.Effort.Supported {
+		tags = append(tags, "effort")
+	}
+	desc := m.info.ID
+	if len(tags) > 0 {
+		desc += " [" + strings.Join(tags, ", ") + "]"
+	}
+	return desc
+}
+
 type modelsFetchedMsg struct {
-	models []string
+	models []llm.ModelInfo
 	err    error
 }
 
@@ -159,24 +191,32 @@ type suggestionState struct {
 }
 
 type model struct {
-	state           state
-	yolo            bool
-	reconfigure     bool
-	styles          styles
-	width           int
-	height          int
-	workspaceRoot   string
+	state            state
+	yolo             bool
+	reconfigure      bool
+	styles           styles
+	width            int
+	height           int
+	workspaceRoot    string
 	alwaysAllowPerms bool
-	toolCallCycle   int
-	pendingPerm     *pendingPerm
+	toolCallCycle    int
+	pendingPerm      *pendingPerm
 
 	provider  string
 	modelName string
 	customURL string
 	apiKey    string
-	models    []string
+	models    []llm.ModelInfo
 	err       error
 	errChoice int
+
+	thinkingType    string
+	effortLevel     string
+	reasoningField  int
+	thinkingOptions []string
+	effortOptions   []string
+
+	forceKeyAfterURL bool
 
 	providerList list.Model
 	modelList    list.Model
@@ -185,12 +225,12 @@ type model struct {
 	manualInput  textinput.Model
 	spinner      spinner.Model
 
-	messages        []llm.Message
-	chatInput       textinput.Model
-	chatViewport    viewport.Model
-	isStreaming     bool
+	messages         []llm.Message
+	chatInput        textinput.Model
+	chatViewport     viewport.Model
+	isStreaming      bool
 	streamingContent *strings.Builder
-	reasoning       reasoningState
+	reasoning        reasoningState
 	streamState      *streamState
 	cancelRequested  bool
 	queuedMessage    string
@@ -238,6 +278,8 @@ var slashCommands = []slashCommand{
 	{name: "model", description: "Change model for current provider"},
 	{name: "provider", description: "Change provider and model"},
 	{name: "reasoning", description: "Toggle reasoning display"},
+	{name: "thinking", description: "Set thinking type (adaptive/enabled/disabled)"},
+	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 }
 
 func (m model) isMidSession() bool {
@@ -267,7 +309,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	pl.DisableQuitKeybindings()
 
 	md := list.NewDefaultDelegate()
-	md.ShowDescription = false
+	md.ShowDescription = true
 	md.Styles.SelectedTitle = md.Styles.SelectedTitle.
 		Foreground(lipgloss.Color(cpMauve)).
 		Background(lipgloss.Color(cpSurface0)).
@@ -349,30 +391,32 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	wd, _ := os.Getwd()
 
 	m := model{
-		state:        startState,
-		yolo:         yolo,
-		reconfigure:  reconfigure,
-		styles:       s,
-		provider:     provider,
-		modelName:    modelName,
-		customURL:    customURL,
-		apiKey:       apiKey,
+		state:         startState,
+		yolo:          yolo,
+		reconfigure:   reconfigure,
+		styles:        s,
+		provider:      provider,
+		modelName:     modelName,
+		customURL:     customURL,
+		apiKey:        apiKey,
 		workspaceRoot: wd,
-		providerList: pl,
-		modelList:    ml,
-		urlInput:     ui,
-		keyInput:     ki,
-		manualInput:  mi,
-		spinner:      sp,
-		messages:     []llm.Message{},
-		chatInput:    ci,
-		chatViewport: cv,
-		streamState:  &streamState{},
+		providerList:  pl,
+		modelList:     ml,
+		urlInput:      ui,
+		keyInput:      ki,
+		manualInput:   mi,
+		spinner:       sp,
+		messages:      []llm.Message{},
+		chatInput:     ci,
+		chatViewport:  cv,
+		streamState:   &streamState{},
 	}
 
 	if cfg != nil && !reconfigure {
 		m.reasoning.defaultVisible = cfg.ReasoningVisible
 		m.reasoning.visible = cfg.ReasoningVisible
+		m.thinkingType = cfg.ThinkingType
+		m.effortLevel = cfg.EffortLevel
 	}
 
 	if startState == stateChat {

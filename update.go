@@ -74,6 +74,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAPIKeyInput(msg)
 		case stateModelPick:
 			return m.updateModelPick(msg)
+		case stateReasoningConfig:
+			return m.updateReasoningConfig(msg)
 		case stateError:
 			return m.updateError(msg)
 		case stateManualModel:
@@ -98,28 +100,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateError
 			return m, nil
 		}
-		models := append([]string(nil), msg.models...)
+		models := append([]llm.ModelInfo(nil), msg.models...)
 		if m.provider == llm.ProviderOpenAI {
 			filtered := models[:0]
-			for _, name := range models {
-				if llm.IsTextChatModel(name) && !hasDateSuffix(name) {
-					filtered = append(filtered, name)
+			for _, model := range models {
+				if llm.IsTextChatModel(model.ID) && !hasDateSuffix(model.ID) {
+					filtered = append(filtered, model)
 				}
 			}
 			models = filtered
 		} else if m.provider == llm.ProviderAnthropic {
 			filtered := models[:0]
-			for _, name := range models {
-				if !hasDateSuffix(name) {
-					filtered = append(filtered, name)
+			for _, model := range models {
+				if !hasDateSuffix(model.ID) {
+					filtered = append(filtered, model)
 				}
 			}
 			models = filtered
 		}
 		m.models = models
 		items := make([]list.Item, len(models))
-		for i, name := range models {
-			items[i] = item{title: name}
+		for i, model := range models {
+			items[i] = modelItem{info: model}
 		}
 		m.modelList.SetItems(items)
 		m.state = stateModelPick
@@ -385,6 +387,13 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.forceKeyAfterURL {
+		m.forceKeyAfterURL = false
+		m.state = stateAPIKeyInput
+		m.keyInput.Focus()
+		return m, nil
+	}
+
 	key, _ := config.GetAPIKey(m.provider, m.customURL)
 	if key != "" {
 		m.apiKey = key
@@ -455,17 +464,63 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	selected, ok := m.modelList.SelectedItem().(item)
+	selected, ok := m.modelList.SelectedItem().(modelItem)
 	if !ok {
 		return m, nil
 	}
-	m.modelName = selected.title
+	m.modelName = selected.info.ID
+
+	if m.provider == llm.ProviderAnthropic {
+		m.thinkingOptions = nil
+		if selected.info.Capabilities.Thinking.Types.Adaptive.Supported {
+			m.thinkingOptions = append(m.thinkingOptions, "adaptive")
+		}
+		if selected.info.Capabilities.Thinking.Types.Enabled.Supported {
+			m.thinkingOptions = append(m.thinkingOptions, "enabled")
+		}
+		m.effortOptions = nil
+		eff := selected.info.Capabilities.Effort
+		if eff.Low.Supported {
+			m.effortOptions = append(m.effortOptions, "low")
+		}
+		if eff.Medium.Supported {
+			m.effortOptions = append(m.effortOptions, "medium")
+		}
+		if eff.High.Supported {
+			m.effortOptions = append(m.effortOptions, "high")
+		}
+		if eff.XHigh.Supported {
+			m.effortOptions = append(m.effortOptions, "xhigh")
+		}
+		if eff.Max.Supported {
+			m.effortOptions = append(m.effortOptions, "max")
+		}
+		if len(m.thinkingOptions) == 0 {
+			m.thinkingOptions = []string{"adaptive", "enabled", "disabled"}
+		}
+		if len(m.effortOptions) == 0 {
+			m.effortOptions = []string{"low", "medium", "high"}
+		}
+
+		m.reasoningField = 0
+		if m.thinkingType == "" {
+			m.thinkingType = m.thinkingOptions[0]
+		}
+		if m.effortLevel == "" {
+			m.effortLevel = m.effortOptions[0]
+		}
+
+		m.state = stateReasoningConfig
+		return m, nil
+	}
 
 	if err := config.Save(&config.Config{
 		Provider:         m.provider,
 		Model:            m.modelName,
 		CustomBaseURL:    m.customURL,
 		ReasoningVisible: m.reasoning.defaultVisible,
+		ThinkingType:     m.thinkingType,
+		EffortLevel:      m.effortLevel,
 	}); err != nil {
 		m.err = err
 		m.errChoice = 0
@@ -474,6 +529,74 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m.enterChatState(), nil
+}
+
+func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up":
+		m.reasoningField--
+		if m.reasoningField < 0 {
+			m.reasoningField = 1
+		}
+	case "down":
+		m.reasoningField++
+		if m.reasoningField > 1 {
+			m.reasoningField = 0
+		}
+	case "left":
+		switch m.reasoningField {
+		case 0:
+			for i := len(m.thinkingOptions) - 1; i > 0; i-- {
+				if m.thinkingOptions[i] == m.thinkingType {
+					m.thinkingType = m.thinkingOptions[i-1]
+					break
+				}
+			}
+		case 1:
+			for i := len(m.effortOptions) - 1; i > 0; i-- {
+				if m.effortOptions[i] == m.effortLevel {
+					m.effortLevel = m.effortOptions[i-1]
+					break
+				}
+			}
+		}
+	case "right":
+		switch m.reasoningField {
+		case 0:
+			for i := 0; i < len(m.thinkingOptions)-1; i++ {
+				if m.thinkingOptions[i] == m.thinkingType {
+					m.thinkingType = m.thinkingOptions[i+1]
+					break
+				}
+			}
+		case 1:
+			for i := 0; i < len(m.effortOptions)-1; i++ {
+				if m.effortOptions[i] == m.effortLevel {
+					m.effortLevel = m.effortOptions[i+1]
+					break
+				}
+			}
+		}
+	case "esc":
+		m.state = stateModelPick
+		return m, nil
+	case "enter":
+		if err := config.Save(&config.Config{
+			Provider:         m.provider,
+			Model:            m.modelName,
+			CustomBaseURL:    m.customURL,
+			ReasoningVisible: m.reasoning.defaultVisible,
+			ThinkingType:     m.thinkingType,
+			EffortLevel:      m.effortLevel,
+		}); err != nil {
+			m.err = err
+			m.errChoice = 0
+			m.state = stateError
+			return m, nil
+		}
+		return m.enterChatState(), nil
+	}
+	return m, nil
 }
 
 func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -490,28 +613,50 @@ func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.errChoice = 0
 		}
 	case "enter":
-		switch errorAction(m.errChoice) {
-		case errorRetry:
-			m.state = stateModelFetch
-			return m, tea.Batch(
-				m.spinner.Tick,
-				fetchModelsCmd(m.provider, m.apiKey, m.customURL),
-			)
-		case errorChangeURL:
-			m.state = stateCustomURL
-			m.urlInput.Reset()
-			m.urlInput.Focus()
-			return m, nil
-		case errorChangeKey:
-			m.state = stateAPIKeyInput
-			m.keyInput.Focus()
-			return m, nil
-		case errorManual:
-			m.state = stateManualModel
-			m.manualInput.Focus()
-			return m, nil
-		case errorQuit:
-			return m, tea.Quit
+		if m.provider == llm.ProviderCustom {
+			switch errorAction(m.errChoice) {
+			case errorRetry:
+				m.state = stateModelFetch
+				return m, tea.Batch(
+					m.spinner.Tick,
+					fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+				)
+			case errorChangeURL:
+				m.state = stateCustomURL
+				m.urlInput.Reset()
+				m.urlInput.Focus()
+				m.forceKeyAfterURL = true
+				return m, nil
+			case errorChangeKey:
+				m.state = stateAPIKeyInput
+				m.keyInput.Focus()
+				return m, nil
+			case errorManual:
+				m.state = stateManualModel
+				m.manualInput.Focus()
+				return m, nil
+			case errorQuit:
+				return m, tea.Quit
+			}
+		} else {
+			switch m.errChoice {
+			case 0:
+				m.state = stateModelFetch
+				return m, tea.Batch(
+					m.spinner.Tick,
+					fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+				)
+			case 1:
+				m.state = stateAPIKeyInput
+				m.keyInput.Focus()
+				return m, nil
+			case 2:
+				m.state = stateManualModel
+				m.manualInput.Focus()
+				return m, nil
+			case 3:
+				return m, tea.Quit
+			}
 		}
 	}
 	return m, nil
@@ -539,6 +684,8 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		Model:            m.modelName,
 		CustomBaseURL:    m.customURL,
 		ReasoningVisible: m.reasoning.defaultVisible,
+		ThinkingType:     m.thinkingType,
+		EffortLevel:      m.effortLevel,
 	}); err != nil {
 		m.err = err
 		m.errChoice = 0
@@ -771,13 +918,89 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			Model:            m.modelName,
 			CustomBaseURL:    m.customURL,
 			ReasoningVisible: m.reasoning.defaultVisible,
+			ThinkingType:     m.thinkingType,
+			EffortLevel:      m.effortLevel,
 		})
 		m.messages = append(m.messages, llm.Message{
-			Role:    "assistant",
+			Role: "assistant",
 			Content: fmt.Sprintf("Reasoning changed to %s (was %s)",
 				map[bool]string{true: "visible", false: "hidden"}[newVisible],
 				map[bool]string{true: "visible", false: "hidden"}[oldVisible]),
 		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case "thinking":
+		if len(parts) < 2 {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Current thinking type: %s\nUsage: /thinking <type>  (adaptive, enabled, disabled)", m.thinkingType),
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+		newType := strings.ToLower(parts[1])
+		switch newType {
+		case "adaptive", "enabled", "disabled":
+			oldType := m.thinkingType
+			m.thinkingType = newType
+			config.Save(&config.Config{
+				Provider:         m.provider,
+				Model:            m.modelName,
+				CustomBaseURL:    m.customURL,
+				ReasoningVisible: m.reasoning.defaultVisible,
+				ThinkingType:     m.thinkingType,
+				EffortLevel:      m.effortLevel,
+			})
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
+			})
+		default:
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Unknown thinking type: %s. Available: adaptive, enabled, disabled", newType),
+			})
+		}
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case "effort":
+		if len(parts) < 2 {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (low, medium, high, xhigh, max)", m.effortLevel),
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+		newEffort := strings.ToLower(parts[1])
+		switch newEffort {
+		case "low", "medium", "high", "xhigh", "max":
+			oldEffort := m.effortLevel
+			m.effortLevel = newEffort
+			config.Save(&config.Config{
+				Provider:         m.provider,
+				Model:            m.modelName,
+				CustomBaseURL:    m.customURL,
+				ReasoningVisible: m.reasoning.defaultVisible,
+				ThinkingType:     m.thinkingType,
+				EffortLevel:      m.effortLevel,
+			})
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Effort changed to %s (was %s)", newEffort, oldEffort),
+			})
+		default:
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Unknown effort level: %s. Available: low, medium, high, xhigh, max", newEffort),
+			})
+		}
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
@@ -853,11 +1076,27 @@ func startChatStreamCmd(m model) tea.Cmd {
 		}
 
 		baseURL := m.customURL
+
+		var thinkingCfg *llm.ThinkingConfig
+		if m.thinkingType == "adaptive" && m.provider == llm.ProviderAnthropic {
+			thinkingCfg = &llm.ThinkingConfig{Type: "adaptive"}
+		} else if m.thinkingType == "enabled" && m.provider == llm.ProviderAnthropic {
+			thinkingCfg = &llm.ThinkingConfig{Type: "enabled", BudgetTokens: 32000}
+		}
+
+		reasoningEffort := ""
+		if m.provider == llm.ProviderOpenAI && m.effortLevel != "" {
+			reasoningEffort = m.effortLevel
+		}
+
 		req := llm.ChatRequest{
-			Model:        m.modelName,
-			Messages:     m.messages,
-			SystemPrompt: systemPrompt,
-			Tools:        tools.Definitions(),
+			Model:           m.modelName,
+			Messages:        m.messages,
+			SystemPrompt:    systemPrompt,
+			Tools:           tools.Definitions(),
+			Thinking:        thinkingCfg,
+			MaxTokens:       128000,
+			ReasoningEffort: reasoningEffort,
 		}
 
 		events, err := llm.StreamChatCompletion(ctx, m.provider, m.apiKey, baseURL, req)
