@@ -21,6 +21,7 @@ import (
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/tools"
+	"github.com/sillygru/gurtcli/ui"
 )
 
 //go:embed prompts/system.md
@@ -1381,6 +1382,16 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "thinking":
+		if m.provider == llm.ProviderCustom {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "Thinking is not supported for custom API providers",
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+
 		model := m.currentModelInfo()
 
 		if m.provider == llm.ProviderAnthropic {
@@ -1467,6 +1478,36 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "effort":
+		if m.provider == llm.ProviderCustom {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "Effort is not supported for custom API providers",
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+
+		if m.provider == llm.ProviderOpenAI {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "OpenAI models don't support effort levels. Use /thinking to set reasoning effort instead.",
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+
+		if m.provider == llm.ProviderGemini {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "Gemini models don't support effort levels. Use /thinking to set reasoning effort instead.",
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+
 		model := m.currentModelInfo()
 
 		var opts []string
@@ -1775,10 +1816,12 @@ func buildChatContent(m model) string {
 	}
 
 	if len(m.messages) == 0 && streamingLen == 0 {
-		b.WriteString(m.styles.dim.Render("  No messages yet. Send a message to start."))
+		b.WriteString(m.theme.EmptyState.Render("No messages yet. Send a message to start."))
 		b.WriteString("\n")
 		return b.String()
 	}
+
+	toolNames := buildToolNameLookup(m.messages)
 
 	lastIsCurrent := false
 	if len(m.messages) > 0 {
@@ -1786,7 +1829,6 @@ func buildChatContent(m model) string {
 		lastIsCurrent = last.Role == "assistant" && (m.reasoning.active || streamingLen > 0)
 	}
 
-	// Render all finalized messages except the last one if it's the current response
 	skipLast := lastIsCurrent
 	for i, msg := range m.messages {
 		isLast := i == len(m.messages)-1
@@ -1795,84 +1837,61 @@ func buildChatContent(m model) string {
 		}
 		switch msg.Role {
 		case "user":
-			b.WriteString(m.styles.userLabel.Render("you"))
-			b.WriteString("\n")
-			b.WriteString(msg.Content)
+			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content))
 			b.WriteString("\n\n")
 		case "assistant":
-			b.WriteString(m.styles.header.Render("gurtcli"))
+			b.WriteString(ui.RenderAssistantLabel(m.theme))
 			b.WriteString("\n")
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					b.WriteString(m.styles.toolLabel.Render(fmt.Sprintf("  %s", tc.Function.Name)))
+					b.WriteString(ui.RenderToolCall(m.theme, tc, m.width))
 					b.WriteString("\n")
-					renderToolCallArgs(&b, m, tc)
 				}
 			}
 			if msg.Reasoning != "" {
-				b.WriteString(m.styles.reasoningToggle.Render("[▶ Show reasoning]"))
+				b.WriteString(ui.RenderReasoningStored(m.theme))
 				b.WriteString("\n")
 			}
 			if msg.Content != "" {
-				lines := strings.Split(msg.Content, "\n")
-				for i, line := range lines {
-					lines[i] = m.styles.divider.Render("│") + " " + line
-				}
-				b.WriteString(strings.Join(lines, "\n"))
+				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content))
+				b.WriteString("\n")
 			}
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 		case "tool":
-			b.WriteString("  ")
-			b.WriteString(m.styles.dim.Render(msg.Content))
+			toolName := toolNames[msg.ToolCallID]
+			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.width))
 			b.WriteString("\n\n")
 		}
 	}
 
-	// Render current response (last assistant message reasoning or streaming)
 	if lastIsCurrent || m.reasoning.active || streamingLen > 0 {
-		b.WriteString(m.styles.header.Render("gurtcli"))
+		b.WriteString(ui.RenderAssistantLabel(m.theme))
 		b.WriteString("\n")
 
 		if reasoningLen > 0 {
-			toggleChar := "▶"
-			statusText := "Thought for"
-			if m.reasoning.active {
-				toggleChar = "▼"
-				statusText = "Thinking"
-			} else if m.reasoning.visible {
-				toggleChar = "▼"
-			}
-
 			elapsed := m.reasoning.duration
 			if m.reasoning.active {
 				elapsed = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
 			}
-
-			b.WriteString(m.styles.reasoningToggle.Render(fmt.Sprintf("[%s %s %v]", toggleChar, statusText, elapsed)))
-			b.WriteString("\n")
-			if m.reasoning.visible {
-				b.WriteString(m.styles.reasoningContent.Render(m.reasoning.content.String()))
-				b.WriteString("\n")
+			content := ""
+			if m.reasoning.content != nil {
+				content = m.reasoning.content.String()
 			}
+			b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.width))
+			b.WriteString("\n")
 		}
 
 		if lastIsCurrent {
 			content := m.messages[len(m.messages)-1].Content
 			if content != "" {
-				lines := strings.Split(content, "\n")
-				for i, line := range lines {
-					lines[i] = m.styles.divider.Render("│") + " " + line
-				}
-				b.WriteString(strings.Join(lines, "\n"))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content))
+				b.WriteString("\n")
 			}
 		} else if streamingLen > 0 && m.streamingContent != nil {
 			content := m.streamingContent.String()
 			if content != "" {
-				lines := strings.Split(content, "\n")
-				for i, line := range lines {
-					lines[i] = m.styles.divider.Render("│") + " " + line
-				}
-				b.WriteString(strings.Join(lines, "\n"))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content))
+				b.WriteString("\n")
 			}
 		}
 		b.WriteString("\n")
@@ -1881,53 +1900,17 @@ func buildChatContent(m model) string {
 	return b.String()
 }
 
-func renderToolCallArgs(b *strings.Builder, m model, tc llm.ToolCall) {
-	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		return
-	}
-
-	switch tc.Function.Name {
-	case "run_bash":
-		if title, ok := args["title"].(string); ok && title != "" {
-			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", title)))
-			b.WriteString("\n")
+func buildToolNameLookup(messages []llm.Message) map[string]string {
+	names := make(map[string]string)
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
 		}
-		if cmd, ok := args["command"].(string); ok && cmd != "" {
-			b.WriteString(fmt.Sprintf("  $ %s", cmd))
-			b.WriteString("\n")
-		}
-
-	case "edit_file":
-		if path, ok := args["filePath"].(string); ok && path != "" {
-			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", path)))
-			b.WriteString("\n")
-		}
-		oldStr, _ := args["oldString"].(string)
-		newStr, _ := args["newString"].(string)
-		if oldStr != "" || newStr != "" {
-			oldLines := strings.Split(oldStr, "\n")
-			newLines := strings.Split(newStr, "\n")
-			for _, l := range oldLines {
-				b.WriteString(m.styles.diffDel.Render(fmt.Sprintf("  - %s", l)))
-				b.WriteString("\n")
-			}
-			for _, l := range newLines {
-				b.WriteString(m.styles.diffAdd.Render(fmt.Sprintf("  + %s", l)))
-				b.WriteString("\n")
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" {
+				names[tc.ID] = tc.Function.Name
 			}
 		}
-
-	case "write_file":
-		if path, ok := args["filePath"].(string); ok && path != "" {
-			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", path)))
-			b.WriteString("\n")
-		}
-
-	default:
-		if path, ok := args["filePath"].(string); ok && path != "" {
-			b.WriteString(m.styles.dim.Render(fmt.Sprintf("  %s", path)))
-			b.WriteString("\n")
-		}
 	}
+	return names
 }

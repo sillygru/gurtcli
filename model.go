@@ -16,24 +16,7 @@ import (
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
-)
-
-// Catppuccin Mocha color palette (purple-emphasized)
-const (
-	cpMauve    = "#cba6f7"
-	cpLavender = "#b4befe"
-	cpPink     = "#f5c2e7"
-	cpSubtext1 = "#bac2de"
-	cpSubtext0 = "#a6adc8"
-	cpOverlay2 = "#9399b2"
-	cpOverlay1 = "#7f849c"
-	cpOverlay0 = "#6c7086"
-	cpSurface2 = "#585b70"
-	cpSurface1 = "#45475a"
-	cpSurface0 = "#313244"
-	cpText     = "#cdd6f4"
-	cpRed      = "#f38ba8"
-	cpGreen    = "#a6e3a1"
+	"github.com/sillygru/gurtcli/ui"
 )
 
 const maxToolCallCycles = 25
@@ -62,44 +45,6 @@ const (
 	customModeOneTime = iota + 1
 	customModeSave
 )
-
-type styles struct {
-	header           lipgloss.Style
-	dim              lipgloss.Style
-	err              lipgloss.Style
-	reasoningToggle  lipgloss.Style
-	reasoningContent lipgloss.Style
-	divider          lipgloss.Style
-	userLabel        lipgloss.Style
-	inputPrompt      lipgloss.Style
-	toolLabel        lipgloss.Style
-	diffAdd          lipgloss.Style
-	diffDel          lipgloss.Style
-	permPrompt       lipgloss.Style
-	permKey          lipgloss.Style
-	statusBar        lipgloss.Style
-	contextBar       lipgloss.Style
-}
-
-func defaultStyles() styles {
-	return styles{
-		header:           lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)).Padding(0, 1),
-		dim:              lipgloss.NewStyle().Foreground(lipgloss.Color(cpOverlay1)),
-		err:              lipgloss.NewStyle().Foreground(lipgloss.Color(cpRed)).Bold(true),
-		reasoningToggle:  lipgloss.NewStyle().Foreground(lipgloss.Color(cpSubtext1)),
-		reasoningContent: lipgloss.NewStyle().Foreground(lipgloss.Color(cpOverlay0)).Padding(0, 2),
-		divider:          lipgloss.NewStyle().Foreground(lipgloss.Color(cpSurface2)),
-		userLabel:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpLavender)),
-		inputPrompt:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)),
-		toolLabel:        lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(cpPink)),
-		diffAdd:          lipgloss.NewStyle().Foreground(lipgloss.Color(cpGreen)),
-		diffDel:          lipgloss.NewStyle().Foreground(lipgloss.Color(cpRed)),
-		permPrompt:       lipgloss.NewStyle().Foreground(lipgloss.Color(cpText)),
-		permKey:          lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)),
-		statusBar:        lipgloss.NewStyle().Foreground(lipgloss.Color(cpSubtext0)),
-		contextBar:       lipgloss.NewStyle().Foreground(lipgloss.Color(cpOverlay0)).Padding(0, 1),
-	}
-}
 
 type errorAction int
 
@@ -237,7 +182,7 @@ type model struct {
 	state            state
 	yolo             bool
 	reconfigure      bool
-	styles           styles
+	theme            ui.Theme
 	width            int
 	height           int
 	workspaceRoot    string
@@ -408,7 +353,7 @@ func (m model) smallModelForProvider() string {
 
 func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) model {
 	cleanOldBinary()
-	s := defaultStyles()
+	s := ui.DefaultTheme()
 
 	cfg, _ := config.Load()
 
@@ -422,15 +367,15 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	pd := list.NewDefaultDelegate()
 	pd.ShowDescription = true
 	pd.Styles.SelectedTitle = pd.Styles.SelectedTitle.
-		Foreground(lipgloss.Color(cpMauve)).
-		Background(lipgloss.Color(cpSurface0)).
+		Foreground(lipgloss.Color(ui.ColorMauve)).
+		Background(lipgloss.Color(ui.ColorSurface0)).
 		Bold(true)
 	pd.Styles.SelectedDesc = pd.Styles.SelectedDesc.
-		Foreground(lipgloss.Color(cpOverlay2))
+		Foreground(lipgloss.Color(ui.ColorOverlay2))
 	pd.Styles.NormalTitle = pd.Styles.NormalTitle.
-		Foreground(lipgloss.Color(cpText))
+		Foreground(lipgloss.Color(ui.ColorText))
 	pd.Styles.NormalDesc = pd.Styles.NormalDesc.
-		Foreground(lipgloss.Color(cpOverlay1))
+		Foreground(lipgloss.Color(ui.ColorOverlay1))
 	pl := list.New(providerItems, pd, 0, 0)
 	pl.Title = "Pick a provider"
 	pl.SetShowHelp(false)
@@ -441,11 +386,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	md := list.NewDefaultDelegate()
 	md.ShowDescription = true
 	md.Styles.SelectedTitle = md.Styles.SelectedTitle.
-		Foreground(lipgloss.Color(cpMauve)).
-		Background(lipgloss.Color(cpSurface0)).
+		Foreground(lipgloss.Color(ui.ColorMauve)).
+		Background(lipgloss.Color(ui.ColorSurface0)).
 		Bold(true)
 	md.Styles.NormalTitle = md.Styles.NormalTitle.
-		Foreground(lipgloss.Color(cpText))
+		Foreground(lipgloss.Color(ui.ColorText))
 	ml := list.New(nil, md, 0, 0)
 	ml.Title = "Pick a model"
 	ml.SetShowHelp(false)
@@ -455,25 +400,25 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	sd := list.NewDefaultDelegate()
 	sd.ShowDescription = true
 	sd.Styles.SelectedTitle = sd.Styles.SelectedTitle.
-		Foreground(lipgloss.Color(cpMauve)).
-		Background(lipgloss.Color(cpSurface0)).
+		Foreground(lipgloss.Color(ui.ColorMauve)).
+		Background(lipgloss.Color(ui.ColorSurface0)).
 		Bold(true)
 	sd.Styles.SelectedDesc = sd.Styles.SelectedDesc.
-		Foreground(lipgloss.Color(cpOverlay2))
+		Foreground(lipgloss.Color(ui.ColorOverlay2))
 	sd.Styles.NormalTitle = sd.Styles.NormalTitle.
-		Foreground(lipgloss.Color(cpText))
+		Foreground(lipgloss.Color(ui.ColorText))
 	sd.Styles.NormalDesc = sd.Styles.NormalDesc.
-		Foreground(lipgloss.Color(cpOverlay1))
+		Foreground(lipgloss.Color(ui.ColorOverlay1))
 	sl := list.New(nil, sd, 0, 0)
 	sl.Title = "Sessions"
 	sl.SetShowHelp(false)
 	sl.SetShowStatusBar(false)
 	sl.DisableQuitKeybindings()
 
-	ui := textinput.New()
-	ui.Placeholder = "https://api.example.com/v1"
-	ui.Width = 60
-	ui.CharLimit = 200
+	urlIn := textinput.New()
+	urlIn.Placeholder = "https://api.example.com/v1"
+	urlIn.Width = 60
+	urlIn.CharLimit = 200
 
 	ki := textinput.New()
 	ki.Placeholder = "sk-..."
@@ -500,7 +445,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	cv := viewport.New(0, 0)
 
 	sp := spinner.New()
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(cpMauve))
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(ui.ColorMauve))
 	sp.Spinner = spinner.Dot
 
 	provider := providerArg
@@ -558,7 +503,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		state:              startState,
 		yolo:               yolo,
 		reconfigure:        reconfigure,
-		styles:             s,
+		theme:              s,
 		provider:           provider,
 		modelName:          modelName,
 		customURL:          customURL,
@@ -568,7 +513,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		providerList:       pl,
 		modelList:          ml,
 		sessionList:        sl,
-		urlInput:           ui,
+		urlInput:           urlIn,
 		keyInput:           ki,
 		nameInput:          ni,
 		manualInput:        mi,

@@ -53,6 +53,10 @@ Think through:
 - Token usage is tracked and printed after each response.
 - The system prompt is embedded in the binary at compile time.
 
+## Module path
+
+- The Go module path is `github.com/sillygru/gurtcli/`. All imports use this prefix.
+
 ## Testing
 
 - Every tool function gets a test.

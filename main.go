@@ -25,7 +25,7 @@ func main() {
 	skipPerms := *yolo || *dangerous
 
 	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	globalProgram = p
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

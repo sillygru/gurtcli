@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
+	"github.com/sillygru/gurtcli/ui"
 )
 
 func (m model) View() string {
@@ -42,104 +43,104 @@ func (m model) View() string {
 }
 
 func (m model) welcomeView() string {
-	return m.styles.header.Render("gurtcli") + "\n\n" +
-		m.styles.dim.Render("A coding agent in your terminal.") + "\n\n" +
-		"Press enter to start." + "\n" +
-		m.styles.dim.Render("ctrl+c quit")
+	return m.theme.Brand.Render("  gurt") + "\n\n" +
+		m.theme.Dim.Render("  A coding agent in your terminal.") + "\n\n" +
+		"  Press enter to start." + "\n" +
+		m.theme.Dim.Render("  ctrl+c quit")
 }
 
 func (m model) providerPickView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 
 	if m.confirmDeleteEndpoint != "" {
-		b.WriteString(m.styles.err.Render(fmt.Sprintf("Delete saved endpoint %q? (y/n)", m.confirmDeleteEndpoint)))
+		b.WriteString(m.theme.Error.Render(fmt.Sprintf("Delete saved endpoint %q? (y/n)", m.confirmDeleteEndpoint)))
 		b.WriteString("\n")
 		return b.String()
 	}
 
 	b.WriteString(m.providerList.View())
 	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • d delete saved • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • d delete saved • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) customModePickView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	b.WriteString("Custom endpoint mode:\n\n")
 	items := []string{"Use one-time", "Save for later"}
 	for i, item := range items {
 		prefix := "  "
-		style := m.styles.dim
+		style := m.theme.Dim
 		if i == m.customModeCursor {
 			prefix = "> "
-			style = m.styles.header
+			style = m.theme.Header
 		}
 		b.WriteString(style.Render(prefix + item))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • esc back • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • esc back • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) customURLView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	b.WriteString("Enter the base URL for your custom provider:\n\n")
 	b.WriteString(m.urlInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) apiKeyView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	fmt.Fprintf(&b, "Enter your API key for %s:\n\n", llm.DisplayName(m.provider))
 	if m.customURL != "" {
-		b.WriteString(m.styles.dim.Render("Endpoint: " + m.customURL))
+		b.WriteString(m.theme.Dim.Render("Endpoint: " + m.customURL))
 		b.WriteString("\n\n")
 	}
 	b.WriteString(m.keyInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) modelFetchView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	fmt.Fprintf(&b, "Fetching models from %s...\n\n", llm.DisplayName(m.provider))
 	b.WriteString(m.spinner.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.dim.Render("ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) modelPickView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	b.WriteString(m.modelList.View())
 	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("Type to filter • ↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("Type to filter • ↑/↓ navigate • enter select • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) reasoningConfigView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.header.Render(m.modelName))
+	b.WriteString(m.theme.Header.Render(m.modelName))
 	b.WriteString("\n")
-	b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
 	b.WriteString("\n\n")
 
 	if len(m.thinkingOptions) > 0 {
@@ -147,7 +148,7 @@ func (m model) reasoningConfigView() string {
 		think := m.thinkingType
 		thinkLine := fmt.Sprintf("  Thinking:  %s", think)
 		if m.reasoningField == 0 {
-			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(think), m.styles.dim.Render("← →"))
+			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(think), m.theme.Dim.Render("← →"))
 		}
 		b.WriteString(thinkLine)
 		b.WriteString("\n")
@@ -155,36 +156,36 @@ func (m model) reasoningConfigView() string {
 		effort := m.effortLevel
 		effortLine := fmt.Sprintf("  Effort:    %s", effort)
 		if m.reasoningField == 1 {
-			effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(effort), m.styles.dim.Render("← →"))
+			effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(effort), m.theme.Dim.Render("← →"))
 		}
 		b.WriteString(effortLine)
 		b.WriteString("\n\n")
 
-		b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
 		b.WriteString("\n")
-		b.WriteString(m.styles.dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc skip"))
+		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc skip"))
 	} else {
 		// Single-field mode: Reasoning effort (OpenAI)
 		effort := m.effortLevel
 		effortLine := fmt.Sprintf("  Reasoning: %s", effort)
 		if m.reasoningField == 0 {
-			effortLine = fmt.Sprintf("  %s Reasoning: %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(effort), m.styles.dim.Render("← →"))
+			effortLine = fmt.Sprintf("  %s Reasoning: %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(effort), m.theme.Dim.Render("← →"))
 		}
 		b.WriteString(effortLine)
 		b.WriteString("\n\n")
 
-		b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
 		b.WriteString("\n")
-		b.WriteString(m.styles.dim.Render("←/→ change • enter confirm • esc skip"))
+		b.WriteString(m.theme.Dim.Render("←/→ change • enter confirm • esc skip"))
 	}
 	return b.String()
 }
 
 func (m model) errorView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.err.Render("Error"))
+	b.WriteString(m.theme.Error.Render("Error"))
 	b.WriteString("\n\n")
 	b.WriteString(m.err.Error())
 	b.WriteString("\n\n")
@@ -193,37 +194,37 @@ func (m model) errorView() string {
 		if i == m.errChoice {
 			prefix = "> "
 		}
-		style := m.styles.dim
+		style := m.theme.Dim
 		if i == m.errChoice {
-			style = m.styles.header
+			style = m.theme.Header
 		}
 		b.WriteString(style.Render(prefix + action))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) customNameView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	b.WriteString("Name this endpoint to save for later:\n\n")
 	b.WriteString(m.nameInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) manualModelView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	b.WriteString("Enter the model name:\n\n")
 	b.WriteString(m.manualInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
 	return b.String()
 }
 
@@ -245,8 +246,8 @@ func (m model) helpWithStatus(help string) string {
 	} else if m.provider == llm.ProviderCustom {
 		providerLabel = "Custom"
 	}
-	helpRendered := m.styles.dim.Render(help)
-	statusRendered := m.styles.statusBar.Render(fmt.Sprintf("%s • %s • %s", m.sessionDisplayName(), providerLabel, m.modelName))
+	helpRendered := m.theme.Dim.Render(help)
+	statusRendered := m.theme.StatusBar.Render(fmt.Sprintf("%s • %s • %s", m.sessionDisplayName(), providerLabel, m.modelName))
 	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
 	if pad < 1 {
 		pad = 1
@@ -256,22 +257,22 @@ func (m model) helpWithStatus(help string) string {
 
 func (m model) sessionPickView() string {
 	var b strings.Builder
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
 	b.WriteString(m.sessionList.View())
 	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter switch • esc back • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter switch • esc back • ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) chatView() string {
 	var b strings.Builder
 
-	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n")
 
 	if m.updateAvailable {
-		b.WriteString(m.styles.statusBar.Render(fmt.Sprintf("  Update %s available! Run /update to update", m.latestVersion)))
+		b.WriteString(m.theme.UpdateBanner.Render(fmt.Sprintf("  Update %s available — run /update", m.latestVersion)))
 		b.WriteString("\n")
 	}
 
@@ -279,7 +280,7 @@ func (m model) chatView() string {
 	if dividerLen < 4 {
 		dividerLen = 40
 	}
-	b.WriteString(m.styles.divider.Render(strings.Repeat("─", dividerLen)))
+	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")
 
 	b.WriteString(m.chatViewport.View())
@@ -290,7 +291,7 @@ func (m model) chatView() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(m.styles.divider.Render(strings.Repeat("─", dividerLen)))
+	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")
 
 	if m.pendingPerm != nil {
@@ -302,23 +303,16 @@ func (m model) chatView() string {
 		}
 		permBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(cpMauve)).
+			BorderForeground(lipgloss.Color(ui.ColorMauve)).
 			Width(boxW).
 			Padding(1, 1)
 
-		var detailBuf strings.Builder
-		detailBuf.WriteString(m.styles.toolLabel.Render(fmt.Sprintf("  %s", tc.Function.Name)))
-		detailBuf.WriteString("\n")
-		renderToolCallArgs(&detailBuf, m, tc)
-
-		content := "\n" +
-			detailBuf.String() +
-			m.styles.inputPrompt.Render("❯ ") + m.chatInput.View() + "\n" +
-			m.styles.dim.Render("(y)es / (n)o / allow for (a)ll")
+		content := ui.RenderPermissionPrompt(m.theme, tc, m.width) + "\n\n" +
+			m.theme.InputPrompt.Render("  ❯ ") + m.chatInput.View()
 
 		b.WriteString(permBox.Render(content))
 	} else {
-		b.WriteString(m.styles.inputPrompt.Render("❯ "))
+		b.WriteString(m.theme.InputPrompt.Render("  ❯ "))
 		b.WriteString(m.chatInput.View())
 
 		help := "enter send • ↑↓ scroll • ctrl+c quit"
@@ -328,13 +322,13 @@ func (m model) chatView() string {
 			b.WriteString("\n")
 			for i, item := range m.suggestions.items {
 				prefix := "  "
-				style := m.styles.dim
+				style := m.theme.Dim
 				if i == m.suggestions.selected {
 					prefix = "> "
-					style = m.styles.header
+					style = m.theme.Header
 				}
 				b.WriteString(style.Render(prefix + "/" + item.name))
-				b.WriteString(m.styles.dim.Render("  " + item.description))
+				b.WriteString(m.theme.Dim.Render("  " + item.description))
 				b.WriteString("\n")
 			}
 			help = "↑↓ navigate • tab select • esc dismiss"
@@ -352,7 +346,7 @@ func (m model) renderContextBar() string {
 	}
 	tokens := m.inputTokens
 	if tokens <= 0 {
-		return m.styles.contextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", strings.Repeat("░", 20), formatTokens(m.maxInputTokens)))
+		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", strings.Repeat("░", 20), formatTokens(m.maxInputTokens)))
 	}
 	pct := float64(tokens) / float64(m.maxInputTokens)
 	barWidth := 20
@@ -362,7 +356,7 @@ func (m model) renderContextBar() string {
 	}
 	bar := strings.Repeat("▓", filled) + strings.Repeat("░", barWidth-filled)
 	pctStr := fmt.Sprintf("%3.0f%%", pct*100)
-	return m.styles.contextBar.Render(fmt.Sprintf(" %s  %s  %s", bar, pctStr, formatTokens(tokens)))
+	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s", bar, pctStr, formatTokens(tokens)))
 }
 
 func formatTokens(n int) string {
