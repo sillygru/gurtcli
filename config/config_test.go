@@ -98,6 +98,90 @@ func TestLoadNoFile(t *testing.T) {
 	}
 }
 
+func TestSavedEndpoints(t *testing.T) {
+	tmp := t.TempDir()
+	configDirOverride = tmp
+	defer func() { configDirOverride = "" }()
+
+	cfg := &Config{
+		Provider: "custom",
+		Model:    "gpt-4",
+	}
+
+	if err := cfg.AddSavedEndpoint("My Groq", "https://api.groq.com/v1"); err != nil {
+		t.Fatalf("AddSavedEndpoint() returned error: %v", err)
+	}
+	if err := cfg.AddSavedEndpoint("My DeepSeek", "https://api.deepseek.com/v1"); err != nil {
+		t.Fatalf("AddSavedEndpoint() returned error: %v", err)
+	}
+
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if len(loaded.SavedEndpoints) != 2 {
+		t.Fatalf("len(SavedEndpoints) = %d, want 2", len(loaded.SavedEndpoints))
+	}
+	if loaded.SavedEndpoints[0].Name != "My Groq" {
+		t.Errorf("SavedEndpoints[0].Name = %q, want %q", loaded.SavedEndpoints[0].Name, "My Groq")
+	}
+	if loaded.SavedEndpoints[1].BaseURL != "https://api.deepseek.com/v1" {
+		t.Errorf("SavedEndpoints[1].BaseURL = %q, want %q", loaded.SavedEndpoints[1].BaseURL, "https://api.deepseek.com/v1")
+	}
+
+	ep, ok := loaded.GetSavedEndpoint("My Groq")
+	if !ok {
+		t.Fatal("GetSavedEndpoint('My Groq') returned false")
+	}
+	if ep.BaseURL != "https://api.groq.com/v1" {
+		t.Errorf("GetSavedEndpoint BaseURL = %q, want %q", ep.BaseURL, "https://api.groq.com/v1")
+	}
+
+	err = cfg.AddSavedEndpoint("My Groq", "https://api.groq.com/v2")
+	if err == nil {
+		t.Error("AddSavedEndpoint duplicate should return error")
+	}
+
+	if !loaded.RemoveSavedEndpoint("My Groq") {
+		t.Fatal("RemoveSavedEndpoint('My Groq') returned false")
+	}
+	if len(loaded.SavedEndpoints) != 1 {
+		t.Fatalf("len(SavedEndpoints) after remove = %d, want 1", len(loaded.SavedEndpoints))
+	}
+	if loaded.RemoveSavedEndpoint("nonexistent") {
+		t.Error("RemoveSavedEndpoint('nonexistent') should return false")
+	}
+}
+
+func TestSavedEndpointConfigPersistence(t *testing.T) {
+	tmp := t.TempDir()
+	configDirOverride = tmp
+	defer func() { configDirOverride = "" }()
+
+	cfg := &Config{
+		Provider:          "custom",
+		Model:             "my-model",
+		SavedEndpointName: "My Groq",
+	}
+	cfg.AddSavedEndpoint("My Groq", "https://api.groq.com/v1")
+
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if loaded.SavedEndpointName != "My Groq" {
+		t.Errorf("SavedEndpointName = %q, want %q", loaded.SavedEndpointName, "My Groq")
+	}
+}
+
 func TestOverwriteSave(t *testing.T) {
 	tmp := t.TempDir()
 	configDirOverride = tmp

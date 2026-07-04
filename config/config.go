@@ -21,14 +21,50 @@ func dir() (string, error) {
 	return filepath.Join(home, ".config", "gurtcli"), nil
 }
 
+type SavedEndpoint struct {
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+}
+
+func (c *Config) AddSavedEndpoint(name, baseURL string) error {
+	for _, ep := range c.SavedEndpoints {
+		if ep.Name == name {
+			return fmt.Errorf("endpoint %q already exists", name)
+		}
+	}
+	c.SavedEndpoints = append(c.SavedEndpoints, SavedEndpoint{Name: name, BaseURL: baseURL})
+	return nil
+}
+
+func (c *Config) RemoveSavedEndpoint(name string) bool {
+	for i, ep := range c.SavedEndpoints {
+		if ep.Name == name {
+			c.SavedEndpoints = append(c.SavedEndpoints[:i], c.SavedEndpoints[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Config) GetSavedEndpoint(name string) (SavedEndpoint, bool) {
+	for _, ep := range c.SavedEndpoints {
+		if ep.Name == name {
+			return ep, true
+		}
+	}
+	return SavedEndpoint{}, false
+}
+
 type Config struct {
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	CustomBaseURL    string `json:"custom_base_url,omitempty"`
-	ReasoningVisible bool   `json:"reasoning_visible,omitempty"`
-	ThinkingType     string `json:"thinking_type,omitempty"`
-	EffortLevel      string `json:"effort_level,omitempty"`
-	MaxTokens        int    `json:"max_tokens,omitempty"`
+	Provider           string          `json:"provider"`
+	Model              string          `json:"model"`
+	CustomBaseURL      string          `json:"custom_base_url,omitempty"`
+	SavedEndpointName  string          `json:"saved_endpoint_name,omitempty"`
+	SavedEndpoints     []SavedEndpoint `json:"saved_endpoints,omitempty"`
+	ReasoningVisible   bool            `json:"reasoning_visible,omitempty"`
+	ThinkingType       string          `json:"thinking_type,omitempty"`
+	EffortLevel        string          `json:"effort_level,omitempty"`
+	MaxTokens          int             `json:"max_tokens,omitempty"`
 }
 
 func Dir() (string, error) {

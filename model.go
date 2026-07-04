@@ -43,14 +43,21 @@ type state int
 const (
 	stateWelcome state = iota
 	stateProviderPick
+	stateCustomModePick
 	stateCustomURL
 	stateAPIKeyInput
+	stateCustomName
 	stateModelFetch
 	stateModelPick
 	stateReasoningConfig
 	stateError
 	stateManualModel
 	stateChat
+)
+
+const (
+	customModeOneTime = iota + 1
+	customModeSave
 )
 
 type styles struct {
@@ -216,12 +223,17 @@ type model struct {
 	thinkingOptions []string
 	effortOptions   []string
 
-	forceKeyAfterURL bool
+	forceKeyAfterURL    bool
+	customMode          int
+	customModeCursor    int
+	savedEndpointName   string
+	confirmDeleteEndpoint string
 
 	providerList list.Model
 	modelList    list.Model
 	urlInput     textinput.Model
 	keyInput     textinput.Model
+	nameInput    textinput.Model
 	manualInput  textinput.Model
 	spinner      spinner.Model
 
@@ -247,23 +259,44 @@ func (m model) enterChatState() model {
 	return m
 }
 
-var providerItems = []list.Item{
-	item{title: "OpenAI", desc: "GPT-5.5, GPT-5.4, GPT-5.4-mini, ..."},
-	item{title: "Anthropic", desc: "fable 5, opus 4.8, sonnet 5, ..."},
-	item{title: "Custom (OpenAI-compatible)", desc: "Any OpenAI-compatible API endpoint"},
+type providerPickKind int
+
+const (
+	pickOpenAI providerPickKind = iota
+	pickAnthropic
+	pickSavedEndpoint
+	pickCustom
+)
+
+type providerPickResult struct {
+	kind             providerPickKind
+	savedEndpointIdx int
 }
 
-func providerFromIndex(idx int) string {
-	switch idx {
-	case 0:
-		return llm.ProviderOpenAI
-	case 1:
-		return llm.ProviderAnthropic
-	case 2:
-		return llm.ProviderCustom
-	default:
-		return ""
+func buildProviderItems(endpoints []config.SavedEndpoint) []list.Item {
+	items := []list.Item{
+		item{title: "OpenAI", desc: "GPT-5.5, GPT-5.4, GPT-5.4-mini, ..."},
+		item{title: "Anthropic", desc: "fable 5, opus 4.8, sonnet 5, ..."},
 	}
+	for _, ep := range endpoints {
+		items = append(items, item{title: ep.Name, desc: ep.BaseURL})
+	}
+	items = append(items, item{title: "Custom", desc: "Any OpenAI-compatible API endpoint"})
+	return items
+}
+
+func resolveProviderPick(endpoints []config.SavedEndpoint, idx int) providerPickResult {
+	if idx == 0 {
+		return providerPickResult{kind: pickOpenAI}
+	}
+	if idx == 1 {
+		return providerPickResult{kind: pickAnthropic}
+	}
+	savedCount := len(endpoints)
+	if idx >= 2 && idx < 2+savedCount {
+		return providerPickResult{kind: pickSavedEndpoint, savedEndpointIdx: idx - 2}
+	}
+	return providerPickResult{kind: pickCustom}
 }
 
 type slashCommand struct {
@@ -288,6 +321,15 @@ func (m model) isMidSession() bool {
 
 func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) model {
 	s := defaultStyles()
+
+	cfg, _ := config.Load()
+
+	savedEndpoints := []config.SavedEndpoint{}
+	if cfg != nil {
+		savedEndpoints = cfg.SavedEndpoints
+	}
+
+	providerItems := buildProviderItems(savedEndpoints)
 
 	pd := list.NewDefaultDelegate()
 	pd.ShowDescription = true
@@ -334,6 +376,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	ki.EchoMode = textinput.EchoPassword
 	ki.EchoCharacter = '•'
 
+	ni := textinput.New()
+	ni.Placeholder = "e.g. My Groq API"
+	ni.Width = 60
+	ni.CharLimit = 100
+
 	mi := textinput.New()
 	mi.Placeholder = "model-name"
 	mi.Width = 60
@@ -350,34 +397,45 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(cpMauve))
 	sp.Spinner = spinner.Dot
 
-	cfg, _ := config.Load()
-
 	provider := providerArg
 	modelName := modelArg
 	customURL := ""
 	apiKey := ""
+	savedEndpointName := ""
 
 	if cfg != nil && !reconfigure {
 		if provider == "" {
 			provider = cfg.Provider
 			customURL = cfg.CustomBaseURL
+			savedEndpointName = cfg.SavedEndpointName
 		}
 		if modelName == "" {
 			modelName = cfg.Model
 		}
 	}
 
+	// If provider arg matches a saved endpoint name, load its URL
+	if savedEndpointName == "" && provider != "" && (provider != llm.ProviderOpenAI && provider != llm.ProviderAnthropic && provider != llm.ProviderCustom) {
+		if cfg != nil {
+			if ep, ok := cfg.GetSavedEndpoint(provider); ok {
+				provider = llm.ProviderCustom
+				customURL = ep.BaseURL
+				savedEndpointName = ep.Name
+			}
+		}
+	}
+
 	var startState state
 	if reconfigure {
 		if provider != "" {
-			key, _ := config.GetAPIKey(provider, customURL)
+			key, _ := config.GetAPIKey(provider, customURL, savedEndpointName)
 			apiKey = key
 		}
 		startState = stateWelcome
 	} else if provider == "" {
 		startState = stateWelcome
 	} else {
-		key, _ := config.GetAPIKey(provider, customURL)
+		key, _ := config.GetAPIKey(provider, customURL, savedEndpointName)
 		apiKey = key
 		if apiKey == "" {
 			startState = stateAPIKeyInput
@@ -391,25 +449,27 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	wd, _ := os.Getwd()
 
 	m := model{
-		state:         startState,
-		yolo:          yolo,
-		reconfigure:   reconfigure,
-		styles:        s,
-		provider:      provider,
-		modelName:     modelName,
-		customURL:     customURL,
-		apiKey:        apiKey,
-		workspaceRoot: wd,
-		providerList:  pl,
-		modelList:     ml,
-		urlInput:      ui,
-		keyInput:      ki,
-		manualInput:   mi,
-		spinner:       sp,
-		messages:      []llm.Message{},
-		chatInput:     ci,
-		chatViewport:  cv,
-		streamState:   &streamState{},
+		state:              startState,
+		yolo:               yolo,
+		reconfigure:        reconfigure,
+		styles:             s,
+		provider:           provider,
+		modelName:          modelName,
+		customURL:          customURL,
+		savedEndpointName:  savedEndpointName,
+		apiKey:             apiKey,
+		workspaceRoot:      wd,
+		providerList:       pl,
+		modelList:          ml,
+		urlInput:           ui,
+		keyInput:           ki,
+		nameInput:          ni,
+		manualInput:        mi,
+		spinner:            sp,
+		messages:           []llm.Message{},
+		chatInput:          ci,
+		chatViewport:       cv,
+		streamState:        &streamState{},
 	}
 
 	if cfg != nil && !reconfigure {

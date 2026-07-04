@@ -14,10 +14,14 @@ func (m model) View() string {
 		return m.welcomeView()
 	case stateProviderPick:
 		return m.providerPickView()
+	case stateCustomModePick:
+		return m.customModePickView()
 	case stateCustomURL:
 		return m.customURLView()
 	case stateAPIKeyInput:
 		return m.apiKeyView()
+	case stateCustomName:
+		return m.customNameView()
 	case stateModelFetch:
 		return m.modelFetchView()
 	case stateModelPick:
@@ -45,9 +49,37 @@ func (m model) providerPickView() string {
 	var b strings.Builder
 	b.WriteString(m.styles.header.Render("gurtcli"))
 	b.WriteString("\n\n")
+
+	if m.confirmDeleteEndpoint != "" {
+		b.WriteString(m.styles.err.Render(fmt.Sprintf("Delete saved endpoint %q? (y/n)", m.confirmDeleteEndpoint)))
+		b.WriteString("\n")
+		return b.String()
+	}
+
 	b.WriteString(m.providerList.View())
 	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • d delete saved • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) customModePickView() string {
+	var b strings.Builder
+	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString("\n\n")
+	b.WriteString("Custom endpoint mode:\n\n")
+	items := []string{"Use one-time", "Save for later"}
+	for i, item := range items {
+		prefix := "  "
+		style := m.styles.dim
+		if i == m.customModeCursor {
+			prefix = "> "
+			style = m.styles.header
+		}
+		b.WriteString(style.Render(prefix + item))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • esc back • ctrl+c quit"))
 	return b.String()
 }
 
@@ -151,6 +183,17 @@ func (m model) errorView() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) customNameView() string {
+	var b strings.Builder
+	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString("\n\n")
+	b.WriteString("Name this endpoint to save for later:\n\n")
+	b.WriteString(m.nameInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.dim.Render("enter confirm • ctrl+c quit"))
 	return b.String()
 }
 

@@ -68,10 +68,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWelcome(msg)
 		case stateProviderPick:
 			return m.updateProviderPick(msg)
+		case stateCustomModePick:
+			return m.updateCustomModePick(msg)
 		case stateCustomURL:
 			return m.updateCustomURL(msg)
 		case stateAPIKeyInput:
 			return m.updateAPIKeyInput(msg)
+		case stateCustomName:
+			return m.updateCustomName(msg)
 		case stateModelPick:
 			return m.updateModelPick(msg)
 		case stateReasoningConfig:
@@ -292,7 +296,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateProviderPick
 			return m, nil
 		}
-		key, _ := config.GetAPIKey(m.provider, m.customURL)
+		key, _ := config.GetAPIKey(m.provider, m.customURL, m.savedEndpointName)
 		if key != "" {
 			m.apiKey = key
 		}
@@ -314,7 +318,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateProviderPick
 		return m, nil
 	}
-	key, _ := config.GetAPIKey(m.provider, m.customURL)
+	key, _ := config.GetAPIKey(m.provider, m.customURL, m.savedEndpointName)
 	if key != "" {
 		m.apiKey = key
 	}
@@ -334,25 +338,142 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Delete confirmation mode
+	if m.confirmDeleteEndpoint != "" {
+		switch msg.String() {
+		case "y", "Y":
+			cfg, _ := config.Load()
+			if cfg != nil {
+				cfg.RemoveSavedEndpoint(m.confirmDeleteEndpoint)
+				config.DeleteAPIKey("custom", "", m.confirmDeleteEndpoint)
+				if err := config.Save(cfg); err != nil {
+					m.err = err
+					m.errChoice = 0
+					m.state = stateError
+					return m, nil
+				}
+				// Rebuild provider list
+				m.providerList.SetItems(buildProviderItems(cfg.SavedEndpoints))
+			}
+			if m.savedEndpointName == m.confirmDeleteEndpoint {
+				m.savedEndpointName = ""
+				m.customURL = ""
+				m.provider = ""
+				m.modelName = ""
+			}
+			m.confirmDeleteEndpoint = ""
+			return m, nil
+		case "n", "N", "esc":
+			m.confirmDeleteEndpoint = ""
+			return m, nil
+		}
+		return m, nil
+	}
+
 	var cmd tea.Cmd
 	m.providerList, cmd = m.providerList.Update(msg)
 
 	if msg.String() == "esc" {
 		return m.enterChatState(), nil
 	}
+
+	// Delete saved endpoint
+	if msg.String() == "d" {
+		idx := m.providerList.Index()
+		cfg, _ := config.Load()
+		savedEndpoints := []config.SavedEndpoint{}
+		if cfg != nil {
+			savedEndpoints = cfg.SavedEndpoints
+		}
+		res := resolveProviderPick(savedEndpoints, idx)
+		if res.kind == pickSavedEndpoint && res.savedEndpointIdx >= 0 && res.savedEndpointIdx < len(savedEndpoints) {
+			m.confirmDeleteEndpoint = savedEndpoints[res.savedEndpointIdx].Name
+			return m, nil
+		}
+		return m, nil
+	}
+
 	if msg.String() != "enter" {
 		return m, cmd
 	}
 
-	m.provider = providerFromIndex(m.providerList.Index())
-	if m.provider == llm.ProviderCustom {
-		m.state = stateCustomURL
-		m.urlInput.Focus()
+	cfg, _ := config.Load()
+	savedEndpoints := []config.SavedEndpoint{}
+	if cfg != nil {
+		savedEndpoints = cfg.SavedEndpoints
+	}
+	res := resolveProviderPick(savedEndpoints, m.providerList.Index())
+
+	switch res.kind {
+	case pickOpenAI:
+		m.provider = llm.ProviderOpenAI
+		m.customURL = ""
+		m.savedEndpointName = ""
+		return m.continueProviderPick()
+
+	case pickAnthropic:
+		m.provider = llm.ProviderAnthropic
+		m.customURL = ""
+		m.savedEndpointName = ""
+		return m.continueProviderPick()
+
+	case pickSavedEndpoint:
+		if res.savedEndpointIdx >= 0 && res.savedEndpointIdx < len(savedEndpoints) {
+			ep := savedEndpoints[res.savedEndpointIdx]
+			m.provider = llm.ProviderCustom
+			m.customURL = ep.BaseURL
+			m.savedEndpointName = ep.Name
+			return m.continueProviderPick()
+		}
+		return m, nil
+
+	case pickCustom:
+		m.provider = llm.ProviderCustom
+		m.customURL = ""
+		m.savedEndpointName = ""
+		m.customMode = 0
+		m.customModeCursor = 0
+		m.state = stateCustomModePick
 		return m, nil
 	}
-	m.customURL = ""
 
-	key, _ := config.GetAPIKey(m.provider, m.customURL)
+	return m, nil
+}
+
+func (m model) updateCustomModePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up":
+		m.customModeCursor--
+		if m.customModeCursor < 0 {
+			m.customModeCursor = 1
+		}
+	case "down":
+		m.customModeCursor++
+		if m.customModeCursor > 1 {
+			m.customModeCursor = 0
+		}
+	case "esc":
+		m.state = stateProviderPick
+		return m, nil
+	case "enter":
+		switch m.customModeCursor {
+		case 0:
+			m.customMode = customModeOneTime
+			m.state = stateCustomURL
+			m.urlInput.Focus()
+		case 1:
+			m.customMode = customModeSave
+			m.state = stateCustomName
+			m.nameInput.Reset()
+			m.nameInput.Focus()
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) continueProviderPick() (tea.Model, tea.Cmd) {
+	key, _ := config.GetAPIKey(m.provider, m.customURL, m.savedEndpointName)
 	if key != "" {
 		m.apiKey = key
 		if m.modelName != "" {
@@ -375,7 +496,12 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.urlInput, cmd = m.urlInput.Update(msg)
 
 	if msg.String() == "esc" {
-		m.state = stateProviderPick
+		if m.customMode == customModeSave {
+			m.state = stateCustomName
+			m.nameInput.Focus()
+		} else {
+			m.state = stateCustomModePick
+		}
 		return m, nil
 	}
 	if msg.String() != "enter" {
@@ -394,7 +520,7 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	key, _ := config.GetAPIKey(m.provider, m.customURL)
+	key, _ := config.GetAPIKey(m.provider, m.customURL, m.savedEndpointName)
 	if key != "" {
 		m.apiKey = key
 		if m.modelName != "" {
@@ -417,11 +543,14 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.keyInput, cmd = m.keyInput.Update(msg)
 
 	if msg.String() == "esc" {
-		if m.provider == llm.ProviderCustom {
+		if m.customMode == customModeSave {
 			m.state = stateCustomURL
 			m.urlInput.Focus()
-		} else {
+		} else if m.savedEndpointName != "" {
 			m.state = stateProviderPick
+		} else {
+			m.state = stateCustomURL
+			m.urlInput.Focus()
 		}
 		return m, nil
 	}
@@ -435,7 +564,58 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.apiKey = key
 
-	if err := config.SetAPIKey(m.provider, m.customURL, key); err != nil {
+	if m.customMode == customModeSave {
+		cfg, _ := config.Load()
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+
+		if err := cfg.AddSavedEndpoint(m.savedEndpointName, m.customURL); err != nil {
+			m.err = err
+			m.errChoice = 0
+			m.state = stateError
+			return m, nil
+		}
+
+		if err := config.SetAPIKey(m.provider, m.customURL, m.savedEndpointName, key); err != nil {
+			m.err = err
+			m.errChoice = 0
+			m.state = stateError
+			return m, nil
+		}
+
+		cfg.Provider = m.provider
+		cfg.Model = m.modelName
+		cfg.CustomBaseURL = m.customURL
+		cfg.SavedEndpointName = m.savedEndpointName
+		cfg.ReasoningVisible = m.reasoning.defaultVisible
+		cfg.ThinkingType = m.thinkingType
+		cfg.EffortLevel = m.effortLevel
+
+		if err := config.Save(cfg); err != nil {
+			m.err = err
+			m.errChoice = 0
+			m.state = stateError
+			return m, nil
+		}
+
+		// Rebuild provider list to include new saved endpoint
+		m.providerList.SetItems(buildProviderItems(cfg.SavedEndpoints))
+		m.customMode = 0
+
+		if m.modelName != "" {
+			return m.enterChatState(), nil
+		}
+
+		m.state = stateModelFetch
+		return m, tea.Batch(
+			m.spinner.Tick,
+			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+		)
+	}
+
+	// One-time: save key and proceed
+	if err := config.SetAPIKey(m.provider, m.customURL, m.savedEndpointName, key); err != nil {
 		m.err = err
 		m.errChoice = 0
 		m.state = stateError
@@ -451,6 +631,46 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spinner.Tick,
 		fetchModelsCmd(m.provider, m.apiKey, m.customURL),
 	)
+}
+
+func (m model) updateCustomName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.nameInput, cmd = m.nameInput.Update(msg)
+
+	if msg.String() == "esc" {
+		m.state = stateCustomModePick
+		return m, nil
+	}
+	if msg.String() != "enter" {
+		return m, cmd
+	}
+
+	name := strings.TrimSpace(m.nameInput.Value())
+	if name == "" {
+		return m, nil
+	}
+	m.savedEndpointName = name
+
+	// Name entered, now ask for URL
+	m.state = stateCustomURL
+	m.urlInput.Reset()
+	m.urlInput.Focus()
+	return m, nil
+}
+
+func saveConfig(m model) error {
+	cfg, _ := config.Load()
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	cfg.Provider = m.provider
+	cfg.Model = m.modelName
+	cfg.CustomBaseURL = m.customURL
+	cfg.SavedEndpointName = m.savedEndpointName
+	cfg.ReasoningVisible = m.reasoning.defaultVisible
+	cfg.ThinkingType = m.thinkingType
+	cfg.EffortLevel = m.effortLevel
+	return config.Save(cfg)
 }
 
 func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -514,14 +734,7 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if err := config.Save(&config.Config{
-		Provider:         m.provider,
-		Model:            m.modelName,
-		CustomBaseURL:    m.customURL,
-		ReasoningVisible: m.reasoning.defaultVisible,
-		ThinkingType:     m.thinkingType,
-		EffortLevel:      m.effortLevel,
-	}); err != nil {
+	if err := saveConfig(m); err != nil {
 		m.err = err
 		m.errChoice = 0
 		m.state = stateError
@@ -581,14 +794,7 @@ func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateModelPick
 		return m, nil
 	case "enter":
-		if err := config.Save(&config.Config{
-			Provider:         m.provider,
-			Model:            m.modelName,
-			CustomBaseURL:    m.customURL,
-			ReasoningVisible: m.reasoning.defaultVisible,
-			ThinkingType:     m.thinkingType,
-			EffortLevel:      m.effortLevel,
-		}); err != nil {
+		if err := saveConfig(m); err != nil {
 			m.err = err
 			m.errChoice = 0
 			m.state = stateError
@@ -679,14 +885,7 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.modelName = name
 
-	if err := config.Save(&config.Config{
-		Provider:         m.provider,
-		Model:            m.modelName,
-		CustomBaseURL:    m.customURL,
-		ReasoningVisible: m.reasoning.defaultVisible,
-		ThinkingType:     m.thinkingType,
-		EffortLevel:      m.effortLevel,
-	}); err != nil {
+	if err := saveConfig(m); err != nil {
 		m.err = err
 		m.errChoice = 0
 		m.state = stateError
@@ -884,6 +1083,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.modelName = ""
 		m.customURL = ""
+		m.savedEndpointName = ""
 		m.state = stateProviderPick
 		return m, nil
 
@@ -913,14 +1113,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.reasoning.visible = newVisible
-		config.Save(&config.Config{
-			Provider:         m.provider,
-			Model:            m.modelName,
-			CustomBaseURL:    m.customURL,
-			ReasoningVisible: m.reasoning.defaultVisible,
-			ThinkingType:     m.thinkingType,
-			EffortLevel:      m.effortLevel,
-		})
+		saveConfig(m)
 		m.messages = append(m.messages, llm.Message{
 			Role: "assistant",
 			Content: fmt.Sprintf("Reasoning changed to %s (was %s)",
@@ -946,14 +1139,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		case "adaptive", "enabled", "disabled":
 			oldType := m.thinkingType
 			m.thinkingType = newType
-			config.Save(&config.Config{
-				Provider:         m.provider,
-				Model:            m.modelName,
-				CustomBaseURL:    m.customURL,
-				ReasoningVisible: m.reasoning.defaultVisible,
-				ThinkingType:     m.thinkingType,
-				EffortLevel:      m.effortLevel,
-			})
+			saveConfig(m)
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
 				Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
@@ -983,14 +1169,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		case "low", "medium", "high", "xhigh", "max":
 			oldEffort := m.effortLevel
 			m.effortLevel = newEffort
-			config.Save(&config.Config{
-				Provider:         m.provider,
-				Model:            m.modelName,
-				CustomBaseURL:    m.customURL,
-				ReasoningVisible: m.reasoning.defaultVisible,
-				ThinkingType:     m.thinkingType,
-				EffortLevel:      m.effortLevel,
-			})
+			saveConfig(m)
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
 				Content: fmt.Sprintf("Effort changed to %s (was %s)", newEffort, oldEffort),

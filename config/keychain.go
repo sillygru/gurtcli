@@ -10,15 +10,18 @@ import (
 
 const keyringService = "gurtcli"
 
-func KeychainAccount(provider, customBaseURL string) string {
+func KeychainAccount(provider, customBaseURL, savedEndpointName string) string {
+	if savedEndpointName != "" {
+		return "saved:" + savedEndpointName
+	}
 	if customBaseURL != "" {
 		return "custom:" + customBaseURL
 	}
 	return provider
 }
 
-func GetAPIKey(provider, customBaseURL string) (string, error) {
-	account := KeychainAccount(provider, customBaseURL)
+func GetAPIKey(provider, customBaseURL, savedEndpointName string) (string, error) {
+	account := KeychainAccount(provider, customBaseURL, savedEndpointName)
 	key, err := keyring.Get(keyringService, account)
 	if err == nil {
 		return key, nil
@@ -34,10 +37,18 @@ func GetAPIKey(provider, customBaseURL string) (string, error) {
 	return "", nil
 }
 
-func SetAPIKey(provider, customBaseURL, key string) error {
-	account := KeychainAccount(provider, customBaseURL)
+func SetAPIKey(provider, customBaseURL, savedEndpointName, key string) error {
+	account := KeychainAccount(provider, customBaseURL, savedEndpointName)
 	if err := keyring.Set(keyringService, account, key); err != nil {
 		return fmt.Errorf("setting API key in keychain: %w", err)
+	}
+	return nil
+}
+
+func DeleteAPIKey(provider, customBaseURL, savedEndpointName string) error {
+	account := KeychainAccount(provider, customBaseURL, savedEndpointName)
+	if err := keyring.Delete(keyringService, account); err != nil {
+		return fmt.Errorf("deleting API key from keychain: %w", err)
 	}
 	return nil
 }
