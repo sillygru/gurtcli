@@ -28,10 +28,19 @@ type providerModels struct {
 func FetchLLMDetails(ctx context.Context) (map[string]ModelInfo, error) {
 	data, err := fetchRemoteLLMDetails(ctx)
 	if err != nil {
-		data = embeddedLLMDetails
+		LogDebug("FetchLLMDetails: remote fetch failed, using embedded: %v", err)
+		return parseLLMDetails(embeddedLLMDetails)
 	}
 
-	return parseLLMDetails(data)
+	LogDebug("FetchLLMDetails: remote fetch succeeded (%d bytes)", len(data))
+
+	details, err := parseLLMDetails(data)
+	if err != nil {
+		LogDebug("FetchLLMDetails: remote parse failed (%v), falling back to embedded", err)
+		return parseLLMDetails(embeddedLLMDetails)
+	}
+
+	return details, nil
 }
 
 func fetchRemoteLLMDetails(ctx context.Context) ([]byte, error) {
@@ -96,6 +105,8 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 			result[m.ID] = m
 		}
 	}
+	LogDebug("parseLLMDetails: openai=%d anthropic=%d gemini=%d total=%d",
+		len(file.OpenAI.Data), len(file.Anthropic.Data), len(file.Gemini.Data), len(result))
 	return result, nil
 }
 
@@ -103,6 +114,7 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 // Only the Capabilities, MaxInputTokens, and MaxTokens fields are enriched.
 func EnrichModels(apiModels []ModelInfo, details map[string]ModelInfo, provider string) []ModelInfo {
 	enriched := make([]ModelInfo, len(apiModels))
+	matched := 0
 	for i, m := range apiModels {
 		enriched[i] = m
 		if d, ok := details[m.ID]; ok {
@@ -116,7 +128,22 @@ func EnrichModels(apiModels []ModelInfo, details map[string]ModelInfo, provider 
 			if d.DisplayName != "" {
 				enriched[i].DisplayName = d.DisplayName
 			}
+			matched++
 		}
+	}
+	LogDebug("EnrichModels: api_models=%d matched=%d total_details=%d provider=%s",
+		len(apiModels), matched, len(details), provider)
+	if matched < len(apiModels) {
+		var missingIDs []string
+		for _, m := range apiModels {
+			if _, ok := details[m.ID]; !ok {
+				missingIDs = append(missingIDs, m.ID)
+				if len(missingIDs) >= 10 {
+					break
+				}
+			}
+		}
+		LogDebug("EnrichModels: unmatched sample_ids=%v", missingIDs)
 	}
 	return enriched
 }
@@ -157,8 +184,24 @@ func (e EffortCapabilities) EffortLevels() []string {
 	return levels
 }
 
+func (m ModelInfo) ThinkingTypeOptions() []string {
+	var opts []string
+	if m.Capabilities.Thinking.Types.Adaptive.Supported {
+		opts = append(opts, "adaptive")
+	}
+	if m.Capabilities.Thinking.Types.Enabled.Supported {
+		opts = append(opts, "enabled")
+	}
+	opts = append(opts, "disabled")
+	return opts
+}
+
 func (m ModelInfo) HasThinking() bool {
 	return m.Capabilities.Thinking.Supported
+}
+
+func (m ModelInfo) HasThinkingSupport() bool {
+	return m.Capabilities.Thinking.Supported || len(m.Capabilities.ThinkingLevels) > 0
 }
 
 func (m ModelInfo) HasEffort() bool {
@@ -171,4 +214,12 @@ func (m ModelInfo) ThinkingEffortLevels() []string {
 
 func (m ModelInfo) ThinkingHasNone() bool {
 	return hasNoneThinking(m.Capabilities.ThinkingLevels)
+}
+
+func (m ModelInfo) ReasoningLevelOptions() []string {
+	levels := m.Capabilities.Effort.EffortLevels()
+	if m.ThinkingHasNone() {
+		levels = append([]string{"none"}, levels...)
+	}
+	return levels
 }

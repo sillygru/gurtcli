@@ -138,6 +138,15 @@ func TestIsTextChatModel(t *testing.T) {
 		{"gpt-foo", false},
 		{"gpt-o", false},
 		{"gpt-o-foo", false},
+		{"o1", true},
+		{"O1", true},
+		{"o3", true},
+		{"o3-mini", true},
+		{"O3-MINI", true},
+		{"o4-mini", true},
+		{"o", false},
+		{"o0", false},
+		{"o-foo", false},
 		{"", false},
 	}
 

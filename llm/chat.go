@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Message struct {
@@ -588,5 +589,135 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 
 	if err := scanner.Err(); err != nil {
 		events <- StreamEvent{Type: StreamError, Err: fmt.Errorf("reading stream: %w", err)}
+	}
+}
+
+type openaiSimpleResponse struct {
+	Choices []openaiSimpleChoice `json:"choices"`
+}
+
+type openaiSimpleChoice struct {
+	Message openaiSimpleMessage `json:"message"`
+}
+
+type openaiSimpleMessage struct {
+	Content string `json:"content"`
+}
+
+type anthropicSimpleResponse struct {
+	Content []anthropicSimpleContent `json:"content"`
+}
+
+type anthropicSimpleContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type openaiSimpleChatBody struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	System   string    `json:"-"`
+}
+
+type anthropicSimpleBody struct {
+	Model     string              `json:"model"`
+	Messages  []anthropicMessage  `json:"messages"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string              `json:"system,omitempty"`
+}
+
+// SimpleChatCompletion does a non-streaming chat completion and returns the response text.
+func SimpleChatCompletion(ctx context.Context, provider, apiKey, baseURL string, req ChatRequest) (string, error) {
+	if baseURL == "" {
+		baseURL = DefaultBaseURL(provider)
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	var bodyBytes []byte
+	var err error
+
+	switch provider {
+	case ProviderAnthropic:
+		msgs := req.Messages
+		if len(msgs) > 0 && msgs[0].Role == "system" {
+			msgs = msgs[1:]
+		}
+		maxTokens := req.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = 128000
+		}
+		bodyBytes, err = json.Marshal(anthropicSimpleBody{
+			Model:     req.Model,
+			Messages:  convertToAnthropicMessages(msgs),
+			MaxTokens: maxTokens,
+			System:    req.SystemPrompt,
+		})
+	default:
+		msgs := make([]Message, 0, len(req.Messages)+1)
+		if req.SystemPrompt != "" {
+			msgs = append(msgs, Message{Role: "system", Content: req.SystemPrompt})
+		}
+		msgs = append(msgs, req.Messages...)
+		bodyBytes, err = json.Marshal(openaiSimpleChatBody{
+			Model:    req.Model,
+			Messages: msgs,
+		})
+	}
+	if err != nil {
+		return "", fmt.Errorf("marshaling request: %w", err)
+	}
+
+	url := baseURL + "/chat/completions"
+	if provider == ProviderAnthropic {
+		url = baseURL + "/messages"
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	switch provider {
+	case ProviderAnthropic:
+		httpReq.Header.Set("x-api-key", apiKey)
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+	default:
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("chat request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", fmt.Errorf("chat API error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	switch provider {
+	case ProviderAnthropic:
+		var result anthropicSimpleResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("decoding response: %w", err)
+		}
+		for _, block := range result.Content {
+			if block.Type == "text" && block.Text != "" {
+				return strings.TrimSpace(block.Text), nil
+			}
+		}
+		return "", fmt.Errorf("no text content in response")
+	default:
+		var result openaiSimpleResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("decoding response: %w", err)
+		}
+		if len(result.Choices) == 0 {
+			return "", fmt.Errorf("no choices in response")
+		}
+		return strings.TrimSpace(result.Choices[0].Message.Content), nil
 	}
 }

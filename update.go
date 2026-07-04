@@ -26,6 +26,13 @@ import (
 //go:embed prompts/system.md
 var systemPromptTemplate string
 
+//go:embed prompts/session-title.md
+var sessionTitlePrompt string
+
+type sessionTitleGeneratedMsg struct {
+	title string
+}
+
 var dateSuffixRegex = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
 
 func hasDateSuffix(name string) bool {
@@ -101,6 +108,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case llmDetailsLoadedMsg:
+		m.llmDetails = msg.details
+		m.llmDetailsReady = true
+		llm.LogDebug("model: llmdetails loaded (%d entries)", len(msg.details))
+		return m, nil
+
 	case modelsFetchedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -109,18 +122,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		models := append([]llm.ModelInfo(nil), msg.models...)
+		beforeFilter := len(models)
 		if m.provider == llm.ProviderOpenAI {
+			excluded := make([]string, 0)
 			filtered := models[:0]
 			for _, model := range models {
 				id := strings.ToLower(model.ID)
 				if strings.Contains(id, "transcribe") || strings.Contains(id, "embed") || strings.Contains(id, "tts") || strings.Contains(id, "search") || strings.Contains(id, "chat-latest") {
+					excluded = append(excluded, model.ID)
 					continue
 				}
 				if llm.IsTextChatModel(model.ID) && !hasDateSuffix(model.ID) {
 					filtered = append(filtered, model)
+				} else {
+					excluded = append(excluded, model.ID)
 				}
 			}
 			models = filtered
+			if len(excluded) > 0 {
+				llm.LogDebug("modelsFetchedMsg: openai before=%d after=%d excluded=%v", beforeFilter, len(models), excluded)
+			}
 		} else if m.provider == llm.ProviderAnthropic {
 			filtered := models[:0]
 			for _, model := range models {
@@ -129,19 +150,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			models = filtered
+			llm.LogDebug("modelsFetchedMsg: anthropic before=%d after=%d", beforeFilter, len(models))
 		} else if m.provider == llm.ProviderGemini {
+			excluded := make([]string, 0)
 			filtered := models[:0]
 			for _, model := range models {
 				id := strings.ToLower(model.ID)
 				if !strings.HasPrefix(id, "gemini-") || hasDateSuffix(model.ID) {
+					excluded = append(excluded, model.ID)
 					continue
 				}
 				if strings.Contains(id, "banana") || strings.Contains(id, "image") || strings.Contains(id, "computer") || strings.Contains(id, "robotics") || strings.Contains(id, "tts") || strings.Contains(id, "custom") || strings.Contains(id, "latest") || strings.Contains(id, "omni") || strings.Contains(id, "00") {
+					excluded = append(excluded, model.ID)
 					continue
 				}
 				filtered = append(filtered, model)
 			}
 			models = filtered
+			if len(excluded) > 0 {
+				llm.LogDebug("modelsFetchedMsg: gemini before=%d after=%d excluded=%v", beforeFilter, len(models), excluded)
+			}
 		}
 		if m.provider == llm.ProviderGemini {
 			for i, j := 0, len(models)-1; i < j; i, j = i+1, j-1 {
@@ -156,7 +184,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models = models
 		items := make([]list.Item, len(models))
 		for i, model := range models {
-			items[i] = modelItem{info: model}
+			items[i] = modelItem{info: model, provider: m.provider}
+		}
+		if len(models) > 0 {
+			llm.LogDebug("modelsFetchedMsg: final count=%d first_item display=%q id=%q", len(models), models[0].DisplayName, models[0].ID)
+		} else {
+			llm.LogDebug("modelsFetchedMsg: final count=0 - no models to display!")
 		}
 		m.modelList.SetItems(items)
 		m.state = stateModelPick
@@ -290,7 +323,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatViewport.GotoBottom()
 			return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 		}
-		return m, m.persistSessionCmd()
+		cmds := []tea.Cmd{m.persistSessionCmd()}
+		if m.needsTitle {
+			m.needsTitle = false
+			cmds = append(cmds, generateTitleCmd(m))
+		}
+		return m, tea.Batch(cmds...)
 
 	case chatStreamUsage:
 		if msg.inputTokens > 0 {
@@ -322,6 +360,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
 		return m, m.persistSessionCmd()
+
+	case sessionTitleGeneratedMsg:
+		if msg.title != "" && m.sessionName == "" {
+			m.sessionName = msg.title
+			return m, m.persistSessionCmd()
+		}
+		return m, nil
 
 	case updateCheckResult:
 		if msg.err != nil || msg.latestVersion == "" {
@@ -404,7 +449,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateModelFetch
 			return m, tea.Batch(
 				m.spinner.Tick,
-				fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+				m.fetchModelsCmd(),
 			)
 		}
 		return m.enterChatState(), nil
@@ -426,7 +471,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateModelFetch
 		return m, tea.Batch(
 			m.spinner.Tick,
-			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+			m.fetchModelsCmd(),
 		)
 	}
 	return m.enterChatState(), nil
@@ -541,6 +586,20 @@ func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) currentModelInfo() llm.ModelInfo {
+	for i := range m.models {
+		if m.models[i].ID == m.modelName {
+			return m.models[i]
+		}
+	}
+	if m.llmDetailsReady {
+		if info, ok := m.llmDetails[m.modelName]; ok {
+			return info
+		}
+	}
+	return llm.ModelInfo{ID: m.modelName}
+}
+
 func (m model) updateCustomModePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
@@ -583,7 +642,7 @@ func (m model) continueProviderPick() (tea.Model, tea.Cmd) {
 		m.state = stateModelFetch
 		return m, tea.Batch(
 			m.spinner.Tick,
-			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+			m.fetchModelsCmd(),
 		)
 	}
 
@@ -630,7 +689,7 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateModelFetch
 		return m, tea.Batch(
 			m.spinner.Tick,
-			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+			m.fetchModelsCmd(),
 		)
 	}
 
@@ -711,7 +770,7 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateModelFetch
 		return m, tea.Batch(
 			m.spinner.Tick,
-			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+			m.fetchModelsCmd(),
 		)
 	}
 
@@ -730,7 +789,7 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.state = stateModelFetch
 	return m, tea.Batch(
 		m.spinner.Tick,
-		fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+		m.fetchModelsCmd(),
 	)
 }
 
@@ -862,6 +921,10 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.effortOptions = append([]string{"none"}, m.effortOptions...)
 		}
 
+		// Migration: clear thinkingType for non-Anthropic (it was set by a
+		// previous two-field approach, but OpenAI/Gemini only have one level)
+		m.thinkingType = ""
+
 		if len(m.effortOptions) == 0 {
 			break
 		}
@@ -968,7 +1031,7 @@ func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.state = stateModelFetch
 				return m, tea.Batch(
 					m.spinner.Tick,
-					fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+					m.fetchModelsCmd(),
 				)
 			case errorChangeURL:
 				m.state = stateCustomURL
@@ -993,7 +1056,7 @@ func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.state = stateModelFetch
 				return m, tea.Batch(
 					m.spinner.Tick,
-					fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+					m.fetchModelsCmd(),
 				)
 			case 1:
 				m.state = stateAPIKeyInput
@@ -1267,7 +1330,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.state = stateModelFetch
 		return m, tea.Batch(
 			m.spinner.Tick,
-			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
+			m.fetchModelsCmd(),
 		)
 
 	case "provider":
@@ -1318,29 +1381,85 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "thinking":
+		model := m.currentModelInfo()
+
+		if m.provider == llm.ProviderAnthropic {
+			opts := model.ThinkingTypeOptions()
+			partsStr := strings.Join(opts, ", ")
+			if len(parts) < 2 {
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Current thinking type: %s\nUsage: /thinking <type>  (%s)", m.thinkingType, partsStr),
+				})
+				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.GotoBottom()
+				return m, nil
+			}
+			newType := strings.ToLower(parts[1])
+			valid := false
+			for _, opt := range opts {
+				if newType == opt {
+					valid = true
+					break
+				}
+			}
+			if valid {
+				oldType := m.thinkingType
+				m.thinkingType = newType
+				saveConfig(m)
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
+				})
+			} else {
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
+				})
+			}
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+
+		// OpenAI/Gemini: /thinking sets the reasoning effort level
+		opts := model.ReasoningLevelOptions()
+		if len(opts) == 0 {
+			opts = m.effortOptions
+		}
+		if len(opts) == 0 {
+			opts = []string{"none", "low", "medium", "high", "xhigh"}
+		}
+		partsStr := strings.Join(opts, ", ")
 		if len(parts) < 2 {
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Current thinking type: %s\nUsage: /thinking <type>  (adaptive, enabled, disabled)", m.thinkingType),
+				Content: fmt.Sprintf("Current reasoning level: %s\nUsage: /thinking <level>  (%s)", m.effortLevel, partsStr),
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
-		newType := strings.ToLower(parts[1])
-		switch newType {
-		case "adaptive", "enabled", "disabled":
-			oldType := m.thinkingType
-			m.thinkingType = newType
+		newLevel := strings.ToLower(parts[1])
+		valid := false
+		for _, opt := range opts {
+			if newLevel == opt {
+				valid = true
+				break
+			}
+		}
+		if valid {
+			oldLevel := m.effortLevel
+			m.effortLevel = newLevel
 			saveConfig(m)
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
+				Content: fmt.Sprintf("Thinking changed to %s (was %s)", newLevel, oldLevel),
 			})
-		default:
+		} else {
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Unknown thinking type: %s. Available: adaptive, enabled, disabled", newType),
+				Content: fmt.Sprintf("Unknown reasoning level: %s. Available: %s", newLevel, partsStr),
 			})
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -1348,18 +1467,43 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "effort":
+		model := m.currentModelInfo()
+
+		var opts []string
+		if m.provider == llm.ProviderAnthropic {
+			opts = model.Capabilities.Effort.EffortLevels()
+		} else {
+			opts = model.ReasoningLevelOptions()
+		}
+		if len(opts) == 0 {
+			opts = m.effortOptions
+		}
+		if len(opts) == 0 {
+			if m.provider == llm.ProviderAnthropic {
+				opts = []string{"low", "medium", "high"}
+			} else {
+				opts = []string{"none", "low", "medium", "high", "xhigh"}
+			}
+		}
+		partsStr := strings.Join(opts, ", ")
 		if len(parts) < 2 {
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (minimal, low, medium, high, xhigh, max)", m.effortLevel),
+				Content: fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (%s)", m.effortLevel, partsStr),
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
 		newEffort := strings.ToLower(parts[1])
-		switch newEffort {
-		case "minimal", "low", "medium", "high", "xhigh", "max":
+		valid := false
+		for _, opt := range opts {
+			if newEffort == opt {
+				valid = true
+				break
+			}
+		}
+		if valid {
 			oldEffort := m.effortLevel
 			m.effortLevel = newEffort
 			saveConfig(m)
@@ -1367,10 +1511,10 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Role:    "assistant",
 				Content: fmt.Sprintf("Effort changed to %s (was %s)", newEffort, oldEffort),
 			})
-		default:
+		} else {
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: fmt.Sprintf("Unknown effort level: %s. Available: minimal, low, medium, high, xhigh, max", newEffort),
+				Content: fmt.Sprintf("Unknown effort level: %s. Available: %s", newEffort, partsStr),
 			})
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -1558,6 +1702,40 @@ func startChatStreamCmd(m model) tea.Cmd {
 	}
 }
 
+func generateTitleCmd(m model) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		titleModel := m.smallModelForProvider()
+		baseURL := m.customURL
+
+		titleMsg := ""
+		for _, msg := range m.messages {
+			if msg.Role == "user" && msg.Content != "" {
+				titleMsg = msg.Content
+				break
+			}
+		}
+		if titleMsg == "" {
+			return nil
+		}
+
+		req := llm.ChatRequest{
+			Model:        titleModel,
+			Messages:     []llm.Message{{Role: "user", Content: titleMsg}},
+			SystemPrompt: sessionTitlePrompt,
+		}
+
+		title, err := llm.SimpleChatCompletion(ctx, m.provider, m.apiKey, baseURL, req)
+		if err != nil || title == "" {
+			return nil
+		}
+
+		return sessionTitleGeneratedMsg{title: title}
+	}
+}
+
 func renderSystemPrompt(m model) (string, error) {
 	tmpl, err := template.New("system").Parse(systemPromptTemplate)
 	if err != nil {
@@ -1567,6 +1745,7 @@ func renderSystemPrompt(m model) (string, error) {
 	err = tmpl.Execute(&buf, map[string]string{
 		"OS":        runtime.GOOS,
 		"Arch":      runtime.GOARCH,
+		"Date":      time.Now().Format("January 2, 2006"),
 		"Workspace": m.workspaceRoot,
 		"CWD":       m.workspaceRoot,
 		"Model":     m.modelName,

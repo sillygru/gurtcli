@@ -182,19 +182,22 @@ type modelsResponse struct {
 
 // IsTextChatModel reports whether the given model ID is an OpenAI text/chat model.
 // It returns true for IDs that start with "gpt-<digit>" (e.g. "gpt-5.5", "gpt-5.4",
-// "gpt-5.4-mini") or "gpt-o<digit>" (e.g. "gpt-4o", "gpt-o3", "gpt-4o-mini").
-// Comparison is case-insensitive. Models without the "gpt-" prefix (e.g. "o3-mini")
-// and non-text models (e.g. "dall-e-3") are excluded.
+// "gpt-5.4-mini"), "gpt-o<digit>" (e.g. "gpt-4o", "gpt-o3", "gpt-4o-mini"), or
+// bare "o<digit>" (e.g. "o1", "o3-mini", "o4-mini").
+// Comparison is case-insensitive. Non-text models (e.g. "dall-e-3") are excluded.
 func IsTextChatModel(id string) bool {
 	id = strings.ToLower(id)
 	rest, ok := strings.CutPrefix(id, "gpt-")
-	if !ok || rest == "" {
-		return false
+	if ok && rest != "" {
+		if rest[0] >= '0' && rest[0] <= '9' {
+			return true
+		}
+		return len(rest) >= 2 && rest[0] == 'o' && rest[1] >= '0' && rest[1] <= '9'
 	}
-	if rest[0] >= '0' && rest[0] <= '9' {
+	if len(id) >= 2 && id[0] == 'o' && id[1] > '0' && id[1] <= '9' {
 		return true
 	}
-	return len(rest) >= 2 && rest[0] == 'o' && rest[1] >= '0' && rest[1] <= '9'
+	return false
 }
 
 const geminiModelsURL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -223,6 +226,13 @@ func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]Model
 
 		models, lastErr = fetchModelsOnce(ctx, reqURL, provider, apiKey)
 		if lastErr == nil {
+			ids := make([]string, 0, len(models))
+			for i, m := range models {
+				if i < 10 {
+					ids = append(ids, m.ID)
+				}
+			}
+			LogDebug("FetchModels: provider=%s count=%d sample_ids=%v", provider, len(models), ids)
 			return models, nil
 		}
 	}

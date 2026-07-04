@@ -7,6 +7,7 @@ If the user asks what model you are, refer to yourself as **{{.Model}}**. Do not
 - **Application**: gurtcli (agentic coding TUI)
 - **OS**: {{.OS}}
 - **Architecture**: {{.Arch}}
+- **Date**: {{.Date}}
 - **Workspace root**: {{.Workspace}}
 - **Current directory**: {{.CWD}}
 - **Model**: {{.Model}}

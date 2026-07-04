@@ -127,7 +127,8 @@ func (i item) Title() string       { return i.title }
 func (i item) Description() string { return i.desc }
 
 type modelItem struct {
-	info llm.ModelInfo
+	info     llm.ModelInfo
+	provider string
 }
 
 func (m modelItem) FilterValue() string { return m.info.ID + " " + m.info.DisplayName }
@@ -139,15 +140,15 @@ func (m modelItem) Title() string {
 }
 func (m modelItem) Description() string {
 	var tags []string
-	if m.info.Capabilities.Thinking.Supported {
+	if m.info.HasThinkingSupport() {
+		tags = append(tags, "thinking")
 		if m.info.Capabilities.Thinking.Types.Adaptive.Supported {
 			tags = append(tags, "adaptive")
 		}
-		if m.info.Capabilities.Thinking.Types.Enabled.Supported {
-			tags = append(tags, "thinking")
-		}
 	}
-	if m.info.Capabilities.Effort.Supported {
+	// Only Anthropic has a separate "effort" concept; OpenAI and Gemini's
+	// thinking levels ARE the effort levels, so there's no separate tag.
+	if m.provider == llm.ProviderAnthropic && m.info.Capabilities.Effort.Supported {
 		tags = append(tags, "effort")
 	}
 	desc := m.info.ID
@@ -181,6 +182,10 @@ type sessionSaveErrorMsg struct {
 type modelsFetchedMsg struct {
 	models []llm.ModelInfo
 	err    error
+}
+
+type llmDetailsLoadedMsg struct {
+	details map[string]llm.ModelInfo
 }
 
 type chatStreamChunk struct {
@@ -283,6 +288,7 @@ type model struct {
 	sessionID        string
 	sessionName      string
 	sessionCreatedAt time.Time
+	needsTitle       bool
 
 	maxInputTokens int
 	inputTokens    int
@@ -291,6 +297,9 @@ type model struct {
 	updateAvailable    bool
 	latestVersion      string
 	updateCheckStarted bool
+
+	llmDetails      map[string]llm.ModelInfo
+	llmDetailsReady bool
 }
 
 func (m model) enterChatState() model {
@@ -382,6 +391,19 @@ var slashCommands = []slashCommand{
 
 func (m model) isMidSession() bool {
 	return len(m.messages) > 0
+}
+
+func (m model) smallModelForProvider() string {
+	switch m.provider {
+	case llm.ProviderOpenAI:
+		return "gpt-5.4-nano"
+	case llm.ProviderAnthropic:
+		return "claude-haiku-4-5"
+	case llm.ProviderGemini:
+		return "gemini-2.5-flash-lite"
+	default:
+		return m.modelName
+	}
 }
 
 func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) model {
@@ -578,6 +600,7 @@ func (m model) initNewSession() model {
 	m.sessionID = sessions.GenerateID()
 	m.sessionCreatedAt = time.Now()
 	m.sessionName = ""
+	m.needsTitle = true
 	return m
 }
 
@@ -653,53 +676,58 @@ func (m model) persistSessionCmd() tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	cmds = append(cmds, prefetchLLMDetailsCmd())
 	if m.state == stateModelFetch && m.provider != "" {
-		return tea.Batch(
-			m.spinner.Tick,
-			fetchModelsCmd(m.provider, m.apiKey, m.customURL),
-		)
+		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
 	}
-	return nil
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
-func fetchModelsCmd(provider, apiKey, baseURL string) tea.Cmd {
+func prefetchLLMDetailsCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		details, err := llm.FetchLLMDetails(ctx)
+		if err != nil || len(details) == 0 {
+			llm.LogDebug("prefetchLLMDetailsCmd: failed, will fetch later if needed: %v", err)
+			return nil
+		}
+
+		llm.LogDebug("prefetchLLMDetailsCmd: loaded %d model details", len(details))
+		return llmDetailsLoadedMsg{details: details}
+	}
+}
+
+func (m model) fetchModelsCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		type modelsResult struct {
-			models []llm.ModelInfo
-			err    error
+		models, err := llm.FetchModels(ctx, m.provider, m.apiKey, m.customURL)
+		if err != nil {
+			return modelsFetchedMsg{err: err}
 		}
 
-		modelsCh := make(chan modelsResult, 1)
-		detailsCh := make(chan map[string]llm.ModelInfo, 1)
-
-		go func() {
-			models, err := llm.FetchModels(ctx, provider, apiKey, baseURL)
-			modelsCh <- modelsResult{models, err}
-		}()
-
-		go func() {
-			details, err := llm.FetchLLMDetails(ctx)
-			if err != nil {
-				detailsCh <- nil
-				return
-			}
-			detailsCh <- details
-		}()
-
-		mr := <-modelsCh
-		if mr.err != nil {
-			cancel()
-			return modelsFetchedMsg{err: mr.err}
+		if m.llmDetailsReady && len(m.llmDetails) > 0 {
+			models = llm.EnrichModels(models, m.llmDetails, m.provider)
+			llm.LogDebug("fetchModelsCmd: enriched from prefetched, first=%q display=%q",
+				models[0].ID, models[0].DisplayName)
+			return modelsFetchedMsg{models: models}
 		}
 
-		details := <-detailsCh
-		if len(details) > 0 {
-			mr.models = llm.EnrichModels(mr.models, details, provider)
+		llm.LogDebug("fetchModelsCmd: prefetched not ready, fetching inline (%d models)", len(models))
+		details, err := llm.FetchLLMDetails(ctx)
+		if err == nil && len(details) > 0 {
+			models = llm.EnrichModels(models, details, m.provider)
+		} else {
+			llm.LogDebug("fetchModelsCmd: no llmdetails to enrich (%d models)", len(models))
 		}
 
-		return modelsFetchedMsg{models: mr.models}
+		return modelsFetchedMsg{models: models}
 	}
 }
