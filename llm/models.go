@@ -50,6 +50,111 @@ type ModelCapabilities struct {
 	PDFInput          SimpleCapability              `json:"pdf_input"`
 	StructuredOutputs SimpleCapability              `json:"structured_outputs"`
 	Thinking          ThinkingCapabilities          `json:"thinking"`
+	ThinkingLevels    []string                      `json:"-"`
+}
+
+func (c *ModelCapabilities) UnmarshalJSON(data []byte) error {
+	// llmdetails.json uses booleans for simple caps and string arrays for
+	// thinking/effort/context_management. Parse that format here.
+	*c = ModelCapabilities{}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	for key, val := range raw {
+		switch key {
+		case "batch":
+			json.Unmarshal(val, &c.Batch.Supported)
+		case "citations":
+			json.Unmarshal(val, &c.Citations.Supported)
+		case "code_execution":
+			json.Unmarshal(val, &c.CodeExecution.Supported)
+		case "image_input":
+			json.Unmarshal(val, &c.ImageInput.Supported)
+		case "pdf_input":
+			json.Unmarshal(val, &c.PDFInput.Supported)
+		case "structured_outputs":
+			json.Unmarshal(val, &c.StructuredOutputs.Supported)
+
+		case "thinking":
+			var arr []string
+			if err := json.Unmarshal(val, &arr); err != nil {
+				continue
+			}
+			c.ThinkingLevels = arr
+			for _, s := range arr {
+				switch s {
+				case "enabled":
+					c.Thinking.Types.Enabled.Supported = true
+					c.Thinking.Supported = true
+				case "adaptive":
+					c.Thinking.Types.Adaptive.Supported = true
+					c.Thinking.Supported = true
+				case "low":
+					c.Effort.Low.Supported = true
+					c.Effort.Supported = true
+				case "medium":
+					c.Effort.Medium.Supported = true
+					c.Effort.Supported = true
+				case "high":
+					c.Effort.High.Supported = true
+					c.Effort.Supported = true
+				case "xhigh":
+					c.Effort.XHigh.Supported = true
+					c.Effort.Supported = true
+				case "max":
+					c.Effort.Max.Supported = true
+					c.Effort.Supported = true
+				}
+			}
+
+		case "effort":
+			var arr []string
+			if err := json.Unmarshal(val, &arr); err != nil {
+				continue
+			}
+			for _, s := range arr {
+				switch s {
+				case "low":
+					c.Effort.Low.Supported = true
+					c.Effort.Supported = true
+				case "medium":
+					c.Effort.Medium.Supported = true
+					c.Effort.Supported = true
+				case "high":
+					c.Effort.High.Supported = true
+					c.Effort.Supported = true
+				case "xhigh":
+					c.Effort.XHigh.Supported = true
+					c.Effort.Supported = true
+				case "max":
+					c.Effort.Max.Supported = true
+					c.Effort.Supported = true
+				}
+			}
+
+		case "context_management":
+			var arr []string
+			if err := json.Unmarshal(val, &arr); err != nil {
+				continue
+			}
+			for _, s := range arr {
+				c.ContextManagement.Supported = true
+				switch s {
+				case "clear_tool_uses_20250919":
+					c.ContextManagement.ClearToolUses20250919.Supported = true
+				case "clear_thinking_20251015":
+					c.ContextManagement.ClearThinking20251015.Supported = true
+				case "compact_20260112":
+					c.ContextManagement.Compact20260112.Supported = true
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 type ModelInfo struct {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
+	"github.com/sillygru/gurtcli/sessions"
 )
 
 // Catppuccin Mocha color palette (purple-emphasized)
@@ -53,6 +55,7 @@ const (
 	stateError
 	stateManualModel
 	stateChat
+	stateSessionPick
 )
 
 const (
@@ -152,6 +155,27 @@ func (m modelItem) Description() string {
 	return desc
 }
 
+type sessionItem struct {
+	meta   sessions.Metadata
+	active bool
+}
+
+func (s sessionItem) FilterValue() string { return s.meta.Name + " " + s.meta.ID }
+func (s sessionItem) Title() string {
+	prefix := "  "
+	if s.active {
+		prefix = "• "
+	}
+	return prefix + s.meta.Name
+}
+func (s sessionItem) Description() string {
+	return fmt.Sprintf("%s • %d messages", s.meta.UpdatedAt.Format("Jan 2 15:04"), s.meta.MessageCount)
+}
+
+type sessionSaveErrorMsg struct {
+	err error
+}
+
 type modelsFetchedMsg struct {
 	models []llm.ModelInfo
 	err    error
@@ -231,6 +255,7 @@ type model struct {
 
 	providerList list.Model
 	modelList    list.Model
+	sessionList  list.Model
 	urlInput     textinput.Model
 	keyInput     textinput.Model
 	nameInput    textinput.Model
@@ -247,9 +272,16 @@ type model struct {
 	cancelRequested  bool
 	queuedMessage    string
 	suggestions      suggestionState
+
+	sessionID        string
+	sessionName      string
+	sessionCreatedAt time.Time
 }
 
 func (m model) enterChatState() model {
+	if m.sessionID == "" {
+		m = m.initNewSession()
+	}
 	m.chatInput.Focus()
 	m.reasoning = reasoningState{}
 	m.streamingContent = nil
@@ -309,8 +341,10 @@ var slashCommands = []slashCommand{
 	{name: "exit", description: "Quit the application"},
 	{name: "help", description: "Show available commands"},
 	{name: "model", description: "Change model for current provider"},
+	{name: "new", description: "Start a new session"},
 	{name: "provider", description: "Change provider and model"},
 	{name: "reasoning", description: "Toggle reasoning display"},
+	{name: "session", description: "Switch to a saved session"},
 	{name: "thinking", description: "Set thinking type (adaptive/enabled/disabled)"},
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 }
@@ -363,6 +397,24 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	ml.SetShowHelp(false)
 	ml.SetShowStatusBar(false)
 	ml.DisableQuitKeybindings()
+
+	sd := list.NewDefaultDelegate()
+	sd.ShowDescription = true
+	sd.Styles.SelectedTitle = sd.Styles.SelectedTitle.
+		Foreground(lipgloss.Color(cpMauve)).
+		Background(lipgloss.Color(cpSurface0)).
+		Bold(true)
+	sd.Styles.SelectedDesc = sd.Styles.SelectedDesc.
+		Foreground(lipgloss.Color(cpOverlay2))
+	sd.Styles.NormalTitle = sd.Styles.NormalTitle.
+		Foreground(lipgloss.Color(cpText))
+	sd.Styles.NormalDesc = sd.Styles.NormalDesc.
+		Foreground(lipgloss.Color(cpOverlay1))
+	sl := list.New(nil, sd, 0, 0)
+	sl.Title = "Sessions"
+	sl.SetShowHelp(false)
+	sl.SetShowStatusBar(false)
+	sl.DisableQuitKeybindings()
 
 	ui := textinput.New()
 	ui.Placeholder = "https://api.example.com/v1"
@@ -461,6 +513,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 		workspaceRoot:      wd,
 		providerList:       pl,
 		modelList:          ml,
+		sessionList:        sl,
 		urlInput:           ui,
 		keyInput:           ki,
 		nameInput:          ni,
@@ -486,6 +539,81 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	return m
 }
 
+func (m model) initNewSession() model {
+	m.sessionID = sessions.GenerateID()
+	m.sessionCreatedAt = time.Now()
+	m.sessionName = ""
+	return m
+}
+
+func (m model) toSession() *sessions.Session {
+	msgs := make([]llm.Message, len(m.messages))
+	copy(msgs, m.messages)
+	return &sessions.Session{
+		ID:                m.sessionID,
+		Name:              m.sessionName,
+		CreatedAt:         m.sessionCreatedAt,
+		Provider:          m.provider,
+		Model:             m.modelName,
+		CustomURL:         m.customURL,
+		SavedEndpointName: m.savedEndpointName,
+		ThinkingType:      m.thinkingType,
+		EffortLevel:       m.effortLevel,
+		ReasoningVisible:  m.reasoning.defaultVisible,
+		WorkspaceRoot:     m.workspaceRoot,
+		Messages:          msgs,
+	}
+}
+
+func (m model) applySession(s *sessions.Session) model {
+	m.sessionID = s.ID
+	m.sessionName = s.Name
+	m.sessionCreatedAt = s.CreatedAt
+	m.messages = append([]llm.Message(nil), s.Messages...)
+	m.provider = s.Provider
+	m.modelName = s.Model
+	m.customURL = s.CustomURL
+	m.savedEndpointName = s.SavedEndpointName
+	m.thinkingType = s.ThinkingType
+	m.effortLevel = s.EffortLevel
+	m.reasoning.defaultVisible = s.ReasoningVisible
+	m.reasoning.visible = s.ReasoningVisible
+	m.toolCallCycle = 0
+	m.pendingPerm = nil
+	m.queuedMessage = ""
+	m.isStreaming = false
+	m.streamingContent = nil
+	m.reasoning = reasoningState{defaultVisible: s.ReasoningVisible, visible: s.ReasoningVisible}
+	return m
+}
+
+func (m model) resetToNewSession() model {
+	m.messages = []llm.Message{}
+	m.toolCallCycle = 0
+	m.pendingPerm = nil
+	m.queuedMessage = ""
+	m.isStreaming = false
+	m.streamingContent = nil
+	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible, visible: m.reasoning.defaultVisible}
+	return m.initNewSession()
+}
+
+func (m model) persistSessionCmd() tea.Cmd {
+	sess := m.toSession()
+	if sess.Name == "" {
+		sess.Name = sessions.NameForMessages(sess.Messages)
+	}
+	return func() tea.Msg {
+		if err := sessions.Save(sess); err != nil {
+			return sessionSaveErrorMsg{err: err}
+		}
+		if err := sessions.SetActiveSession(sess.WorkspaceRoot, sess.ID); err != nil {
+			return sessionSaveErrorMsg{err: fmt.Errorf("setting active session: %w", err)}
+		}
+		return nil
+	}
+}
+
 func (m model) Init() tea.Cmd {
 	if m.state == stateModelFetch && m.provider != "" {
 		return tea.Batch(
@@ -498,12 +626,42 @@ func (m model) Init() tea.Cmd {
 
 func fetchModelsCmd(provider, apiKey, baseURL string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		models, err := llm.FetchModels(ctx, provider, apiKey, baseURL)
-		if err != nil {
-			return modelsFetchedMsg{err: err}
+
+		type modelsResult struct {
+			models []llm.ModelInfo
+			err    error
 		}
-		return modelsFetchedMsg{models: models}
+
+		modelsCh := make(chan modelsResult, 1)
+		detailsCh := make(chan map[string]llm.ModelInfo, 1)
+
+		go func() {
+			models, err := llm.FetchModels(ctx, provider, apiKey, baseURL)
+			modelsCh <- modelsResult{models, err}
+		}()
+
+		go func() {
+			details, err := llm.FetchLLMDetails(ctx)
+			if err != nil {
+				detailsCh <- nil
+				return
+			}
+			detailsCh <- details
+		}()
+
+		mr := <-modelsCh
+		if mr.err != nil {
+			cancel()
+			return modelsFetchedMsg{err: mr.err}
+		}
+
+		details := <-detailsCh
+		if len(details) > 0 {
+			mr.models = llm.EnrichModels(mr.models, details, provider)
+		}
+
+		return modelsFetchedMsg{models: mr.models}
 	}
 }

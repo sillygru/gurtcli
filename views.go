@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/llm"
+	"github.com/sillygru/gurtcli/sessions"
 )
 
 func (m model) View() string {
@@ -32,6 +33,8 @@ func (m model) View() string {
 		return m.errorView()
 	case stateManualModel:
 		return m.manualModelView()
+	case stateSessionPick:
+		return m.sessionPickView()
 	case stateChat:
 		return m.chatView()
 	}
@@ -139,25 +142,41 @@ func (m model) reasoningConfigView() string {
 	b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
 	b.WriteString("\n\n")
 
-	think := m.thinkingType
-	thinkLine := fmt.Sprintf("  Thinking:  %s", think)
-	if m.reasoningField == 0 {
-		thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(think), m.styles.dim.Render("← →"))
-	}
-	b.WriteString(thinkLine)
-	b.WriteString("\n")
+	if len(m.thinkingOptions) > 0 {
+		// Two-field mode: Thinking + Effort (Anthropic)
+		think := m.thinkingType
+		thinkLine := fmt.Sprintf("  Thinking:  %s", think)
+		if m.reasoningField == 0 {
+			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(think), m.styles.dim.Render("← →"))
+		}
+		b.WriteString(thinkLine)
+		b.WriteString("\n")
 
-	effort := m.effortLevel
-	effortLine := fmt.Sprintf("  Effort:    %s", effort)
-	if m.reasoningField == 1 {
-		effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(effort), m.styles.dim.Render("← →"))
-	}
-	b.WriteString(effortLine)
-	b.WriteString("\n\n")
+		effort := m.effortLevel
+		effortLine := fmt.Sprintf("  Effort:    %s", effort)
+		if m.reasoningField == 1 {
+			effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(effort), m.styles.dim.Render("← →"))
+		}
+		b.WriteString(effortLine)
+		b.WriteString("\n\n")
 
-	b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
-	b.WriteString("\n")
-	b.WriteString(m.styles.dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc skip"))
+		b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+		b.WriteString("\n")
+		b.WriteString(m.styles.dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc skip"))
+	} else {
+		// Single-field mode: Reasoning effort (OpenAI)
+		effort := m.effortLevel
+		effortLine := fmt.Sprintf("  Reasoning: %s", effort)
+		if m.reasoningField == 0 {
+			effortLine = fmt.Sprintf("  %s Reasoning: %s %s ", m.styles.header.Render("▶"), m.styles.header.Render(effort), m.styles.dim.Render("← →"))
+		}
+		b.WriteString(effortLine)
+		b.WriteString("\n\n")
+
+		b.WriteString(m.styles.divider.Render(strings.Repeat("─", 40)))
+		b.WriteString("\n")
+		b.WriteString(m.styles.dim.Render("←/→ change • enter confirm • esc skip"))
+	}
 	return b.String()
 }
 
@@ -208,6 +227,17 @@ func (m model) manualModelView() string {
 	return b.String()
 }
 
+func (m model) sessionDisplayName() string {
+	if m.sessionName != "" {
+		return m.sessionName
+	}
+	name := sessions.NameForMessages(m.messages)
+	if name != "Empty session" {
+		return name
+	}
+	return "New session"
+}
+
 func (m model) helpWithStatus(help string) string {
 	providerLabel := llm.DisplayName(m.provider)
 	if m.savedEndpointName != "" {
@@ -216,12 +246,22 @@ func (m model) helpWithStatus(help string) string {
 		providerLabel = "Custom"
 	}
 	helpRendered := m.styles.dim.Render(help)
-	statusRendered := m.styles.statusBar.Render(fmt.Sprintf("%s • %s", providerLabel, m.modelName))
+	statusRendered := m.styles.statusBar.Render(fmt.Sprintf("%s • %s • %s", m.sessionDisplayName(), providerLabel, m.modelName))
 	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
 	if pad < 1 {
 		pad = 1
 	}
 	return helpRendered + strings.Repeat(" ", pad) + statusRendered
+}
+
+func (m model) sessionPickView() string {
+	var b strings.Builder
+	b.WriteString(m.styles.header.Render("gurtcli"))
+	b.WriteString("\n\n")
+	b.WriteString(m.sessionList.View())
+	b.WriteString("\n")
+	b.WriteString(m.styles.dim.Render("↑/↓ navigate • enter switch • esc back • ctrl+c quit"))
+	return b.String()
 }
 
 func (m model) chatView() string {

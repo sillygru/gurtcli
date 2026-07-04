@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
+	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/tools"
 )
 
@@ -42,6 +43,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.providerList.SetSize(msg.Width-4, h)
 		m.modelList.SetSize(msg.Width-4, h)
+		m.sessionList.SetSize(msg.Width-4, h)
 
 		chatViewHeight := msg.Height - 5
 		if chatViewHeight < 4 {
@@ -86,6 +88,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateManualModel(msg)
 		case stateChat:
 			return m.updateChat(msg)
+		case stateSessionPick:
+			return m.updateSessionPick(msg)
 		}
 		return m, nil
 
@@ -108,6 +112,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.provider == llm.ProviderOpenAI {
 			filtered := models[:0]
 			for _, model := range models {
+				id := strings.ToLower(model.ID)
+				if strings.Contains(id, "transcribe") || strings.Contains(id, "embed") || strings.Contains(id, "tts") || strings.Contains(id, "search") || strings.Contains(id, "chat-latest") {
+					continue
+				}
 				if llm.IsTextChatModel(model.ID) && !hasDateSuffix(model.ID) {
 					filtered = append(filtered, model)
 				}
@@ -121,6 +129,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			models = filtered
+		}
+		if m.provider == llm.ProviderOpenAI {
+			for i, j := 0, len(models)-1; i < j; i, j = i+1, j-1 {
+				models[i], models[j] = models[j], models[i]
+			}
 		}
 		m.models = models
 		items := make([]list.Item, len(models))
@@ -182,9 +195,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
-				return m, startChatStreamCmd(m)
+				return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 			}
-			return m, nil
+			return m, m.persistSessionCmd()
 		}
 
 		contentStr := ""
@@ -231,9 +244,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 					m.chatViewport.SetContent(buildChatContent(m))
 					m.chatViewport.GotoBottom()
-					return m, startChatStreamCmd(m)
+					return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 				}
-				return m, nil
+				return m, m.persistSessionCmd()
 			}
 			return m.processToolCalls(msg.toolCalls)
 		}
@@ -257,9 +270,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
-			return m, startChatStreamCmd(m)
+			return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 		}
-		return m, nil
+		return m, m.persistSessionCmd()
 
 	case chatStreamError:
 		m.streamingContent = nil
@@ -281,6 +294,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
+		return m, m.persistSessionCmd()
+
+	case sessionSaveErrorMsg:
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("_Session save failed: %v_", msg.err),
+		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
 		return m, nil
 	}
 
@@ -690,7 +712,8 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.modelName = selected.info.ID
 
-	if m.provider == llm.ProviderAnthropic {
+	switch m.provider {
+	case llm.ProviderAnthropic:
 		m.thinkingOptions = nil
 		if selected.info.Capabilities.Thinking.Types.Adaptive.Supported {
 			m.thinkingOptions = append(m.thinkingOptions, "adaptive")
@@ -732,6 +755,42 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.state = stateReasoningConfig
 		return m, nil
+
+	case llm.ProviderOpenAI:
+		m.thinkingOptions = nil
+		m.effortOptions = nil
+		eff := selected.info.Capabilities.Effort
+		if eff.Low.Supported {
+			m.effortOptions = append(m.effortOptions, "low")
+		}
+		if eff.Medium.Supported {
+			m.effortOptions = append(m.effortOptions, "medium")
+		}
+		if eff.High.Supported {
+			m.effortOptions = append(m.effortOptions, "high")
+		}
+		if eff.XHigh.Supported {
+			m.effortOptions = append(m.effortOptions, "xhigh")
+		}
+		if eff.Max.Supported {
+			m.effortOptions = append(m.effortOptions, "max")
+		}
+		if selected.info.ThinkingHasNone() {
+			m.effortOptions = append([]string{"none"}, m.effortOptions...)
+		}
+
+		if len(m.effortOptions) == 0 {
+			// Model has no reasoning support — skip config
+			break
+		}
+
+		m.reasoningField = 0
+		if m.effortLevel == "" {
+			m.effortLevel = m.effortOptions[0]
+		}
+
+		m.state = stateReasoningConfig
+		return m, nil
 	}
 
 	if err := saveConfig(m); err != nil {
@@ -746,26 +805,29 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "up":
-		m.reasoningField--
-		if m.reasoningField < 0 {
-			m.reasoningField = 1
-		}
-	case "down":
-		m.reasoningField++
-		if m.reasoningField > 1 {
-			m.reasoningField = 0
+	case "up", "down":
+		if len(m.thinkingOptions) > 0 {
+			if msg.String() == "up" {
+				m.reasoningField--
+				if m.reasoningField < 0 {
+					m.reasoningField = 1
+				}
+			} else {
+				m.reasoningField++
+				if m.reasoningField > 1 {
+					m.reasoningField = 0
+				}
+			}
 		}
 	case "left":
-		switch m.reasoningField {
-		case 0:
+		if m.reasoningField == 0 && len(m.thinkingOptions) > 0 {
 			for i := len(m.thinkingOptions) - 1; i > 0; i-- {
 				if m.thinkingOptions[i] == m.thinkingType {
 					m.thinkingType = m.thinkingOptions[i-1]
 					break
 				}
 			}
-		case 1:
+		} else {
 			for i := len(m.effortOptions) - 1; i > 0; i-- {
 				if m.effortOptions[i] == m.effortLevel {
 					m.effortLevel = m.effortOptions[i-1]
@@ -774,15 +836,14 @@ func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "right":
-		switch m.reasoningField {
-		case 0:
+		if m.reasoningField == 0 && len(m.thinkingOptions) > 0 {
 			for i := 0; i < len(m.thinkingOptions)-1; i++ {
 				if m.thinkingOptions[i] == m.thinkingType {
 					m.thinkingType = m.thinkingOptions[i+1]
 					break
 				}
 			}
-		case 1:
+		} else {
 			for i := 0; i < len(m.effortOptions)-1; i++ {
 				if m.effortOptions[i] == m.effortLevel {
 					m.effortLevel = m.effortOptions[i+1]
@@ -895,6 +956,47 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.enterChatState(), nil
 }
 
+func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.sessionList, cmd = m.sessionList.Update(msg)
+
+	if msg.String() == "esc" {
+		return m.enterChatState(), nil
+	}
+	if msg.String() != "enter" {
+		return m, cmd
+	}
+
+	selected, ok := m.sessionList.SelectedItem().(sessionItem)
+	if !ok {
+		return m, cmd
+	}
+	if selected.meta.ID == m.sessionID {
+		return m.enterChatState(), nil
+	}
+
+	var saveCmd tea.Cmd
+	if len(m.messages) > 0 {
+		saveCmd = m.persistSessionCmd()
+	}
+
+	loaded, err := sessions.Load(m.workspaceRoot, selected.meta.ID)
+	if err != nil {
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("_Failed to load session: %v_", err),
+		})
+		m.state = stateChat
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, saveCmd
+	}
+
+	m = m.applySession(loaded)
+	m = m.enterChatState()
+	return m, saveCmd
+}
+
 func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pendingPerm != nil {
 		if msg.String() == "enter" {
@@ -918,7 +1020,7 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
-				return m, nil
+				return m, m.persistSessionCmd()
 			case "a", "A":
 				m.alwaysAllowPerms = true
 				m = m.executeTool(tc)
@@ -987,7 +1089,7 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 
-		return m, startChatStreamCmd(m)
+		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 	}
 
 	var cmd tea.Cmd
@@ -1024,11 +1126,11 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
 			m.chatInput.Focus()
-			return m, nil
+			return m, m.persistSessionCmd()
 		}
 		m = m.executeTool(tc)
 	}
-	return m, startChatStreamCmd(m)
+	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 }
 
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -1198,6 +1300,40 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.chatViewport.GotoBottom()
 		return m, nil
 
+	case "session":
+		if m.isStreaming {
+			return m, nil
+		}
+		metas, err := sessions.List(m.workspaceRoot)
+		if err != nil {
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("_Failed to list sessions: %v_", err),
+			})
+			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
+		}
+		items := make([]list.Item, len(metas))
+		for i, meta := range metas {
+			items[i] = sessionItem{meta: meta, active: meta.ID == m.sessionID}
+		}
+		m.sessionList.SetItems(items)
+		m.state = stateSessionPick
+		return m, nil
+
+	case "new":
+		if m.isStreaming {
+			return m, nil
+		}
+		var saveCmd tea.Cmd
+		if len(m.messages) > 0 {
+			saveCmd = m.persistSessionCmd()
+		}
+		m = m.resetToNewSession()
+		m = m.enterChatState()
+		return m, saveCmd
+
 	default:
 		m.messages = append(m.messages, llm.Message{
 			Role:    "assistant",
@@ -1264,7 +1400,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 		}
 
 		reasoningEffort := ""
-		if m.provider == llm.ProviderOpenAI && m.effortLevel != "" {
+		if m.provider == llm.ProviderOpenAI && m.effortLevel != "" && m.effortLevel != "none" {
 			reasoningEffort = m.effortLevel
 		}
 
