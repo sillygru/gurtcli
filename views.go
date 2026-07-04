@@ -280,6 +280,11 @@ func (m model) chatView() string {
 	b.WriteString(m.chatViewport.View())
 	b.WriteString("\n")
 
+	if bar := m.renderContextBar(); bar != "" {
+		b.WriteString(bar)
+		b.WriteString("\n")
+	}
+
 	b.WriteString(m.styles.divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")
 
@@ -334,4 +339,34 @@ func (m model) chatView() string {
 	}
 
 	return b.String()
+}
+
+func (m model) renderContextBar() string {
+	if m.maxInputTokens <= 0 {
+		return ""
+	}
+	tokens := m.inputTokens
+	if tokens <= 0 {
+		return m.styles.contextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", strings.Repeat("░", 20), formatTokens(m.maxInputTokens)))
+	}
+	pct := float64(tokens) / float64(m.maxInputTokens)
+	barWidth := 20
+	filled := int(pct * float64(barWidth))
+	if filled > barWidth {
+		filled = barWidth
+	}
+	bar := strings.Repeat("▓", filled) + strings.Repeat("░", barWidth-filled)
+	pctStr := fmt.Sprintf("%3.0f%%", pct*100)
+	return m.styles.contextBar.Render(fmt.Sprintf(" %s  %s  %s", bar, pctStr, formatTokens(tokens)))
+}
+
+func formatTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dK", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }

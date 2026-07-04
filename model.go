@@ -78,6 +78,7 @@ type styles struct {
 	permPrompt       lipgloss.Style
 	permKey          lipgloss.Style
 	statusBar        lipgloss.Style
+	contextBar       lipgloss.Style
 }
 
 func defaultStyles() styles {
@@ -96,6 +97,7 @@ func defaultStyles() styles {
 		permPrompt:       lipgloss.NewStyle().Foreground(lipgloss.Color(cpText)),
 		permKey:          lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(cpMauve)),
 		statusBar:        lipgloss.NewStyle().Foreground(lipgloss.Color(cpSubtext0)),
+		contextBar:       lipgloss.NewStyle().Foreground(lipgloss.Color(cpOverlay0)).Padding(0, 1),
 	}
 }
 
@@ -197,6 +199,11 @@ type chatStreamError struct {
 	err error
 }
 
+type chatStreamUsage struct {
+	inputTokens  int
+	outputTokens int
+}
+
 type reasoningState struct {
 	content        *strings.Builder
 	startTime      time.Time
@@ -276,6 +283,10 @@ type model struct {
 	sessionID        string
 	sessionName      string
 	sessionCreatedAt time.Time
+
+	maxInputTokens int
+	inputTokens    int
+	outputTokens   int
 }
 
 func (m model) enterChatState() model {
@@ -285,6 +296,16 @@ func (m model) enterChatState() model {
 	m.chatInput.Focus()
 	m.reasoning = reasoningState{}
 	m.streamingContent = nil
+	if m.maxInputTokens == 0 {
+		for _, mdl := range m.models {
+			if mdl.ID == m.modelName || mdl.DisplayName == m.modelName {
+				m.maxInputTokens = mdl.MaxInputTokens
+				break
+			}
+		}
+	}
+	m.inputTokens = 0
+	m.outputTokens = 0
 	m.chatViewport.SetContent(buildChatContent(m))
 	m.chatViewport.GotoBottom()
 	m.state = stateChat
@@ -533,6 +554,9 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool) mod
 	}
 
 	if startState == stateChat {
+		if m.maxInputTokens == 0 && m.modelName != "" {
+			m.maxInputTokens = llm.LookupModelMaxTokens(m.modelName)
+		}
 		m = m.enterChatState()
 	}
 
@@ -572,6 +596,9 @@ func (m model) applySession(s *sessions.Session) model {
 	m.messages = append([]llm.Message(nil), s.Messages...)
 	m.provider = s.Provider
 	m.modelName = s.Model
+	if m.maxInputTokens == 0 && m.modelName != "" {
+		m.maxInputTokens = llm.LookupModelMaxTokens(m.modelName)
+	}
 	m.customURL = s.CustomURL
 	m.savedEndpointName = s.SavedEndpointName
 	m.thinkingType = s.ThinkingType

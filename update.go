@@ -274,6 +274,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.persistSessionCmd()
 
+	case chatStreamUsage:
+		if msg.inputTokens > 0 {
+			m.inputTokens = msg.inputTokens
+		}
+		if msg.outputTokens > 0 {
+			m.outputTokens += msg.outputTokens
+		}
+		return m, nil
+
 	case chatStreamError:
 		m.streamingContent = nil
 		m.isStreaming = false
@@ -711,6 +720,7 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.modelName = selected.info.ID
+	m.maxInputTokens = selected.info.MaxInputTokens
 
 	switch m.provider {
 	case llm.ProviderAnthropic:
@@ -1422,24 +1432,36 @@ func startChatStreamCmd(m model) tea.Cmd {
 		}
 
 		go func() {
+			var pendingToolCalls []llm.ToolCall
+			doneSent := false
 			for event := range events {
 				switch event.Type {
 				case llm.StreamDelta:
 					globalProgram.Send(chatStreamChunk{content: event.Content})
 				case llm.StreamReasoning:
 					globalProgram.Send(chatStreamReasoning{content: event.Content})
+				case llm.StreamUsage:
+					globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens})
 				case llm.StreamToolCalls:
-					globalProgram.Send(chatStreamDone{toolCalls: event.ToolCalls})
-					return
+					pendingToolCalls = event.ToolCalls
 				case llm.StreamDone:
-					globalProgram.Send(chatStreamDone{toolCalls: event.ToolCalls})
+					if !doneSent {
+						calls := event.ToolCalls
+						if len(calls) == 0 && len(pendingToolCalls) > 0 {
+							calls = pendingToolCalls
+						}
+						globalProgram.Send(chatStreamDone{toolCalls: calls})
+						doneSent = true
+					}
 					return
 				case llm.StreamError:
 					globalProgram.Send(chatStreamError{err: event.Err})
 					return
 				}
 			}
-			globalProgram.Send(chatStreamDone{})
+			if !doneSent {
+				globalProgram.Send(chatStreamDone{})
+			}
 		}()
 
 		return nil

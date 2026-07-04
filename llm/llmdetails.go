@@ -60,6 +60,19 @@ func fetchRemoteLLMDetails(ctx context.Context) ([]byte, error) {
 	return body, nil
 }
 
+// LookupModelMaxTokens returns the max input tokens for a model ID from the
+// embedded llmdetails.json. Returns 0 if the model is not found.
+func LookupModelMaxTokens(modelID string) int {
+	details, err := parseLLMDetails(embeddedLLMDetails)
+	if err != nil {
+		return 0
+	}
+	if info, ok := details[modelID]; ok {
+		return info.MaxInputTokens
+	}
+	return 0
+}
+
 func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 	var file llmDetailsFile
 	if err := json.Unmarshal(data, &file); err != nil {

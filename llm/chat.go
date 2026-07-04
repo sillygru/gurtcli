@@ -65,21 +65,29 @@ const (
 	StreamToolCalls
 	StreamDone
 	StreamError
+	StreamUsage
 )
 
 type StreamEvent struct {
-	Type      StreamEventType
-	Content   string
-	Err       error
-	ToolCalls []ToolCall
+	Type         StreamEventType
+	Content      string
+	Err          error
+	ToolCalls    []ToolCall
+	InputTokens  int
+	OutputTokens int
+}
+
+type openaiStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openaiChatBody struct {
-	Model           string    `json:"model"`
-	Messages        []Message `json:"messages"`
-	Stream          bool      `json:"stream"`
-	Tools           []Tool    `json:"tools,omitempty"`
-	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+	Model           string               `json:"model"`
+	Messages        []Message            `json:"messages"`
+	Stream          bool                 `json:"stream"`
+	StreamOptions   *openaiStreamOptions `json:"stream_options,omitempty"`
+	Tools           []Tool               `json:"tools,omitempty"`
+	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
 }
 
 type anthropicChatBody struct {
@@ -107,9 +115,15 @@ type anthropicContentBlock struct {
 	Content   string          `json:"content,omitempty"`
 }
 
+type openaiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
 // openaiChunk for SSE parsing
 type openaiChunk struct {
 	Choices []openaiChoice `json:"choices"`
+	Usage   *openaiUsage   `json:"usage,omitempty"`
 }
 
 type openaiChoice struct {
@@ -136,6 +150,26 @@ type openaiToolCallFunc struct {
 }
 
 // Anthropic SSE types for tool call parsing
+type anthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+type anthropicMessageStart struct {
+	Type    string                `json:"type"`
+	Message anthropicStartMessage `json:"message"`
+}
+
+type anthropicStartMessage struct {
+	Usage anthropicUsage `json:"usage"`
+}
+
+type anthropicMessageDeltaEvt struct {
+	Type  string              `json:"type"`
+	Delta anthropicStopReason `json:"delta"`
+	Usage *anthropicUsage     `json:"usage,omitempty"`
+}
+
 type anthropicContentBlockStart struct {
 	Type         string               `json:"type"`
 	Index        int                  `json:"index"`
@@ -160,11 +194,6 @@ type anthropicDeltaEvt struct {
 	Text        string `json:"text,omitempty"`
 	Thinking    string `json:"thinking,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
-}
-
-type anthropicMessageDeltaEvt struct {
-	Type  string              `json:"type"`
-	Delta anthropicStopReason `json:"delta"`
 }
 
 type anthropicStopReason struct {
@@ -284,6 +313,7 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 			Model:           req.Model,
 			Messages:        msgs,
 			Stream:          true,
+			StreamOptions:   &openaiStreamOptions{IncludeUsage: true},
 			Tools:           req.Tools,
 			ReasoningEffort: req.ReasoningEffort,
 		})
@@ -404,6 +434,9 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					continue
 				}
 				if len(chunk.Choices) == 0 {
+					if chunk.Usage != nil {
+						events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
+					}
 					continue
 				}
 				choice := chunk.Choices[0]
@@ -452,6 +485,13 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 
 			case ProviderAnthropic:
 				switch eventType {
+				case "message_start":
+					var start anthropicMessageStart
+					if err := json.Unmarshal([]byte(data), &start); err != nil {
+						continue
+					}
+					events <- StreamEvent{Type: StreamUsage, InputTokens: start.Message.Usage.InputTokens}
+
 				case "content_block_start":
 					var start anthropicContentBlockStart
 					if err := json.Unmarshal([]byte(data), &start); err != nil {
@@ -502,6 +542,9 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					var msgDelta anthropicMessageDeltaEvt
 					if err := json.Unmarshal([]byte(data), &msgDelta); err != nil {
 						continue
+					}
+					if msgDelta.Usage != nil && msgDelta.Usage.OutputTokens > 0 {
+						events <- StreamEvent{Type: StreamUsage, OutputTokens: msgDelta.Usage.OutputTokens}
 					}
 					if msgDelta.Delta.StopReason == "tool_use" && len(anthropicAccum) > 0 {
 						indices := make([]int, 0, len(anthropicAccum))
