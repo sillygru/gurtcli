@@ -937,6 +937,46 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.state = stateReasoningConfig
 		return m, nil
+
+	case llm.ProviderCustom:
+		m.thinkingOptions = nil
+		m.effortOptions = nil
+		eff := selected.info.Capabilities.Effort
+		if eff.Minimal.Supported {
+			m.effortOptions = append(m.effortOptions, "minimal")
+		}
+		if eff.Low.Supported {
+			m.effortOptions = append(m.effortOptions, "low")
+		}
+		if eff.Medium.Supported {
+			m.effortOptions = append(m.effortOptions, "medium")
+		}
+		if eff.High.Supported {
+			m.effortOptions = append(m.effortOptions, "high")
+		}
+		if eff.XHigh.Supported {
+			m.effortOptions = append(m.effortOptions, "xhigh")
+		}
+		if eff.Max.Supported {
+			m.effortOptions = append(m.effortOptions, "max")
+		}
+		if selected.info.ThinkingHasNone() {
+			m.effortOptions = append([]string{"none"}, m.effortOptions...)
+		}
+
+		m.thinkingType = ""
+
+		if len(m.effortOptions) == 0 {
+			break
+		}
+
+		m.reasoningField = 0
+		if m.effortLevel == "" {
+			m.effortLevel = m.effortOptions[0]
+		}
+
+		m.state = stateReasoningConfig
+		return m, nil
 	}
 
 	if err := saveConfig(m); err != nil {
@@ -1383,13 +1423,16 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "thinking":
 		if m.provider == llm.ProviderCustom {
-			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "Thinking is not supported for custom API providers",
-			})
-			m.chatViewport.SetContent(buildChatContent(m))
-			m.chatViewport.GotoBottom()
-			return m, nil
+			model := m.currentModelInfo()
+			if !model.HasEffort() && !model.HasThinkingSupport() {
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: "Thinking is not supported for this custom API provider",
+				})
+				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.GotoBottom()
+				return m, nil
+			}
 		}
 
 		model := m.currentModelInfo()
@@ -1481,7 +1524,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if m.provider == llm.ProviderCustom {
 			m.messages = append(m.messages, llm.Message{
 				Role:    "assistant",
-				Content: "Effort is not supported for custom API providers",
+				Content: "Custom API providers don't support effort levels. Use /thinking to set reasoning effort instead.",
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1685,7 +1728,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 		}
 
 		reasoningEffort := ""
-		if (m.provider == llm.ProviderOpenAI || m.provider == llm.ProviderGemini) && m.effortLevel != "" && m.effortLevel != "none" {
+		if (m.provider == llm.ProviderOpenAI || m.provider == llm.ProviderGemini || m.provider == llm.ProviderCustom) && m.effortLevel != "" && m.effortLevel != "none" {
 			reasoningEffort = m.effortLevel
 		}
 

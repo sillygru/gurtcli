@@ -166,6 +166,7 @@ func (c *ModelCapabilities) UnmarshalJSON(data []byte) error {
 
 type ModelInfo struct {
 	ID             string            `json:"id"`
+	Slug           string            `json:"slug"`
 	DisplayName    string            `json:"display_name"`
 	CreatedAt      string            `json:"created_at"`
 	MaxInputTokens int               `json:"max_input_tokens"`

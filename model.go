@@ -91,9 +91,9 @@ func (m modelItem) Description() string {
 			tags = append(tags, "adaptive")
 		}
 	}
-	// Only Anthropic has a separate "effort" concept; OpenAI and Gemini's
-	// thinking levels ARE the effort levels, so there's no separate tag.
-	if m.provider == llm.ProviderAnthropic && m.info.Capabilities.Effort.Supported {
+	// Anthropic and custom models from llmdetails can have explicit effort
+	// levels; OpenAI and Gemini's thinking levels ARE the effort levels.
+	if (m.provider == llm.ProviderAnthropic || m.provider == llm.ProviderCustom) && m.info.Capabilities.Effort.Supported {
 		tags = append(tags, "effort")
 	}
 	desc := m.info.ID

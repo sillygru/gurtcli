@@ -17,6 +17,7 @@ type llmDetailsFile struct {
 	OpenAI    providerModels `json:"OpenAI"`
 	Anthropic providerModels `json:"Anthropic"`
 	Gemini    providerModels `json:"Gemini"`
+	Others    providerModels `json:"Others"`
 }
 
 type providerModels struct {
@@ -105,8 +106,16 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 			result[m.ID] = m
 		}
 	}
-	LogDebug("parseLLMDetails: openai=%d anthropic=%d gemini=%d total=%d",
-		len(file.OpenAI.Data), len(file.Anthropic.Data), len(file.Gemini.Data), len(result))
+	for _, m := range file.Others.Data {
+		if m.ID != "" {
+			result[m.ID] = m
+		}
+		if m.Slug != "" && m.Slug != m.ID {
+			result[m.Slug] = m
+		}
+	}
+	LogDebug("parseLLMDetails: openai=%d anthropic=%d gemini=%d others=%d total=%d",
+		len(file.OpenAI.Data), len(file.Anthropic.Data), len(file.Gemini.Data), len(file.Others.Data), len(result))
 	return result, nil
 }
 
