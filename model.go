@@ -152,6 +152,8 @@ type chatStreamUsage struct {
 	outputTokens int
 }
 
+type workingTickMsg struct{}
+
 type reasoningState struct {
 	content        *strings.Builder
 	startTime      time.Time
@@ -184,10 +186,11 @@ type model struct {
 	theme            ui.Theme
 	width            int
 	height           int
-	workspaceRoot    string
-	alwaysAllowPerms bool
-	toolCallCycle    int
-	pendingPerm      *pendingPerm
+	workspaceRoot      string
+	alwaysAllowPerms   bool
+	allowedBashPrefixes map[string]bool
+	toolCallCycle      int
+	pendingPerm        *pendingPerm
 
 	provider  string
 	modelName string
@@ -234,9 +237,12 @@ type model struct {
 	sessionCreatedAt time.Time
 	needsTitle       bool
 
-	maxInputTokens int
-	inputTokens    int
-	outputTokens   int
+	maxInputTokens    int
+	inputTokens       int
+	outputTokens      int
+	workingMsg        string
+	workingMsgIndex   int
+	workingSpinnerIdx int
 
 	updateAvailable    bool
 	latestVersion      string
@@ -498,30 +504,38 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 
 	wd, _ := os.Getwd()
 
+	allowedBashPrefixes := make(map[string]bool)
+	if cfg != nil {
+		for _, p := range cfg.AllowedBashPrefixes {
+			allowedBashPrefixes[p] = true
+		}
+	}
+
 	m := model{
-		state:              startState,
-		yolo:               yolo,
-		forceLocal:         forceLocal,
-		reconfigure:        reconfigure,
-		theme:              s,
-		provider:           provider,
-		modelName:          modelName,
-		customURL:          customURL,
-		savedEndpointName:  savedEndpointName,
-		apiKey:             apiKey,
-		workspaceRoot:      wd,
-		providerList:       pl,
-		modelList:          ml,
-		sessionList:        sl,
-		urlInput:           urlIn,
-		keyInput:           ki,
-		nameInput:          ni,
-		manualInput:        mi,
-		spinner:            sp,
-		messages:           []llm.Message{},
-		chatInput:          ci,
-		chatViewport:       cv,
-		streamState:        &streamState{},
+		state:                startState,
+		yolo:                 yolo,
+		forceLocal:           forceLocal,
+		reconfigure:          reconfigure,
+		theme:                s,
+		provider:             provider,
+		modelName:            modelName,
+		customURL:            customURL,
+		savedEndpointName:    savedEndpointName,
+		apiKey:               apiKey,
+		workspaceRoot:        wd,
+		allowedBashPrefixes:  allowedBashPrefixes,
+		providerList:         pl,
+		modelList:            ml,
+		sessionList:          sl,
+		urlInput:             urlIn,
+		keyInput:             ki,
+		nameInput:            ni,
+		manualInput:          mi,
+		spinner:              sp,
+		messages:             []llm.Message{},
+		chatInput:            ci,
+		chatViewport:         cv,
+		streamState:          &streamState{},
 	}
 
 	if cfg != nil && !reconfigure {

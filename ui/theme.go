@@ -67,6 +67,7 @@ type Theme struct {
 	ToolResultBody   lipgloss.Style
 	EmptyState       lipgloss.Style
 	UpdateBanner     lipgloss.Style
+	WorkingStatus    lipgloss.Style
 
 	// Legacy aliases used across views
 	Header    lipgloss.Style
@@ -141,5 +142,6 @@ func DefaultTheme() Theme {
 		ToolResultBody:   lipgloss.NewStyle().Foreground(lipgloss.Color(ColorOverlay1)).PaddingLeft(4),
 		EmptyState:       lipgloss.NewStyle().Foreground(lipgloss.Color(ColorOverlay0)).Italic(true).PaddingLeft(2),
 		UpdateBanner:     lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPeach)).PaddingLeft(1),
+		WorkingStatus:    lipgloss.NewStyle().Foreground(lipgloss.Color(ColorTeal)),
 	}
 }

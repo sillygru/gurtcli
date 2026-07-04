@@ -115,11 +115,22 @@ func RenderAssistantContent(t Theme, content string) string {
 
 // RenderPermissionPrompt renders the permission confirmation box content.
 func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int) string {
-	return RenderToolCall(t, tc, width) + "\n\n" +
+	content := RenderToolCall(t, tc, width) + "\n\n"
+
+	if tc.Function.Name == "run_bash" {
+		return content +
+			t.PermPrompt.Render("  Allow this action?") + " " +
+			t.PermKey.Render("y") + t.Dim.Render("es  ") +
+			t.PermKey.Render("p") + t.Dim.Render("refix  ") +
+			t.PermKey.Render("a") + t.Dim.Render("ll  ") +
+			t.PermKey.Render("n") + t.Dim.Render("o")
+	}
+
+	return content +
 		t.PermPrompt.Render("  Allow this action?") + " " +
 		t.PermKey.Render("y") + t.Dim.Render("es  ") +
-		t.PermKey.Render("n") + t.Dim.Render("o  ") +
-		t.PermKey.Render("a") + t.Dim.Render("ll")
+		t.PermKey.Render("a") + t.Dim.Render("llow always  ") +
+		t.PermKey.Render("n") + t.Dim.Render("o")
 }
 
 func renderToolHeader(accent ToolAccent) string {

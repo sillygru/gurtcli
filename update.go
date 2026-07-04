@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -230,6 +231,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelRequested = false
 			m.streamingContent = nil
 			m.isStreaming = false
+			m.workingMsg = ""
+			m.workingSpinnerIdx = 0
 			m.streamState.cancel = nil
 			m.reasoning = reasoningState{}
 			m.messages = append(m.messages, llm.Message{
@@ -244,10 +247,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queuedMessage = ""
 				m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
 				m.isStreaming = true
+				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+				m.workingSpinnerIdx = 0
 				m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
-				return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+				return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 			}
 			return m, m.persistSessionCmd()
 		}
@@ -262,6 +267,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.streamingContent = nil
 		m.isStreaming = false
+		m.workingMsg = ""
+		m.workingSpinnerIdx = 0
 		m.streamState.cancel = nil
 		if m.reasoning.active {
 			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
@@ -293,10 +300,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.queuedMessage = ""
 					m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
 					m.isStreaming = true
+					m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+					m.workingSpinnerIdx = 0
 					m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 					m.chatViewport.SetContent(buildChatContent(m))
 					m.chatViewport.GotoBottom()
-					return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+					return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 				}
 				return m, m.persistSessionCmd()
 			}
@@ -319,10 +328,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queuedMessage = ""
 			m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
 			m.isStreaming = true
+			m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+			m.workingSpinnerIdx = 0
 			m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
-			return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+			return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 		}
 		cmds := []tea.Cmd{m.persistSessionCmd()}
 		if m.needsTitle {
@@ -340,9 +351,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case workingTickMsg:
+		if !m.isStreaming {
+			return m, nil
+		}
+		m.workingSpinnerIdx++
+		if m.workingSpinnerIdx%40 == 0 {
+			m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+		}
+		return m, workingTickCmd()
+
 	case chatStreamError:
 		m.streamingContent = nil
 		m.isStreaming = false
+		m.workingMsg = ""
+		m.workingSpinnerIdx = 0
 		m.streamState.cancel = nil
 		if m.cancelRequested {
 			m.cancelRequested = false
@@ -1162,6 +1185,9 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				return m, m.persistSessionCmd()
+			case "p", "P":
+				m = m.allowBashPrefix(tc)
+				return m.processToolCalls(remaining)
 			case "a", "A":
 				m.alwaysAllowPerms = true
 				m = m.executeTool(tc)
@@ -1226,11 +1252,13 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
 		m.isStreaming = true
+		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+		m.workingSpinnerIdx = 0
 		m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
 
-		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 	}
 
 	var cmd tea.Cmd
@@ -1257,8 +1285,60 @@ func (m model) executeTool(tc llm.ToolCall) model {
 	return m
 }
 
+// allowBashPrefix adds the command prefix from a run_bash tool call to the
+// always-allowed list, persists it to config, and executes the tool.
+func (m model) allowBashPrefix(tc llm.ToolCall) model {
+	cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
+	if err == nil {
+		prefix := tools.BashCommandPrefix(cmd)
+		if prefix != "" {
+			m.allowedBashPrefixes[prefix] = true
+			// Persist to config
+			if cfg, err := config.Load(); err == nil && cfg != nil {
+				already := false
+				for _, p := range cfg.AllowedBashPrefixes {
+					if p == prefix {
+						already = true
+						break
+					}
+				}
+				if !already {
+					cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, prefix)
+					config.Save(cfg)
+				}
+			} else if err == nil {
+				cfg = &config.Config{}
+				cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, prefix)
+				config.Save(cfg)
+			}
+		}
+	}
+	return m.executeTool(tc)
+}
+
 func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 	for i, tc := range tcs {
+		// Always-allowed tools (read, write, edit) execute without prompting.
+		if tools.IsAlwaysAllowed(tc.Function.Name) {
+			m = m.executeTool(tc)
+			continue
+		}
+
+		// For bash commands, auto-allow if the command prefix is in the safe list.
+		if tc.Function.Name == "run_bash" && !m.yolo && !m.alwaysAllowPerms {
+			cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
+			if err == nil {
+				prefixes := make([]string, 0, len(m.allowedBashPrefixes))
+				for p := range m.allowedBashPrefixes {
+					prefixes = append(prefixes, p)
+				}
+				if tools.IsSafeBashCommand(cmd, prefixes) {
+					m = m.executeTool(tc)
+					continue
+				}
+			}
+		}
+
 		if tools.IsDestructive(tc.Function.Name) && !m.yolo && !m.alwaysAllowPerms {
 			m.pendingPerm = &pendingPerm{
 				toolCall:  tc,
@@ -1271,7 +1351,10 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 		}
 		m = m.executeTool(tc)
 	}
-	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+	m.isStreaming = true
+	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+	m.workingSpinnerIdx = 0
+	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 }
 
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -1784,6 +1867,13 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		return nil
 	}
+}
+
+func workingTickCmd() tea.Cmd {
+	delay := time.Duration(150+rand.Intn(150)) * time.Millisecond
+	return tea.Tick(delay, func(t time.Time) tea.Msg {
+		return workingTickMsg{}
+	})
 }
 
 func generateTitleCmd(m model) tea.Cmd {

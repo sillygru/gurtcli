@@ -299,10 +299,8 @@ func (m model) chatView() string {
 	b.WriteString(m.chatViewport.View())
 	b.WriteString("\n")
 
-	if bar := m.renderContextBar(); bar != "" {
-		b.WriteString(bar)
-		b.WriteString("\n")
-	}
+	b.WriteString(m.renderSpacerLine())
+	b.WriteString("\n")
 
 	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")
@@ -350,6 +348,61 @@ func (m model) chatView() string {
 		b.WriteString(m.helpWithStatus(help))
 	}
 
+	return b.String()
+}
+
+var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
+
+var workingMessages = []string{
+	"Fidgeting with files",
+	"Reticulating splines",
+	"Wrangling tokens",
+	"Booping the API",
+	"Spelunking through code",
+	"Cogitating deeply",
+	"Herding models",
+	"Marinating on that",
+	"Flummoxing files",
+	"Brewing thoughts",
+	"Jitterbugging with context",
+	"Combobulating code",
+	"Prestidigitating patches",
+	"Gallivanting through git",
+	"Tomfoolering with types",
+	"Shenaniganing with syntax",
+	"Boondoggling builds",
+	"Vibing",
+}
+
+func (m model) renderSpacerLine() string {
+	ctxBar := m.renderContextBar()
+
+	var left string
+	if m.isStreaming && m.workingMsg != "" {
+		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
+		spinner := workingSpinnerFrames[idx]
+		left = m.theme.WorkingStatus.Render(spinner + " " + m.workingMsg)
+	}
+
+	if left == "" && ctxBar == "" {
+		return ""
+	}
+
+	leftWidth := lipgloss.Width(left)
+	ctxWidth := lipgloss.Width(ctxBar)
+	pad := m.width - leftWidth - ctxWidth
+	if pad < 1 {
+		pad = 1
+	}
+
+	var b strings.Builder
+	if left != "" {
+		b.WriteString(left)
+	}
+	if ctxBar != "" {
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString(ctxBar)
+	}
 	return b.String()
 }
 

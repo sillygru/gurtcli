@@ -196,3 +196,63 @@ func IsDestructive(name string) bool {
 		return false
 	}
 }
+
+// IsAlwaysAllowed returns true if the tool should never prompt for permission.
+func IsAlwaysAllowed(name string) bool {
+	switch name {
+	case "read_file", "write_file", "edit_file":
+		return true
+	default:
+		return false
+	}
+}
+
+// DefaultSafeBashPrefixes returns the built-in set of safe (read-only) command prefixes.
+func DefaultSafeBashPrefixes() []string {
+	return []string{
+		"cat", "ls", "grep", "find", "head", "tail", "echo", "pwd",
+		"which", "whoami", "date", "env", "printenv", "wc", "sort",
+		"uniq", "cut", "tr", "diff", "cmp", "file", "stat", "du", "df",
+		"ps", "type", "man", "whatis", "apropos", "strings", "od",
+		"xxd", "hexdump", "base64", "cksum", "tree", "dirname",
+		"basename", "realpath", "readlink", "printf", "yes", "cal",
+	}
+}
+
+// BashCommandPrefix extracts the first word from a shell command.
+func BashCommandPrefix(command string) string {
+	command = strings.TrimSpace(command)
+	if idx := strings.IndexAny(command, " \t"); idx > 0 {
+		return command[:idx]
+	}
+	return command
+}
+
+// ExtractBashCommand parses a run_bash tool call arguments and returns the command string.
+func ExtractBashCommand(args json.RawMessage) (string, error) {
+	var a runBashArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("invalid run_bash arguments: %w", err)
+	}
+	return a.Command, nil
+}
+
+// IsSafeBashCommand checks if a command starts with an allowed prefix
+// (either from the built-in defaults or user-added extra prefixes).
+func IsSafeBashCommand(command string, extraPrefixes []string) bool {
+	prefix := BashCommandPrefix(command)
+	if prefix == "" {
+		return false
+	}
+	for _, p := range DefaultSafeBashPrefixes() {
+		if prefix == p {
+			return true
+		}
+	}
+	for _, p := range extraPrefixes {
+		if prefix == p {
+			return true
+		}
+	}
+	return false
+}
