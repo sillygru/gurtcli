@@ -14,11 +14,14 @@ import (
 )
 
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	Reasoning  string     `json:"reasoning,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	Reasoning        string     `json:"reasoning,omitempty"`
+	ReasoningVisible bool       `json:"-"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Model            string     `json:"model,omitempty"`
+	Internal         bool       `json:"-"`
 }
 
 type ThinkingConfig struct {

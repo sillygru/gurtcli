@@ -64,8 +64,8 @@ Type `/exit` or press `ctrl+c` to quit.
 | `/auth` | Change API key for current provider |
 | `/session` | Switch to a saved session |
 | `/new` | Start a fresh session |
-| `/reasoning` | Toggle reasoning visibility |
-| `/thinking` | Set thinking type (adaptive/enabled/disabled) |
+| `/show-reasoning` | Toggle reasoning visibility |
+| `/reasoning` | Set thinking type or reasoning effort |
 | `/effort` | Set effort level (low/medium/high/xhigh/max) |
 | `/allow` | Manage always-allowed tools and commands |
 | `/update` | Update to the latest version |
@@ -116,9 +116,9 @@ When your model supports it, gurt lets you configure reasoning behavior after mo
 
 Navigate with `↑`/`↓`, change values with `←`/`→`, confirm with `enter`.
 
-Change these mid-session with `/thinking <type>` and `/effort <level>`.
+Change these mid-session with `/reasoning <type>` and `/effort <level>`.
 
-Toggle reasoning visibility inline with `/reasoning` or click the `[▼]` / `[▶]` toggle with your mouse.
+Toggle reasoning visibility inline with `/show-reasoning` or click the `[▼]` / `[▶]` toggle with your mouse.
 
 ## Permissions
 

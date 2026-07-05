@@ -287,6 +287,25 @@ func checkAndUpdateCmd() tea.Cmd {
 	}
 }
 
+func checkVersionCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		latest, err := CheckLatestVersion(ctx)
+		if err != nil || latest == "" {
+			return versionCheckResult{err: err}
+		}
+
+		needsUpdate := compareVersions(strings.TrimPrefix(latest, "v"), Version) > 0
+
+		return versionCheckResult{
+			latestVersion: latest,
+			needsUpdate:   needsUpdate,
+		}
+	}
+}
+
 func performUpdateCmd(version string) tea.Cmd {
 	return func() tea.Msg {
 		fmt.Fprintf(os.Stderr, "\nDownloading gurtcli %s...\n", version)

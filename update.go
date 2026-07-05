@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
@@ -263,10 +264,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamingContent != nil {
 			contentStr = strings.TrimSpace(m.streamingContent.String())
 		}
-		reasoningStr := ""
-		if m.reasoning.content != nil {
-			reasoningStr = m.reasoning.content.String()
-		}
+	reasoningStr := ""
+	if m.reasoning.content != nil {
+		reasoningStr = strings.TrimSpace(m.reasoning.content.String())
+	}
 		m.streamingContent = nil
 		m.isStreaming = false
 		m.workingMsg = ""
@@ -279,7 +280,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if len(msg.toolCalls) > 0 {
-			asm := llm.Message{Role: "assistant", Content: contentStr}
+			asm := llm.Message{Role: "assistant", Content: contentStr, Model: m.modelName}
 			if reasoningStr != "" {
 				asm.Reasoning = reasoningStr
 			}
@@ -289,10 +290,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatViewport.GotoBottom()
 			m.toolCallCycle++
 			if m.toolCallCycle > maxToolCallCycles {
-				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Reached maximum tool call cycles (%d). Stopping.", maxToolCallCycles),
-				})
+			m.messages = append(m.messages, llm.Message{
+				Role:    "assistant",
+				Content: "_Interrupted_",
+				Model:   m.modelName,
+			})
 				m.toolCallCycle = 0
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
@@ -315,7 +317,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if contentStr != "" || reasoningStr != "" {
-			msg := llm.Message{Role: "assistant", Content: contentStr}
+			msg := llm.Message{Role: "assistant", Content: contentStr, Model: m.modelName}
 			if reasoningStr != "" {
 				msg.Reasoning = reasoningStr
 			}
@@ -427,13 +429,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updatePerformResult:
 		if msg.upToDate {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "You're already on the latest version.",
+				Role:     "assistant",
+				Internal: true,
+				Content:  "You're already on the latest version.",
 			})
 		} else if msg.err != nil {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("_Update failed: %v_", msg.err),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("_Update failed: %v_", msg.err),
 			})
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -442,8 +446,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionSaveErrorMsg:
 		m.messages = append(m.messages, llm.Message{
-			Role:    "assistant",
-			Content: fmt.Sprintf("_Session save failed: %v_", msg.err),
+			Role:     "assistant",
+			Internal: true,
+			Content:  fmt.Sprintf("_Session save failed: %v_", msg.err),
+		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case versionCheckResult:
+		var b strings.Builder
+		b.WriteString(VersionString())
+		b.WriteString("\n")
+		if msg.err != nil {
+			b.WriteString(fmt.Sprintf("? Could not check for updates: %v", msg.err))
+		} else if msg.needsUpdate {
+			b.WriteString(fmt.Sprintf("✗ A new version is available: %s\n  Run /update to upgrade.", msg.latestVersion))
+		} else {
+			b.WriteString("✓ You're on the latest version.")
+		}
+		m.messages = append(m.messages, llm.Message{
+			Role:     "assistant",
+			Internal: true,
+			Content:  b.String(),
 		})
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
@@ -1323,18 +1348,30 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pendingPerm != nil {
-		if msg.String() == "enter" {
-			input := strings.TrimSpace(m.chatInput.Value())
-			m.chatInput.Reset()
-			tc := m.pendingPerm.toolCall
-			remaining := m.pendingPerm.remaining
-			m.pendingPerm = nil
+		tc := m.pendingPerm.toolCall
+		optionCount := optionCountForTool(tc.Function.Name)
 
-			switch input {
-			case "y", "Y":
-				m = m.executeTool(tc)
-				return m.processToolCalls(remaining)
-			case "n", "N":
+		switch msg.String() {
+		case "up":
+			m.permCursor--
+			if m.permCursor < 0 {
+				m.permCursor = optionCount - 1
+			}
+			return m, nil
+		case "down":
+			m.permCursor++
+			if m.permCursor >= optionCount {
+				m.permCursor = 0
+			}
+			return m, nil
+		case "enter":
+			remaining := m.pendingPerm.remaining
+			cursor := m.permCursor
+			m.pendingPerm = nil
+			m.permCursor = 0
+
+			name := tc.Function.Name
+			deny := func() (tea.Model, tea.Cmd) {
 				m.messages = append(m.messages, llm.Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
@@ -1345,19 +1382,57 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				return m, m.persistSessionCmd()
-			case "p", "P":
-				m = m.allowBashPrefix(tc)
-				return m.processToolCalls(remaining)
-			case "a", "A":
-				m.alwaysAllowPerms = true
+			}
+
+			switch cursor {
+			case 0: // Yes
 				m = m.executeTool(tc)
 				return m.processToolCalls(remaining)
+			case 1:
+				switch name {
+				case "run_bash":
+					if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+						prefix := tools.BashCommandPrefix(cmd)
+						if prefix != "" {
+							m.allowedBashPrefixesSession[prefix] = true
+						}
+					}
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
+				case "edit_file", "write_file":
+					m.allowEdits = true
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
+				case "delete_file":
+					m.allowDeletions = true
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
+				}
+				return m, nil
+			case 2:
+				switch name {
+				case "run_bash":
+					m = m.allowBashPrefix(tc)
+					return m.processToolCalls(remaining)
+				case "edit_file", "write_file", "delete_file":
+					m.alwaysAllowPerms = true
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
+				}
+				return deny()
+			case 3:
+				if name == "run_bash" {
+					m.alwaysAllowPerms = true
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
+				}
+				return deny()
+			case 4: // No (only run_bash)
+				return deny()
 			}
 			return m, nil
 		}
-		var cmd tea.Cmd
-		m.chatInput, cmd = m.chatInput.Update(msg)
-		return m, cmd
+		return m, nil
 	}
 
 	if msg.String() == "esc" && m.isStreaming && m.streamState.cancel != nil {
@@ -1476,6 +1551,17 @@ func (m model) allowBashPrefix(tc llm.ToolCall) model {
 	return m.executeTool(tc)
 }
 
+func optionCountForTool(name string) int {
+	switch name {
+	case "run_bash":
+		return 5
+	case "edit_file", "write_file", "delete_file":
+		return 4
+	default:
+		return 3
+	}
+}
+
 func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 	for i, tc := range tcs {
 		// Check if tool name matches the always-allow tools list (exact match).
@@ -1494,15 +1580,25 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Check if bash command matches the always-allow command prefixes list (prefix match).
-		if !m.yolo && !m.alwaysAllowPerms && len(m.alwaysAllowCommandPrefixes) > 0 && tc.Function.Name == "run_bash" {
+		// Check if bash command matches session-allowed or config-allowed prefixes.
+		if !m.yolo && !m.alwaysAllowPerms && tc.Function.Name == "run_bash" {
 			cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
 			if err == nil {
 				matched := false
-				for _, prefix := range m.alwaysAllowCommandPrefixes {
+				// Check session-level prefixes first
+				for prefix := range m.allowedBashPrefixesSession {
 					if strings.HasPrefix(cmd, prefix) {
 						matched = true
 						break
+					}
+				}
+				// Then check config-level prefixes
+				if !matched {
+					for _, prefix := range m.alwaysAllowCommandPrefixes {
+						if strings.HasPrefix(cmd, prefix) {
+							matched = true
+							break
+						}
 					}
 				}
 				if matched {
@@ -1512,6 +1608,18 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Check session-level edit/write allow
+		if m.allowEdits && (tc.Function.Name == "edit_file" || tc.Function.Name == "write_file") {
+			m = m.executeTool(tc)
+			continue
+		}
+
+		// Check session-level delete allow
+		if m.allowDeletions && tc.Function.Name == "delete_file" {
+			m = m.executeTool(tc)
+			continue
+		}
+
 		if tools.IsDestructive(tc.Function.Name) && !m.yolo && !m.alwaysAllowPerms {
 			m.pendingPerm = &pendingPerm{
 				toolCall:  tc,
@@ -1519,7 +1627,7 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			}
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
-			m.chatInput.Focus()
+			m.chatInput.Blur()
 			return m, m.persistSessionCmd()
 		}
 		m = m.executeTool(tc)
@@ -1539,10 +1647,24 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
-	if !m.reasoning.active && (m.reasoning.content == nil || m.reasoning.content.Len() == 0) {
-		return m, nil
+	// Compute where the viewport starts in the terminal, accounting for
+	// visual wrapping of the brand and update banner lines.
+	brandWidth := lipgloss.Width(m.theme.Brand.Render("  " + m.modelDisplayName()))
+	brandRows := 1
+	if m.width > 0 && brandWidth > m.width {
+		brandRows = (brandWidth + m.width - 1) / m.width
 	}
-	viewportStartRow := 2
+	viewportStartRow := brandRows
+	if m.updateAvailable {
+		bannerText := fmt.Sprintf("  Update %s available — run /update", m.latestVersion)
+		bannerWidth := lipgloss.Width(m.theme.UpdateBanner.Render(bannerText))
+		bannerRows := 1
+		if m.width > 0 && bannerWidth > m.width {
+			bannerRows = (bannerWidth + m.width - 1) / m.width
+		}
+		viewportStartRow += bannerRows
+	}
+	viewportStartRow++ // divider (always present between header and viewport)
 	contentLine := m.chatViewport.YOffset + msg.Y - viewportStartRow
 	if contentLine < 0 {
 		return m, nil
@@ -1552,12 +1674,82 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if contentLine >= len(lines) {
 		return m, nil
 	}
-	line := lines[contentLine]
-	if strings.Contains(line, "[▶") || strings.Contains(line, "[▼") {
+	// Expand the hitbox: scan ±2 lines around the click for reasoning markers.
+	const hitboxRadius = 2
+
+	// ▸ — unique to collapsed (inactive) live reasoning.
+	if findMarker(lines, contentLine, hitboxRadius, "▸") >= 0 {
 		m.reasoning.visible = !m.reasoning.visible
 		m.chatViewport.SetContent(buildChatContent(m))
+		return m, nil
 	}
+
+	// ◌ — unique to active live reasoning (not stored).
+	if findMarker(lines, contentLine, hitboxRadius, "◌") >= 0 {
+		m.reasoning.visible = !m.reasoning.visible
+		m.chatViewport.SetContent(buildChatContent(m))
+		return m, nil
+	}
+
+	// ◷ or ▾ — tries stored reasoning first, falls back to live.
+	if idx := findMarker(lines, contentLine, hitboxRadius, "◷", "▾"); idx >= 0 {
+		count := 0
+		for i := 0; i <= idx; i++ {
+			if strings.Contains(lines[i], "◷") {
+				count++
+			}
+		}
+		msgIdx := 0
+		found := 0
+		for i := range m.messages {
+			if m.messages[i].Reasoning != "" {
+				found++
+				if found == count {
+					msgIdx = i
+					break
+				}
+			}
+		}
+		if found == count {
+			m.messages[msgIdx].ReasoningVisible = !m.messages[msgIdx].ReasoningVisible
+			yOff := m.chatViewport.YOffset
+			m.chatViewport.SetContent(buildChatContent(m))
+			if yOff > m.chatViewport.YOffset {
+				m.chatViewport.GotoBottom()
+			} else {
+				m.chatViewport.YOffset = yOff
+			}
+			return m, nil
+		}
+
+		// No matching stored message — toggle live reasoning.
+		m.reasoning.visible = !m.reasoning.visible
+		m.chatViewport.SetContent(buildChatContent(m))
+		return m, nil
+	}
+
 	return m, nil
+}
+
+// findMarker scans lines in [contentLine-radius, contentLine+radius] for any
+// of the given markers, returning the first matching line index, or -1.
+func findMarker(lines []string, contentLine, radius int, markers ...string) int {
+	start := contentLine - radius
+	if start < 0 {
+		start = 0
+	}
+	end := contentLine + radius
+	if end >= len(lines) {
+		end = len(lines) - 1
+	}
+	for i := start; i <= end; i++ {
+		for _, m := range markers {
+			if strings.Contains(lines[i], m) {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
@@ -1598,7 +1790,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "exit":
 		return m, tea.Quit
 
-	case "reasoning":
+	case "show-reasoning":
 		oldVisible := m.reasoning.visible
 		newVisible := !oldVisible
 		if len(parts) > 1 {
@@ -1613,8 +1805,14 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.reasoning.visible = newVisible
 		saveConfig(m)
+		for i := range m.messages {
+			if m.messages[i].Reasoning != "" {
+				m.messages[i].ReasoningVisible = !m.messages[i].ReasoningVisible
+			}
+		}
 		m.messages = append(m.messages, llm.Message{
-			Role: "assistant",
+			Role:     "assistant",
+			Internal: true,
 			Content: fmt.Sprintf("Reasoning changed to %s (was %s)",
 				map[bool]string{true: "visible", false: "hidden"}[newVisible],
 				map[bool]string{true: "visible", false: "hidden"}[oldVisible]),
@@ -1623,13 +1821,14 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.chatViewport.GotoBottom()
 		return m, nil
 
-	case "thinking":
+	case "reasoning":
 		if m.provider == llm.ProviderCustom {
 			model := m.currentModelInfo()
 			if !model.HasEffort() && !model.HasThinkingSupport() {
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: "Thinking is not supported for this custom API provider",
+					Role:     "assistant",
+					Internal: true,
+					Content:  "Thinking is not supported for this custom API provider",
 				})
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
@@ -1644,8 +1843,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			partsStr := strings.Join(opts, ", ")
 			if len(parts) < 2 {
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Current thinking type: %s\nUsage: /thinking <type>  (%s)", m.thinkingType, partsStr),
+					Role:     "assistant",
+					Internal: true,
+					Content:  fmt.Sprintf("Current thinking type: %s\nUsage: /reasoning <type>  (%s)", m.thinkingType, partsStr),
 				})
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
@@ -1664,13 +1864,15 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.thinkingType = newType
 				saveConfig(m)
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
+					Role:     "assistant",
+					Internal: true,
+					Content:  fmt.Sprintf("Reasoning set to %s (was %s)", newType, oldType),
 				})
 			} else {
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
+					Role:     "assistant",
+					Internal: true,
+					Content:  fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
 				})
 			}
 			m.chatViewport.SetContent(buildChatContent(m))
@@ -1684,8 +1886,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			partsStr := strings.Join(opts, ", ")
 			if len(parts) < 2 {
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Current thinking type: %s\nUsage: /thinking <type>  (%s)", m.thinkingType, partsStr),
+					Role:     "assistant",
+					Internal: true,
+					Content:  fmt.Sprintf("Current thinking type: %s\nUsage: /reasoning <type>  (%s)", m.thinkingType, partsStr),
 				})
 				m.chatViewport.SetContent(buildChatContent(m))
 				m.chatViewport.GotoBottom()
@@ -1704,13 +1907,15 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.thinkingType = newType
 				saveConfig(m)
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Thinking changed to %s (was %s)", newType, oldType),
+					Role:     "assistant",
+					Internal: true,
+					Content:  fmt.Sprintf("Reasoning set to %s (was %s)", newType, oldType),
 				})
 			} else {
 				m.messages = append(m.messages, llm.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
+					Role:     "assistant",
+					Internal: true,
+					Content:  fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
 				})
 			}
 			m.chatViewport.SetContent(buildChatContent(m))
@@ -1729,8 +1934,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		partsStr := strings.Join(opts, ", ")
 		if len(parts) < 2 {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("Current reasoning level: %s\nUsage: /thinking <level>  (%s)", m.effortLevel, partsStr),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("Current reasoning level: %s\nUsage: /reasoning <level>  (%s)", m.effortLevel, partsStr),
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1749,13 +1955,15 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.effortLevel = newLevel
 			saveConfig(m)
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("Thinking changed to %s (was %s)", newLevel, oldLevel),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("Reasoning set to %s (was %s)", newLevel, oldLevel),
 			})
 		} else {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("Unknown reasoning level: %s. Available: %s", newLevel, partsStr),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("Unknown reasoning level: %s. Available: %s", newLevel, partsStr),
 			})
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -1765,8 +1973,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "effort":
 		if m.provider == llm.ProviderCustom {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "Custom API providers don't support effort levels. Use /thinking to set reasoning effort instead.",
+				Role:     "assistant",
+				Internal: true,
+				Content:  "Custom API providers don't support effort levels. Use /reasoning to set reasoning effort instead.",
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1775,8 +1984,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 		if m.provider == llm.ProviderOpenAI {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "OpenAI models don't support effort levels. Use /thinking to set reasoning effort instead.",
+				Role:     "assistant",
+				Internal: true,
+				Content:  "OpenAI models don't support effort levels. Use /reasoning to set reasoning effort instead.",
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1785,8 +1995,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 		if m.provider == llm.ProviderGemini {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "Gemini models don't support effort levels. Use /thinking to set reasoning effort instead.",
+				Role:     "assistant",
+				Internal: true,
+				Content:  "Gemini models don't support effort levels. Use /reasoning to set reasoning effort instead.",
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1814,8 +2025,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		partsStr := strings.Join(opts, ", ")
 		if len(parts) < 2 {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (%s)", m.effortLevel, partsStr),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (%s)", m.effortLevel, partsStr),
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1834,13 +2046,15 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.effortLevel = newEffort
 			saveConfig(m)
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("Effort changed to %s (was %s)", newEffort, oldEffort),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("Effort changed to %s (was %s)", newEffort, oldEffort),
 			})
 		} else {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("Unknown effort level: %s. Available: %s", newEffort, partsStr),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("Unknown effort level: %s. Available: %s", newEffort, partsStr),
 			})
 		}
 		m.chatViewport.SetContent(buildChatContent(m))
@@ -1854,8 +2068,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			fmt.Fprintf(&b, "  /%s - %s\n", sc.name, sc.description)
 		}
 		m.messages = append(m.messages, llm.Message{
-			Role:    "assistant",
-			Content: b.String(),
+			Role:     "assistant",
+			Internal: true,
+			Content:  b.String(),
 		})
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
@@ -1871,8 +2086,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		sendTelemetryCmd("telemetry_toggle")()
 		m.messages = append(m.messages, llm.Message{
-			Role:    "assistant",
-			Content: fmt.Sprintf("Telemetry %s (was %s). No personal data is collected. See README for details.", status, map[bool]string{true: "enabled", false: "disabled"}[oldVal]),
+			Role:     "assistant",
+			Internal: true,
+			Content:  fmt.Sprintf("Telemetry %s (was %s). No personal data is collected. See README for details.", status, map[bool]string{true: "enabled", false: "disabled"}[oldVal]),
 		})
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
@@ -1885,8 +2101,9 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		metas, err := sessions.List(m.workspaceRoot)
 		if err != nil {
 			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("_Failed to list sessions: %v_", err),
+				Role:     "assistant",
+				Internal: true,
+				Content:  fmt.Sprintf("_Failed to list sessions: %v_", err),
 			})
 			m.chatViewport.SetContent(buildChatContent(m))
 			m.chatViewport.GotoBottom()
@@ -1932,10 +2149,14 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		return m, performUpdateCmd(m.latestVersion)
 
+	case "version":
+		return m, checkVersionCmd()
+
 	default:
 		m.messages = append(m.messages, llm.Message{
-			Role:    "assistant",
-			Content: fmt.Sprintf("_Unknown command: /%s. Type /help for available commands._", cmd),
+			Role:     "assistant",
+			Internal: true,
+			Content:  fmt.Sprintf("_Unknown command: /%s. Type /help for available commands._", cmd),
 		})
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()
@@ -2018,7 +2239,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		req := llm.ChatRequest{
 			Model:           m.modelName,
-			Messages:        m.messages,
+			Messages:        filterInternal(m.messages),
 			SystemPrompt:    systemPrompt,
 			Tools:           tools.Definitions(),
 			Thinking:        thinkingCfg,
@@ -2174,21 +2395,30 @@ func buildChatContent(m model) string {
 			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content))
 			b.WriteString("\n\n")
 		case "assistant":
-			b.WriteString(ui.RenderAssistantLabel(m.theme))
-			b.WriteString("\n")
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					b.WriteString(ui.RenderToolCall(m.theme, tc, m.width))
-					b.WriteString("\n")
-				}
-			}
-			if msg.Reasoning != "" {
-				b.WriteString(ui.RenderReasoningStored(m.theme))
+			if msg.Internal {
+				// no label for slash command output
+			} else {
+				b.WriteString(ui.RenderAssistantLabel(m.theme, m.displayNameForModel(msg.Model)))
 				b.WriteString("\n")
 			}
 			if msg.Content != "" {
 				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content))
 				b.WriteString("\n")
+			}
+			if msg.Reasoning != "" {
+				if msg.ReasoningVisible {
+					b.WriteString(ui.RenderReasoning(m.theme, false, true, 0, msg.Reasoning, m.width))
+					b.WriteString("\n")
+				} else {
+					b.WriteString(ui.RenderReasoningStored(m.theme))
+					b.WriteString("\n")
+				}
+			}
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					b.WriteString(ui.RenderToolCall(m.theme, tc, m.width))
+					b.WriteString("\n")
+				}
 			}
 			b.WriteString("\n")
 		case "tool":
@@ -2199,7 +2429,7 @@ func buildChatContent(m model) string {
 	}
 
 	if lastIsCurrent || m.reasoning.active || streamingLen > 0 {
-		b.WriteString(ui.RenderAssistantLabel(m.theme))
+		b.WriteString(ui.RenderAssistantLabel(m.theme, m.modelDisplayName()))
 		b.WriteString("\n")
 
 		if reasoningLen > 0 {
@@ -2247,4 +2477,14 @@ func buildToolNameLookup(messages []llm.Message) map[string]string {
 		}
 	}
 	return names
+}
+
+func filterInternal(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if !m.Internal {
+			out = append(out, m)
+		}
+	}
+	return out
 }

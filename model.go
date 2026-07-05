@@ -152,6 +152,12 @@ type chatStreamUsage struct {
 
 type workingTickMsg struct{}
 
+type versionCheckResult struct {
+	latestVersion string
+	needsUpdate   bool
+	err           error
+}
+
 type reasoningState struct {
 	content        *strings.Builder
 	startTime      time.Time
@@ -185,8 +191,11 @@ type model struct {
 	width            int
 	height           int
 	workspaceRoot        string
-	alwaysAllowPerms     bool
-	allowedBashPrefixes  map[string]bool
+	alwaysAllowPerms          bool
+	allowEdits               bool
+	allowDeletions           bool
+	allowedBashPrefixes       map[string]bool
+	allowedBashPrefixesSession map[string]bool
 	alwaysAllowTools           []string
 	alwaysAllowCommandPrefixes []string
 	allowManageCursor          int
@@ -198,6 +207,7 @@ type model struct {
 	allowToolCheckCursor       int
 	toolCallCycle        int
 	pendingPerm          *pendingPerm
+	permCursor           int
 
 	provider  string
 	modelName string
@@ -391,13 +401,34 @@ var slashCommands = []slashCommand{
 	{name: "model", description: "Change model for current provider"},
 	{name: "new", description: "Start a new session"},
 	{name: "provider", description: "Change provider and model"},
-	{name: "reasoning", description: "Toggle reasoning display"},
+	{name: "show-reasoning", description: "Toggle reasoning visibility"},
 	{name: "session", description: "Switch to a saved session"},
-	{name: "thinking", description: "Set thinking type (adaptive/enabled/disabled)"},
+	{name: "reasoning", description: "Set thinking type or reasoning effort"},
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 	{name: "update", description: "Update to the latest version"},
 	{name: "allow", description: "Manage always-allowed tools and commands"},
 	{name: "telemetry", description: "Toggle anonymous usage telemetry"},
+	{name: "version", description: "Show current version and check for updates"},
+}
+
+func (m model) modelDisplayName() string {
+	info := m.currentModelInfo()
+	if info.DisplayName != "" {
+		return info.DisplayName
+	}
+	return m.modelName
+}
+
+func (m model) displayNameForModel(modelID string) string {
+	if modelID == "" {
+		return m.modelDisplayName()
+	}
+	if m.llmDetails != nil {
+		if info, ok := m.llmDetails[modelID]; ok && info.DisplayName != "" {
+			return info.DisplayName
+		}
+	}
+	return modelID
 }
 
 func (m model) isMidSession() bool {
@@ -606,8 +637,9 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		savedEndpointName:    savedEndpointName,
 		apiKey:               apiKey,
 		workspaceRoot:        wd,
-		allowedBashPrefixes:  allowedBashPrefixes,
-		alwaysAllowTools:     alwaysAllowTools,
+		allowedBashPrefixes:        allowedBashPrefixes,
+		allowedBashPrefixesSession: make(map[string]bool),
+		alwaysAllowTools:           alwaysAllowTools,
 		alwaysAllowCommandPrefixes: alwaysAllowCommandPrefixes,
 		allowManageCursor:    0,
 		allowManageScroll:    0,
@@ -652,8 +684,12 @@ func (m model) initNewSession() model {
 }
 
 func (m model) toSession() *sessions.Session {
-	msgs := make([]llm.Message, len(m.messages))
-	copy(msgs, m.messages)
+	msgs := make([]llm.Message, 0, len(m.messages))
+	for _, msg := range m.messages {
+		if !msg.Internal {
+			msgs = append(msgs, msg)
+		}
+	}
 	return &sessions.Session{
 		ID:                m.sessionID,
 		Name:              m.sessionName,

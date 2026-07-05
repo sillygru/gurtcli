@@ -55,7 +55,8 @@ func RenderToolResult(t Theme, toolName, content string, width int) string {
 	lower := strings.ToLower(content)
 	isErr := strings.Contains(lower, "error") ||
 		strings.Contains(lower, "failed") ||
-		strings.Contains(lower, "timed out")
+		strings.Contains(lower, "timed out") ||
+		strings.Contains(lower, "denied")
 
 	icon := "✓"
 	resultStyle := t.ToolResultOK
@@ -91,9 +92,9 @@ func RenderUserMessage(t Theme, content string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// RenderAssistantLabel renders the assistant brand label.
-func RenderAssistantLabel(t Theme) string {
-	return t.AssistantLabel.Render("  gurt")
+// RenderAssistantLabel renders the assistant label with the model name.
+func RenderAssistantLabel(t Theme, name string) string {
+	return t.AssistantLabel.Render("  " + name)
 }
 
 // RenderAssistantContent renders assistant text with a subtle left guide.
@@ -114,23 +115,40 @@ func RenderAssistantContent(t Theme, content string) string {
 }
 
 // RenderPermissionPrompt renders the permission confirmation box content.
-func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int) string {
+// cursor is the index of the currently selected option.
+// bashPrefix is the command prefix to display in bash-related options, if any.
+func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string) string {
 	content := RenderToolCall(t, tc, width) + "\n\n"
 
-	if tc.Function.Name == "run_bash" {
-		return content +
-			t.PermPrompt.Render("  Allow this action?") + " " +
-			t.PermKey.Render("y") + t.Dim.Render("es  ") +
-			t.PermKey.Render("p") + t.Dim.Render("refix  ") +
-			t.PermKey.Render("a") + t.Dim.Render("ll  ") +
-			t.PermKey.Render("n") + t.Dim.Render("o")
+	var options []string
+	switch tc.Function.Name {
+	case "run_bash":
+		label := "Allow " + bashPrefix + " for this session"
+		labelPerm := "Always allow " + bashPrefix
+		options = []string{"Yes", label, labelPerm, "Allow everything for this session", "No"}
+	case "edit_file", "write_file":
+		options = []string{"Yes", "Allow every edit for this session", "Allow everything for this session", "No"}
+	case "delete_file":
+		options = []string{"Yes", "Allow deletion of files for this session", "Allow everything for this session", "No"}
+	default:
+		options = []string{"Yes", "Allow everything for this session", "No"}
 	}
 
-	return content +
-		t.PermPrompt.Render("  Allow this action?") + " " +
-		t.PermKey.Render("y") + t.Dim.Render("es  ") +
-		t.PermKey.Render("a") + t.Dim.Render("llow always  ") +
-		t.PermKey.Render("n") + t.Dim.Render("o")
+	b := new(strings.Builder)
+	b.WriteString(content)
+	b.WriteString(t.PermPrompt.Render("  Allow this action?"))
+	b.WriteString("\n\n")
+	for i, opt := range options {
+		prefix := "  "
+		style := t.Dim
+		if i == cursor {
+			prefix = "> "
+			style = t.Header
+		}
+		b.WriteString(style.Render(prefix + opt))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func renderToolHeader(accent ToolAccent) string {
@@ -320,6 +338,10 @@ func summarizeToolResult(toolName, content string) string {
 			first = first[:69] + "…"
 		}
 		return first
+	}
+
+	if strings.Contains(lower, "denied") {
+		return "Denied"
 	}
 
 	switch toolName {

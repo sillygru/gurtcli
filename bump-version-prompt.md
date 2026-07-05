@@ -3,7 +3,8 @@
 3: commit with the tag {new_version}
 the commit must have a title under 40 chars being a summary of every change done within the git diff
 the commit must have a description of every change done
-4: push changes with the tag included, tag being {new_version}
+4: git push origin main (pushes the commit)
+5: git push origin {new_version} (pushes the tag separately, triggers the release workflow)
 
 Good commit example (summary-style description):
 - title: "Add Gemini provider and auto-update" (36 chars)

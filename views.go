@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
+	"github.com/sillygru/gurtcli/tools"
 	"github.com/sillygru/gurtcli/ui"
 )
 
@@ -262,7 +264,7 @@ func (m model) helpWithStatus(help string) string {
 		providerLabel = "Custom"
 	}
 	helpRendered := m.theme.Dim.Render(help)
-	statusRendered := m.theme.StatusBar.Render(fmt.Sprintf("%s • %s • %s", m.sessionDisplayName(), providerLabel, m.modelName))
+	statusRendered := m.theme.StatusBar.Render(fmt.Sprintf("%s • %s • %s", m.sessionDisplayName(), providerLabel, m.modelDisplayName()))
 	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
 	if pad < 1 {
 		pad = 1
@@ -376,7 +378,7 @@ func (m model) allowManageView() string {
 func (m model) chatView() string {
 	var b strings.Builder
 
-	b.WriteString(m.theme.Brand.Render("  gurt"))
+	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
 	b.WriteString("\n")
 
 	if m.updateAvailable {
@@ -403,6 +405,13 @@ func (m model) chatView() string {
 	if m.pendingPerm != nil {
 		tc := m.pendingPerm.toolCall
 
+		bashPrefix := ""
+		if tc.Function.Name == "run_bash" {
+			if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+				bashPrefix = tools.BashCommandPrefix(cmd)
+			}
+		}
+
 		boxW := m.width - 2
 		if boxW < 30 {
 			boxW = 30
@@ -413,8 +422,8 @@ func (m model) chatView() string {
 			Width(boxW).
 			Padding(1, 1)
 
-		content := ui.RenderPermissionPrompt(m.theme, tc, m.width) + "\n\n" +
-			m.theme.InputPrompt.Render("  ❯ ") + m.chatInput.View()
+		content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix) + "\n" +
+			m.theme.Dim.Render("  ↑/↓ navigate • enter select")
 
 		b.WriteString(permBox.Render(content))
 	} else {
