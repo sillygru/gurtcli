@@ -197,16 +197,6 @@ func IsDestructive(name string) bool {
 	}
 }
 
-// IsAlwaysAllowed returns true if the tool should never prompt for permission.
-func IsAlwaysAllowed(name string) bool {
-	switch name {
-	case "read_file", "write_file", "edit_file":
-		return true
-	default:
-		return false
-	}
-}
-
 // DefaultSafeBashPrefixes returns the built-in set of safe (read-only) command prefixes.
 func DefaultSafeBashPrefixes() []string {
 	return []string{
@@ -238,16 +228,11 @@ func ExtractBashCommand(args json.RawMessage) (string, error) {
 }
 
 // IsSafeBashCommand checks if a command starts with an allowed prefix
-// (either from the built-in defaults or user-added extra prefixes).
+// from the provided list.
 func IsSafeBashCommand(command string, extraPrefixes []string) bool {
 	prefix := BashCommandPrefix(command)
 	if prefix == "" {
 		return false
-	}
-	for _, p := range DefaultSafeBashPrefixes() {
-		if prefix == p {
-			return true
-		}
 	}
 	for _, p := range extraPrefixes {
 		if prefix == p {

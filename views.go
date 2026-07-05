@@ -38,6 +38,8 @@ func (m model) View() string {
 		return m.sessionPickView()
 	case stateChat:
 		return m.chatView()
+	case stateAllowManage:
+		return m.allowManageView()
 	}
 	return ""
 }
@@ -275,6 +277,106 @@ func (m model) sessionPickView() string {
 	b.WriteString(m.sessionList.View())
 	b.WriteString("\n")
 	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter switch • esc back • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) allowManageView() string {
+	var b strings.Builder
+	b.WriteString(m.theme.Brand.Render("  gurt"))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Header.Render("Always-Allowed Tools & Commands"))
+	b.WriteString("\n\n")
+
+	toolCount := len(m.alwaysAllowTools)
+	cmdCount := len(m.alwaysAllowCommandPrefixes)
+
+	// Tool checker mode
+	if m.allowManageAdding && m.allowManageAddType == "tool" {
+		b.WriteString(m.theme.Divider.Render("-- Toggle Tools --"))
+		b.WriteString("\n\n")
+		for i, name := range m.allowToolCheckItems {
+			checked := false
+			for _, t := range m.alwaysAllowTools {
+				if t == name {
+					checked = true
+					break
+				}
+			}
+			box := "[ ]"
+			if checked {
+				box = "[x]"
+			}
+			prefix := "  "
+			style := m.theme.Dim
+			if i == m.allowToolCheckCursor {
+				prefix = "> "
+				style = m.theme.Header
+			}
+			b.WriteString(style.Render(prefix + box + " " + name))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter/space toggle • esc done"))
+		return b.String()
+	}
+
+	if toolCount == 0 && cmdCount == 0 && !m.allowManageAdding {
+		b.WriteString(m.theme.Dim.Render("  No items configured."))
+		b.WriteString("\n\n")
+	}
+
+	// Tools section
+	b.WriteString(m.theme.Divider.Render("-- Tools (exact match) --"))
+	b.WriteString("\n")
+	if toolCount > 0 {
+		for i, item := range m.alwaysAllowTools {
+			prefix := "  "
+			style := m.theme.Dim
+			if i == m.allowManageCursor {
+				prefix = "> "
+				style = m.theme.Header
+			}
+			b.WriteString(style.Render(prefix + item))
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString(m.theme.Dim.Render("  (none)"))
+		b.WriteString("\n")
+	}
+
+	// Command prefixes section
+	b.WriteString("\n")
+	b.WriteString(m.theme.Divider.Render("-- Command Prefixes (prefix match) --"))
+	b.WriteString("\n")
+	if cmdCount > 0 {
+		for i, item := range m.alwaysAllowCommandPrefixes {
+			idx := toolCount + i
+			prefix := "  "
+			style := m.theme.Dim
+			if idx == m.allowManageCursor {
+				prefix = "> "
+				style = m.theme.Header
+			}
+			b.WriteString(style.Render(prefix + item))
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString(m.theme.Dim.Render("  (none)"))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	if m.allowManageAdding && m.allowManageAddType == "command" {
+		b.WriteString("Add command prefix:\n\n")
+		b.WriteString(m.allowManageInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.Dim.Render("enter confirm • esc cancel"))
+	} else {
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+		b.WriteString("\n")
+		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • t tool • c command • d delete • esc back"))
+	}
 	return b.String()
 }
 

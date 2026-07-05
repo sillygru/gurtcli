@@ -99,6 +99,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateChat(msg)
 		case stateSessionPick:
 			return m.updateSessionPick(msg)
+		case stateAllowManage:
+			return m.updateAllowManage(msg)
 		}
 		return m, nil
 
@@ -854,6 +856,8 @@ func saveConfig(m model) error {
 	cfg.ReasoningVisible = m.reasoning.defaultVisible
 	cfg.ThinkingType = m.thinkingType
 	cfg.EffortLevel = m.effortLevel
+	cfg.AlwaysAllowTools = m.alwaysAllowTools
+	cfg.AlwaysAllowCommandPrefixes = m.alwaysAllowCommandPrefixes
 	return config.Save(cfg)
 }
 
@@ -1152,6 +1156,120 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, saveCmd
 }
 
+func toggleInList(list []string, item string) []string {
+	for i, s := range list {
+		if s == item {
+			return append(list[:i], list[i+1:]...)
+		}
+	}
+	return append(list, item)
+}
+
+func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	totalItems := len(m.alwaysAllowTools) + len(m.alwaysAllowCommandPrefixes)
+
+	// Tool check/uncheck mode
+	if m.allowManageAdding && m.allowManageAddType == "tool" {
+		switch msg.String() {
+		case "up":
+			if m.allowToolCheckCursor > 0 {
+				m.allowToolCheckCursor--
+			}
+		case "down":
+			if m.allowToolCheckCursor < len(m.allowToolCheckItems)-1 {
+				m.allowToolCheckCursor++
+			}
+		case "enter", " ":
+			name := m.allowToolCheckItems[m.allowToolCheckCursor]
+			m.alwaysAllowTools = toggleInList(m.alwaysAllowTools, name)
+		case "esc":
+			saveConfig(m)
+			m.allowManageAdding = false
+			m.allowManageAddType = ""
+			m.allowToolCheckItems = nil
+			m.allowToolCheckCursor = 0
+			m.chatInput.Focus()
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Command prefix add mode (text input)
+	if m.allowManageAdding && m.allowManageAddType == "command" {
+		var cmd tea.Cmd
+		m.allowManageInput, cmd = m.allowManageInput.Update(msg)
+
+		switch msg.String() {
+		case "enter":
+			val := strings.TrimSpace(m.allowManageInput.Value())
+			if val != "" {
+				m.alwaysAllowCommandPrefixes = append(m.alwaysAllowCommandPrefixes, val)
+				m.allowManageCursor = len(m.alwaysAllowTools) + len(m.alwaysAllowCommandPrefixes) - 1
+				saveConfig(m)
+			}
+			m.allowManageAdding = false
+			m.allowManageAddType = ""
+			m.allowManageInput.Reset()
+			m.chatInput.Focus()
+			return m, nil
+		case "esc":
+			m.allowManageAdding = false
+			m.allowManageAddType = ""
+			m.allowManageInput.Reset()
+			m.chatInput.Focus()
+			return m, nil
+		}
+		return m, cmd
+	}
+
+	// Main list navigation mode
+	switch msg.String() {
+	case "up":
+		if m.allowManageCursor > 0 {
+			m.allowManageCursor--
+		}
+	case "down":
+		if m.allowManageCursor < totalItems-1 {
+			m.allowManageCursor++
+		}
+	case "t":
+		m.allowManageAdding = true
+		m.allowManageAddType = "tool"
+		m.allowToolCheckItems = []string{"read_file", "write_file", "edit_file", "delete_file"}
+		m.allowToolCheckCursor = 0
+	case "c":
+		m.allowManageAdding = true
+		m.allowManageAddType = "command"
+		m.allowManageInput.Reset()
+		m.allowManageInput.Placeholder = "command prefix (e.g. npm, git push)"
+		m.allowManageInput.Focus()
+	case "d", "x", "backspace", "delete":
+		if totalItems == 0 {
+			return m, nil
+		}
+		if m.allowManageCursor < 0 || m.allowManageCursor >= totalItems {
+			return m, nil
+		}
+		if m.allowManageCursor < len(m.alwaysAllowTools) {
+			idx := m.allowManageCursor
+			m.alwaysAllowTools = append(m.alwaysAllowTools[:idx], m.alwaysAllowTools[idx+1:]...)
+		} else {
+			idx := m.allowManageCursor - len(m.alwaysAllowTools)
+			m.alwaysAllowCommandPrefixes = append(m.alwaysAllowCommandPrefixes[:idx], m.alwaysAllowCommandPrefixes[idx+1:]...)
+		}
+		if m.allowManageCursor >= len(m.alwaysAllowTools)+len(m.alwaysAllowCommandPrefixes) {
+			m.allowManageCursor = len(m.alwaysAllowTools) + len(m.alwaysAllowCommandPrefixes) - 1
+		}
+		if m.allowManageCursor < 0 {
+			m.allowManageCursor = 0
+		}
+		saveConfig(m)
+	case "esc":
+		return m.enterChatState(), nil
+	}
+	return m, nil
+}
+
 func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !m.updateCheckStarted {
 		m.updateCheckStarted = true
@@ -1318,21 +1436,34 @@ func (m model) allowBashPrefix(tc llm.ToolCall) model {
 
 func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 	for i, tc := range tcs {
-		// Always-allowed tools (read, write, edit) execute without prompting.
-		if tools.IsAlwaysAllowed(tc.Function.Name) {
-			m = m.executeTool(tc)
-			continue
+		// Check if tool name matches the always-allow tools list (exact match).
+		// Tools in this list are auto-allowed unconditionally.
+		if len(m.alwaysAllowTools) > 0 {
+			matched := false
+			for _, name := range m.alwaysAllowTools {
+				if tc.Function.Name == name {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				m = m.executeTool(tc)
+				continue
+			}
 		}
 
-		// For bash commands, auto-allow if the command prefix is in the safe list.
-		if tc.Function.Name == "run_bash" && !m.yolo && !m.alwaysAllowPerms {
+		// Check if bash command matches the always-allow command prefixes list (prefix match).
+		if !m.yolo && !m.alwaysAllowPerms && len(m.alwaysAllowCommandPrefixes) > 0 && tc.Function.Name == "run_bash" {
 			cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
 			if err == nil {
-				prefixes := make([]string, 0, len(m.allowedBashPrefixes))
-				for p := range m.allowedBashPrefixes {
-					prefixes = append(prefixes, p)
+				matched := false
+				for _, prefix := range m.alwaysAllowCommandPrefixes {
+					if strings.HasPrefix(cmd, prefix) {
+						matched = true
+						break
+					}
 				}
-				if tools.IsSafeBashCommand(cmd, prefixes) {
+				if matched {
 					m = m.executeTool(tc)
 					continue
 				}
@@ -1721,6 +1852,16 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m = m.resetToNewSession()
 		m = m.enterChatState()
 		return m, saveCmd
+
+	case "allow":
+		if m.isStreaming {
+			return m, nil
+		}
+		m.state = stateAllowManage
+		m.allowManageCursor = 0
+		m.allowManageAdding = false
+		m.allowManageInput.Reset()
+		return m, nil
 
 	case "update":
 		if m.isStreaming {

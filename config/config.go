@@ -66,6 +66,8 @@ type Config struct {
 	EffortLevel        string          `json:"effort_level,omitempty"`
 	MaxTokens          int             `json:"max_tokens,omitempty"`
 	AllowedBashPrefixes []string       `json:"allowed_bash_prefixes,omitempty"`
+	AlwaysAllowTools          []string `json:"always_allow_tools,omitempty"`
+	AlwaysAllowCommandPrefixes []string `json:"always_allow_command_prefixes,omitempty"`
 
 	UpdateVersion    string `json:"update_version,omitempty"`
 	UpdateTempBinary string `json:"update_temp_binary,omitempty"`

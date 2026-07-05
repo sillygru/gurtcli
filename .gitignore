@@ -3,6 +3,7 @@ gurt
 /tmp/
 /dist/
 npm/bin/
+temp
 
 # IDE
 .idea/

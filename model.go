@@ -16,6 +16,7 @@ import (
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
+	"github.com/sillygru/gurtcli/tools"
 	"github.com/sillygru/gurtcli/ui"
 )
 
@@ -39,6 +40,7 @@ const (
 	stateManualModel
 	stateChat
 	stateSessionPick
+	stateAllowManage
 )
 
 const (
@@ -181,11 +183,19 @@ type model struct {
 	theme            ui.Theme
 	width            int
 	height           int
-	workspaceRoot      string
-	alwaysAllowPerms   bool
-	allowedBashPrefixes map[string]bool
-	toolCallCycle      int
-	pendingPerm        *pendingPerm
+	workspaceRoot        string
+	alwaysAllowPerms     bool
+	allowedBashPrefixes  map[string]bool
+	alwaysAllowTools           []string
+	alwaysAllowCommandPrefixes []string
+	allowManageCursor          int
+	allowManageInput           textinput.Model
+	allowManageAdding          bool
+	allowManageAddType         string
+	allowToolCheckItems        []string
+	allowToolCheckCursor       int
+	toolCallCycle        int
+	pendingPerm          *pendingPerm
 
 	provider  string
 	modelName string
@@ -332,6 +342,7 @@ var slashCommands = []slashCommand{
 	{name: "thinking", description: "Set thinking type (adaptive/enabled/disabled)"},
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 	{name: "update", description: "Update to the latest version"},
+	{name: "allow", description: "Manage always-allowed tools and commands"},
 }
 
 func (m model) isMidSession() bool {
@@ -506,6 +517,22 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		}
 	}
 
+	alwaysAllowTools := []string{}
+	alwaysAllowCommandPrefixes := []string{}
+	if cfg == nil {
+		// Fresh install: populate defaults so users can see and remove them.
+		alwaysAllowTools = []string{"read_file", "write_file", "edit_file"}
+		alwaysAllowCommandPrefixes = tools.DefaultSafeBashPrefixes()
+	} else {
+		alwaysAllowTools = append(alwaysAllowTools, cfg.AlwaysAllowTools...)
+		alwaysAllowCommandPrefixes = append(alwaysAllowCommandPrefixes, cfg.AlwaysAllowCommandPrefixes...)
+	}
+
+	allowIn := textinput.New()
+	allowIn.Placeholder = "command prefix (e.g. npm, git push)"
+	allowIn.Width = 60
+	allowIn.CharLimit = 200
+
 	m := model{
 		state:                startState,
 		yolo:                 yolo,
@@ -519,6 +546,9 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		apiKey:               apiKey,
 		workspaceRoot:        wd,
 		allowedBashPrefixes:  allowedBashPrefixes,
+		alwaysAllowTools:     alwaysAllowTools,
+		alwaysAllowCommandPrefixes: alwaysAllowCommandPrefixes,
+		allowManageInput:     allowIn,
 		providerList:         pl,
 		modelList:            ml,
 		sessionList:          sl,
