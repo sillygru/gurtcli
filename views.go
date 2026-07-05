@@ -284,15 +284,10 @@ func (m model) allowManageView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString(m.theme.Header.Render("Always-Allowed Tools & Commands"))
-	b.WriteString("\n\n")
-
-	toolCount := len(m.alwaysAllowTools)
-	cmdCount := len(m.alwaysAllowCommandPrefixes)
 
 	// Tool checker mode
 	if m.allowManageAdding && m.allowManageAddType == "tool" {
-		b.WriteString(m.theme.Divider.Render("-- Toggle Tools --"))
+		b.WriteString(m.theme.Header.Render("Toggle Always-Allowed Tools"))
 		b.WriteString("\n\n")
 		for i, name := range m.allowToolCheckItems {
 			checked := false
@@ -320,63 +315,61 @@ func (m model) allowManageView() string {
 		return b.String()
 	}
 
-	if toolCount == 0 && cmdCount == 0 && !m.allowManageAdding {
-		b.WriteString(m.theme.Dim.Render("  No items configured."))
-		b.WriteString("\n\n")
-	}
-
-	// Tools section
-	b.WriteString(m.theme.Divider.Render("-- Tools (exact match) --"))
-	b.WriteString("\n")
-	if toolCount > 0 {
-		for i, item := range m.alwaysAllowTools {
-			prefix := "  "
-			style := m.theme.Dim
-			if i == m.allowManageCursor {
-				prefix = "> "
-				style = m.theme.Header
-			}
-			b.WriteString(style.Render(prefix + item))
-			b.WriteString("\n")
-		}
-	} else {
-		b.WriteString(m.theme.Dim.Render("  (none)"))
-		b.WriteString("\n")
-	}
-
-	// Command prefixes section
-	b.WriteString("\n")
-	b.WriteString(m.theme.Divider.Render("-- Command Prefixes (prefix match) --"))
-	b.WriteString("\n")
-	if cmdCount > 0 {
-		for i, item := range m.alwaysAllowCommandPrefixes {
-			idx := toolCount + i
-			prefix := "  "
-			style := m.theme.Dim
-			if idx == m.allowManageCursor {
-				prefix = "> "
-				style = m.theme.Header
-			}
-			b.WriteString(style.Render(prefix + item))
-			b.WriteString("\n")
-		}
-	} else {
-		b.WriteString(m.theme.Dim.Render("  (none)"))
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n")
-
+	// Command prefix add mode (text input)
 	if m.allowManageAdding && m.allowManageAddType == "command" {
-		b.WriteString("Add command prefix:\n\n")
+		b.WriteString(m.theme.Header.Render("Add Command Prefix"))
+		b.WriteString("\n\n")
 		b.WriteString(m.allowManageInput.View())
 		b.WriteString("\n\n")
 		b.WriteString(m.theme.Dim.Render("enter confirm • esc cancel"))
-	} else {
-		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
-		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • t tool • c command • d delete • esc back"))
+		return b.String()
 	}
+
+	// Multi-column grid view (row-major, fills rows then wraps)
+	cmds := m.alwaysAllowCommandPrefixes
+	if len(cmds) == 0 {
+		b.WriteString(m.theme.Dim.Render("  No command prefixes configured."))
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+	} else {
+		numRows, numCols, colWidth := m.cmdGridDimensions()
+		if numCols < 1 {
+			numCols = 1
+		}
+
+		start := m.allowManageScroll
+		for row := 0; row < numRows; row++ {
+			hasItems := false
+			for col := 0; col < numCols; col++ {
+				idx := start + row*numCols + col
+				if idx >= len(cmds) {
+					continue
+				}
+				hasItems = true
+				indicator := "  "
+				if idx == m.allowManageCursor {
+					indicator = "> "
+				}
+				cell := indicator + cmds[idx]
+				cell = fmt.Sprintf("%-*s", colWidth, cell)
+				if idx == m.allowManageCursor {
+					b.WriteString(m.theme.Header.Render(cell))
+				} else {
+					b.WriteString(m.theme.Dim.Render(cell))
+				}
+			}
+			if hasItems {
+				b.WriteString("\n")
+			}
+		}
+		divWidth := numCols * colWidth
+		if divWidth < 40 {
+			divWidth = 40
+		}
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", divWidth)))
+	}
+	b.WriteString("\n")
+	b.WriteString(m.theme.Dim.Render("↑/↓←/→ navigate • t tool • c command • d/x delete • esc back"))
 	return b.String()
 }
 

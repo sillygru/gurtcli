@@ -189,7 +189,8 @@ type model struct {
 	alwaysAllowTools           []string
 	alwaysAllowCommandPrefixes []string
 	allowManageCursor          int
-	allowManageInput           textinput.Model
+	allowManageScroll          int
+	allowManageInput          textinput.Model
 	allowManageAdding          bool
 	allowManageAddType         string
 	allowToolCheckItems        []string
@@ -255,6 +256,57 @@ type model struct {
 
 	llmDetails      map[string]llm.ModelInfo
 	llmDetailsReady bool
+}
+
+func (m model) cmdGridDimensions() (numRows, numCols, colWidth int) {
+	cmds := m.alwaysAllowCommandPrefixes
+	if len(cmds) == 0 {
+		return 0, 0, 0
+	}
+
+	availableWidth := m.width - 6
+	if availableWidth < 8 {
+		availableWidth = 8
+	}
+
+	// Reserve space: header (gurt + blank line) + footer (divider + help)
+	availableHeight := m.height - 4
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+
+	maxItemLen := 0
+	for _, c := range cmds {
+		if len(c) > maxItemLen {
+			maxItemLen = len(c)
+		}
+	}
+
+	// Each cell: indicator(2) + command text + spacing(2)
+	colWidth = maxItemLen + 4
+	if colWidth < 14 {
+		colWidth = 14
+	}
+
+	// How many columns fit horizontally
+	numCols = availableWidth / colWidth
+	if numCols < 1 {
+		numCols = 1
+	}
+
+	// How many rows needed for all commands
+	numRows = (len(cmds) + numCols - 1) / numCols
+
+	// Cap rows to available terminal height; recalculate columns if needed
+	if numRows > availableHeight {
+		numRows = availableHeight
+		numCols = (len(cmds) + numRows - 1) / numRows
+		if numCols < 1 {
+			numCols = 1
+		}
+	}
+
+	return numRows, numCols, colWidth
 }
 
 func (m model) enterChatState() model {
@@ -548,6 +600,8 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		allowedBashPrefixes:  allowedBashPrefixes,
 		alwaysAllowTools:     alwaysAllowTools,
 		alwaysAllowCommandPrefixes: alwaysAllowCommandPrefixes,
+		allowManageCursor:    0,
+		allowManageScroll:    0,
 		allowManageInput:     allowIn,
 		providerList:         pl,
 		modelList:            ml,
@@ -658,7 +712,7 @@ func (m model) persistSessionCmd() tea.Cmd {
 
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal))
+	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal), tea.SetWindowTitle("gurt"))
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
 	}

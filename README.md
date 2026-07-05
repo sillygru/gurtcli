@@ -46,10 +46,11 @@ Type `/exit` or press `ctrl+c` to quit.
 
 ```
 --model <name>                  skip model picker
---provider <name>               skip provider picker (openai, anthropic)
+--provider <name>               skip provider picker (openai, anthropic, gemini)
 --yolo                          skip all permission prompts
 --dangerously-skip-permissions  skip all permission prompts
 --reconfigure                   force provider and model setup
+--force-local                   use embedded model details instead of fetching from GitHub
 --version                       print version and exit
 ```
 
@@ -66,6 +67,8 @@ Type `/exit` or press `ctrl+c` to quit.
 | `/reasoning` | Toggle reasoning visibility |
 | `/thinking` | Set thinking type (adaptive/enabled/disabled) |
 | `/effort` | Set effort level (low/medium/high/xhigh/max) |
+| `/allow` | Manage always-allowed tools and commands |
+| `/update` | Update to the latest version |
 | `/exit` | Quit the application |
 
 Type `/` in chat to see autocomplete suggestions for all commands.
@@ -82,7 +85,7 @@ Session data is stored as JSON files and is portable across machines.
 
 ## Provider & model setup
 
-Supports **OpenAI**, **Anthropic**, and any **OpenAI-compatible endpoint**.
+Supports **OpenAI**, **Anthropic**, **Google Gemini**, and any **OpenAI-compatible endpoint**.
 
 First run shows a provider picker. Choose one and enter your API key. The key is saved to your OS keychain — no env vars or config file secrets.
 
@@ -123,14 +126,36 @@ Destructive operations (write, edit, delete, run) prompt for confirmation:
 
 ```
 ❯ y
-(y)es / (n)o / allow for (a)ll
+(y)es / (n)o / (p)refix / allow for (a)ll
 ```
 
 - `y` — allow once
 - `n` — deny once
+- `p` — allow this command prefix (e.g. "npm") for the rest of the session and save it to config
 - `a` — allow for the rest of this session
 
 Use `--yolo` or `--dangerously-skip-permissions` to skip all prompts.
+
+### Always-allowed tools and commands
+
+By default, these tools are always allowed without prompting:
+- `read_file`
+- `write_file`
+- `edit_file`
+
+And these command prefixes are always allowed:
+- `cat`, `ls`, `grep`, `find`, `head`, `tail`, `echo`, `pwd`, etc.
+
+Manage them with `/allow`.
+
+## Automatic Updates
+
+Gurt automatically checks for updates in the background when you start a chat session. If an update is available, you'll see a notification.
+
+To update manually:
+```
+/update
+```
 
 ## AGENTS.md
 

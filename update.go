@@ -390,7 +390,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionTitleGeneratedMsg:
 		if msg.title != "" && m.sessionName == "" {
 			m.sessionName = msg.title
-			return m, m.persistSessionCmd()
+			return m, tea.Batch(m.persistSessionCmd(), tea.SetWindowTitle("gurt | "+m.sessionName))
 		}
 		return m, nil
 
@@ -1153,7 +1153,11 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	m = m.applySession(loaded)
 	m = m.enterChatState()
-	return m, saveCmd
+	title := "gurt"
+	if m.sessionName != "" {
+		title = "gurt | " + m.sessionName
+	}
+	return m, tea.Batch(saveCmd, tea.SetWindowTitle(title))
 }
 
 func toggleInList(list []string, item string) []string {
@@ -1166,8 +1170,6 @@ func toggleInList(list []string, item string) []string {
 }
 
 func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	totalItems := len(m.alwaysAllowTools) + len(m.alwaysAllowCommandPrefixes)
-
 	// Tool check/uncheck mode
 	if m.allowManageAdding && m.allowManageAddType == "tool" {
 		switch msg.String() {
@@ -1204,7 +1206,7 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			val := strings.TrimSpace(m.allowManageInput.Value())
 			if val != "" {
 				m.alwaysAllowCommandPrefixes = append(m.alwaysAllowCommandPrefixes, val)
-				m.allowManageCursor = len(m.alwaysAllowTools) + len(m.alwaysAllowCommandPrefixes) - 1
+				m.allowManageCursor = len(m.alwaysAllowCommandPrefixes) - 1
 				saveConfig(m)
 			}
 			m.allowManageAdding = false
@@ -1222,14 +1224,35 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Main list navigation mode
+	// Main grid navigation (row-major, fills rows then wraps)
+	cmds := m.alwaysAllowCommandPrefixes
+	if len(cmds) == 0 {
+		if msg.String() == "esc" {
+			return m.enterChatState(), nil
+		}
+		return m, nil
+	}
+
+	numRows, numCols, _ := m.cmdGridDimensions()
+	if numCols < 1 {
+		numCols = 1
+	}
+
 	switch msg.String() {
 	case "up":
-		if m.allowManageCursor > 0 {
-			m.allowManageCursor--
+		if m.allowManageCursor >= numCols {
+			m.allowManageCursor -= numCols
 		}
 	case "down":
-		if m.allowManageCursor < totalItems-1 {
+		if m.allowManageCursor+numCols < len(cmds) {
+			m.allowManageCursor += numCols
+		}
+	case "left":
+		if m.allowManageCursor%numCols != 0 {
+			m.allowManageCursor--
+		}
+	case "right":
+		if m.allowManageCursor%numCols != numCols-1 && m.allowManageCursor+1 < len(cmds) {
 			m.allowManageCursor++
 		}
 	case "t":
@@ -1237,36 +1260,54 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.allowManageAddType = "tool"
 		m.allowToolCheckItems = []string{"read_file", "write_file", "edit_file", "delete_file"}
 		m.allowToolCheckCursor = 0
+		return m, nil
 	case "c":
 		m.allowManageAdding = true
 		m.allowManageAddType = "command"
 		m.allowManageInput.Reset()
 		m.allowManageInput.Placeholder = "command prefix (e.g. npm, git push)"
 		m.allowManageInput.Focus()
-	case "d", "x", "backspace", "delete":
-		if totalItems == 0 {
-			return m, nil
+		return m, nil
+	case "d", "x":
+		if m.allowManageCursor >= 0 && m.allowManageCursor < len(cmds) {
+			m.alwaysAllowCommandPrefixes = append(cmds[:m.allowManageCursor], cmds[m.allowManageCursor+1:]...)
+			if m.allowManageCursor >= len(m.alwaysAllowCommandPrefixes) {
+				m.allowManageCursor = len(m.alwaysAllowCommandPrefixes) - 1
+			}
+			if m.allowManageCursor < 0 {
+				m.allowManageCursor = 0
+			}
+			saveConfig(m)
 		}
-		if m.allowManageCursor < 0 || m.allowManageCursor >= totalItems {
-			return m, nil
-		}
-		if m.allowManageCursor < len(m.alwaysAllowTools) {
-			idx := m.allowManageCursor
-			m.alwaysAllowTools = append(m.alwaysAllowTools[:idx], m.alwaysAllowTools[idx+1:]...)
-		} else {
-			idx := m.allowManageCursor - len(m.alwaysAllowTools)
-			m.alwaysAllowCommandPrefixes = append(m.alwaysAllowCommandPrefixes[:idx], m.alwaysAllowCommandPrefixes[idx+1:]...)
-		}
-		if m.allowManageCursor >= len(m.alwaysAllowTools)+len(m.alwaysAllowCommandPrefixes) {
-			m.allowManageCursor = len(m.alwaysAllowTools) + len(m.alwaysAllowCommandPrefixes) - 1
-		}
-		if m.allowManageCursor < 0 {
-			m.allowManageCursor = 0
-		}
-		saveConfig(m)
+		return m, nil
 	case "esc":
 		return m.enterChatState(), nil
 	}
+
+	// Adjust scroll to keep cursor row in view
+	cursorRow := m.allowManageCursor / numCols
+	firstRow := m.allowManageScroll / numCols
+	if cursorRow < firstRow {
+		m.allowManageScroll = cursorRow * numCols
+	}
+	if cursorRow >= firstRow+numRows {
+		m.allowManageScroll = (cursorRow - numRows + 1) * numCols
+	}
+
+	// Clamp scroll
+	totalRows := (len(m.alwaysAllowCommandPrefixes) + numCols - 1) / numCols
+	maxScrollRow := totalRows - numRows
+	if maxScrollRow < 0 {
+		maxScrollRow = 0
+	}
+	maxScroll := maxScrollRow * numCols
+	if m.allowManageScroll > maxScroll {
+		m.allowManageScroll = maxScroll
+	}
+	if m.allowManageScroll < 0 {
+		m.allowManageScroll = 0
+	}
+
 	return m, nil
 }
 
@@ -1851,7 +1892,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m = m.resetToNewSession()
 		m = m.enterChatState()
-		return m, saveCmd
+		return m, tea.Batch(saveCmd, tea.SetWindowTitle("gurt"))
 
 	case "allow":
 		if m.isStreaming {
@@ -1859,6 +1900,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.state = stateAllowManage
 		m.allowManageCursor = 0
+		m.allowManageScroll = 0
 		m.allowManageAdding = false
 		m.allowManageInput.Reset()
 		return m, nil
