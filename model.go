@@ -16,6 +16,7 @@ import (
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
+	"github.com/sillygru/gurtcli/telemetry"
 	"github.com/sillygru/gurtcli/tools"
 	"github.com/sillygru/gurtcli/ui"
 )
@@ -250,6 +251,7 @@ type model struct {
 	workingMsgIndex   int
 	workingSpinnerIdx int
 
+	telemetryEnabled   bool
 	updateAvailable    bool
 	latestVersion      string
 	updateCheckStarted bool
@@ -395,6 +397,7 @@ var slashCommands = []slashCommand{
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 	{name: "update", description: "Update to the latest version"},
 	{name: "allow", description: "Manage always-allowed tools and commands"},
+	{name: "telemetry", description: "Toggle anonymous usage telemetry"},
 }
 
 func (m model) isMidSession() bool {
@@ -517,6 +520,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	apiKey := ""
 	savedEndpointName := ""
 
+	telemetryEnabled := true
+	if cfg != nil && cfg.TelemetryEnabled != nil {
+		telemetryEnabled = *cfg.TelemetryEnabled
+	}
+
 	if cfg != nil && !reconfigure {
 		if provider == "" {
 			provider = cfg.Provider
@@ -587,6 +595,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 
 	m := model{
 		state:                startState,
+		telemetryEnabled:     telemetryEnabled,
 		yolo:                 yolo,
 		forceLocal:           forceLocal,
 		reconfigure:          reconfigure,
@@ -713,6 +722,9 @@ func (m model) persistSessionCmd() tea.Cmd {
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal), tea.SetWindowTitle("gurt"))
+	if m.telemetryEnabled {
+		cmds = append(cmds, sendTelemetryCmd("startup"))
+	}
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
 	}
@@ -735,6 +747,18 @@ func prefetchLLMDetailsCmd(forceLocal bool) tea.Cmd {
 
 		llm.LogDebug("prefetchLLMDetailsCmd: loaded %d model details", len(details))
 		return llmDetailsLoadedMsg{details: details}
+	}
+}
+
+func sendTelemetryCmd(eventType string) tea.Cmd {
+	return func() tea.Msg {
+		cfgDir, err := config.Dir()
+		if err != nil {
+			return nil
+		}
+		id := telemetry.LoadOrCreateUUID(cfgDir)
+		telemetry.SendEvent(id, Version, eventType, TelemetrySecret)
+		return nil
 	}
 }
 

@@ -198,6 +198,12 @@ This tool does one thing: takes a natural language request and turns it into fil
 
 Adding features is easy. The hard part is stopping.
 
+## Telemetry
+
+Gurt collects anonymous usage data on startup to count active installs. No personal data is collected — no names, emails, IPs, file paths, or system info beyond OS and architecture. The data is scoped to a randomly generated UUID stored at `~/.config/gurtcli/telemetry-id` that is never linked to your identity.
+
+Telemetry is **enabled by default** but can be toggled at any time with the `/telemetry` command. Your preference is saved to the config file.
+
 ## License
 
 MIT

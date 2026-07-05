@@ -858,6 +858,7 @@ func saveConfig(m model) error {
 	cfg.EffortLevel = m.effortLevel
 	cfg.AlwaysAllowTools = m.alwaysAllowTools
 	cfg.AlwaysAllowCommandPrefixes = m.alwaysAllowCommandPrefixes
+	cfg.TelemetryEnabled = &m.telemetryEnabled
 	return config.Save(cfg)
 }
 
@@ -1855,6 +1856,23 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, llm.Message{
 			Role:    "assistant",
 			Content: b.String(),
+		})
+		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case "telemetry":
+		oldVal := m.telemetryEnabled
+		m.telemetryEnabled = !oldVal
+		saveConfig(m)
+		status := "enabled"
+		if !m.telemetryEnabled {
+			status = "disabled"
+		}
+		sendTelemetryCmd("telemetry_toggle")()
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Telemetry %s (was %s). No personal data is collected. See README for details.", status, map[bool]string{true: "enabled", false: "disabled"}[oldVal]),
 		})
 		m.chatViewport.SetContent(buildChatContent(m))
 		m.chatViewport.GotoBottom()

@@ -208,3 +208,49 @@ func TestOverwriteSave(t *testing.T) {
 		t.Errorf("Model = %q, want %q", loaded.Model, "claude-sonnet-5")
 	}
 }
+
+func TestTelemetryEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	configDirOverride = tmp
+	defer func() { configDirOverride = "" }()
+
+	enabled := true
+	cfg := &Config{TelemetryEnabled: &enabled}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if loaded.TelemetryEnabled == nil {
+		t.Fatal("TelemetryEnabled is nil")
+	}
+	if !*loaded.TelemetryEnabled {
+		t.Error("TelemetryEnabled = false, want true")
+	}
+}
+
+func TestTelemetryDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	configDirOverride = tmp
+	defer func() { configDirOverride = "" }()
+
+	enabled := false
+	cfg := &Config{TelemetryEnabled: &enabled}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if loaded.TelemetryEnabled == nil {
+		t.Fatal("TelemetryEnabled is nil")
+	}
+	if *loaded.TelemetryEnabled {
+		t.Error("TelemetryEnabled = true, want false")
+	}
+}

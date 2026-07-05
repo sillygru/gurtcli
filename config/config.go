@@ -67,6 +67,7 @@ type Config struct {
 	MaxTokens          int             `json:"max_tokens,omitempty"`
 	AllowedBashPrefixes []string       `json:"allowed_bash_prefixes,omitempty"`
 	AlwaysAllowTools          []string `json:"always_allow_tools,omitempty"`
+	TelemetryEnabled        *bool    `json:"telemetry_enabled,omitempty"`
 	AlwaysAllowCommandPrefixes []string `json:"always_allow_command_prefixes,omitempty"`
 
 	UpdateVersion    string `json:"update_version,omitempty"`

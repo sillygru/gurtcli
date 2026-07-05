@@ -23,6 +23,7 @@ builds:
       - -s -w
       - -X main.Version={{ .Version }}
       - -X main.CommitCount={{ .ShortCommit }}
+      - "-X main.TelemetrySecret={{ .Env.TELEMETRY_SECRET }}"
 
 archives:
   - formats:
