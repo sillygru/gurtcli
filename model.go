@@ -102,17 +102,12 @@ func (m modelItem) Description() string {
 }
 
 type sessionItem struct {
-	meta   sessions.Metadata
-	active bool
+	meta sessions.Metadata
 }
 
 func (s sessionItem) FilterValue() string { return s.meta.Name + " " + s.meta.ID }
 func (s sessionItem) Title() string {
-	prefix := "  "
-	if s.active {
-		prefix = "• "
-	}
-	return prefix + s.meta.Name
+	return "  " + s.meta.Name
 }
 func (s sessionItem) Description() string {
 	return fmt.Sprintf("%s • %d messages", s.meta.UpdatedAt.Format("Jan 2 15:04"), s.meta.MessageCount)
@@ -626,9 +621,6 @@ func (m model) persistSessionCmd() tea.Cmd {
 	return func() tea.Msg {
 		if err := sessions.Save(sess); err != nil {
 			return sessionSaveErrorMsg{err: err}
-		}
-		if err := sessions.SetActiveSession(sess.WorkspaceRoot, sess.ID); err != nil {
-			return sessionSaveErrorMsg{err: fmt.Errorf("setting active session: %w", err)}
 		}
 		return nil
 	}

@@ -1,36 +1,141 @@
 package sessions
 
 import (
-	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sillygru/gurtcli/llm"
+	_ "modernc.org/sqlite"
 )
 
-// Session represents a saved chat session.
-type Session struct {
-	ID               string       `json:"id"`
-	Name             string       `json:"name"`
-	CreatedAt        time.Time    `json:"created_at"`
-	UpdatedAt        time.Time    `json:"updated_at"`
-	Provider         string       `json:"provider"`
-	Model            string       `json:"model"`
-	CustomURL        string       `json:"custom_url,omitempty"`
-	SavedEndpointName string      `json:"saved_endpoint_name,omitempty"`
-	ThinkingType     string       `json:"thinking_type,omitempty"`
-	EffortLevel      string       `json:"effort_level,omitempty"`
-	ReasoningVisible bool         `json:"reasoning_visible,omitempty"`
-	WorkspaceRoot    string       `json:"workspace_root"`
-	Messages         []llm.Message `json:"messages"`
+var (
+	mu          sync.Mutex
+	dbConn      *sql.DB
+	dbDir       string
+	dirOverride string
+)
+
+func SetDirForTesting(dir string) {
+	mu.Lock()
+	defer mu.Unlock()
+	dirOverride = dir
 }
 
-// Metadata is a lightweight summary for listing sessions without loading all messages.
+func Close() {
+	mu.Lock()
+	defer mu.Unlock()
+	if dbConn != nil {
+		dbConn.Close()
+		dbConn = nil
+		dbDir = ""
+	}
+}
+
+func configDir() (string, error) {
+	if dirOverride != "" {
+		return dirOverride, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "gurtcli"), nil
+}
+
+func ensureDB() (*sql.DB, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	cfgDir, err := configDir()
+	if err != nil {
+		return nil, fmt.Errorf("config dir: %w", err)
+	}
+
+	if dbConn != nil && dbDir == cfgDir {
+		return dbConn, nil
+	}
+
+	if dbConn != nil {
+		dbConn.Close()
+		dbConn = nil
+	}
+
+	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+		return nil, fmt.Errorf("creating config dir: %w", err)
+	}
+	path := filepath.Join(cfgDir, "sessions.db")
+	dbConn, err = sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("opening db: %w", err)
+	}
+	dbDir = cfgDir
+
+	if err := migrate(dbConn); err != nil {
+		dbConn.Close()
+		dbConn = nil
+		return nil, err
+	}
+
+	removeOldSessionsDir(cfgDir)
+
+	return dbConn, nil
+}
+
+func removeOldSessionsDir(cfgDir string) {
+	old := filepath.Join(cfgDir, "sessions")
+	if _, err := os.Stat(old); err == nil {
+		os.RemoveAll(old)
+	}
+}
+
+func migrate(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			custom_url TEXT NOT NULL DEFAULT '',
+			saved_endpoint_name TEXT NOT NULL DEFAULT '',
+			thinking_type TEXT NOT NULL DEFAULT '',
+			effort_level TEXT NOT NULL DEFAULT '',
+			reasoning_visible INTEGER NOT NULL DEFAULT 0,
+			workspace_root TEXT NOT NULL,
+			messages TEXT NOT NULL DEFAULT '[]'
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_root);
+	`)
+	if err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
+}
+
+type Session struct {
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	Provider          string        `json:"provider"`
+	Model             string        `json:"model"`
+	CustomURL         string        `json:"custom_url,omitempty"`
+	SavedEndpointName string        `json:"saved_endpoint_name,omitempty"`
+	ThinkingType      string        `json:"thinking_type,omitempty"`
+	EffortLevel       string        `json:"effort_level,omitempty"`
+	ReasoningVisible  bool          `json:"reasoning_visible,omitempty"`
+	WorkspaceRoot     string        `json:"workspace_root"`
+	Messages          []llm.Message `json:"messages"`
+}
+
 type Metadata struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
@@ -42,53 +147,14 @@ type Metadata struct {
 	MessageCount  int       `json:"message_count"`
 }
 
-var dirOverride string
-
-// SetDirForTesting overrides the sessions directory (for tests only).
-func SetDirForTesting(dir string) {
-	dirOverride = dir
-}
-
-// sessionsDir returns the sessions directory path.
-func sessionsDir() (string, error) {
-	if dirOverride != "" {
-		return dirOverride, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("getting home dir: %w", err)
-	}
-	return filepath.Join(home, ".config", "gurtcli", "sessions"), nil
-}
-
-// workspaceHash returns a short hash of the workspace root for directory scoping.
-func workspaceHash(workspace string) string {
-	h := sha256.Sum256([]byte(workspace))
-	return fmt.Sprintf("%x", h[:8])
-}
-
-// workspaceDir returns the session directory for a specific workspace.
-func workspaceDir(workspace string) (string, error) {
-	base, err := sessionsDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, workspaceHash(workspace)), nil
-}
-
-// GenerateID creates a new unique session ID.
 func GenerateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-// Save persists a session to disk. Creates the directory if needed.
 func Save(s *Session) error {
-	dir, err := workspaceDir(s.WorkspaceRoot)
+	db, err := ensureDB()
 	if err != nil {
-		return fmt.Errorf("getting workspace dir: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("creating sessions dir: %w", err)
+		return fmt.Errorf("session db: %w", err)
 	}
 
 	s.UpdatedAt = time.Now()
@@ -96,84 +162,110 @@ func Save(s *Session) error {
 		s.Name = generateName(s.Messages)
 	}
 
-	path := filepath.Join(dir, s.ID+".json")
-	f, err := os.Create(path)
+	msgs, err := json.Marshal(s.Messages)
 	if err != nil {
-		return fmt.Errorf("creating session file: %w", err)
+		return fmt.Errorf("encoding messages: %w", err)
 	}
-	defer f.Close()
 
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(s); err != nil {
-		return fmt.Errorf("encoding session: %w", err)
+	_, err = db.Exec(`
+		INSERT OR REPLACE INTO sessions
+			(id, name, created_at, updated_at, provider, model, custom_url,
+			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
+			 workspace_root, messages)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		s.ID, s.Name,
+		s.CreatedAt.UTC().Format(time.RFC3339),
+		s.UpdatedAt.UTC().Format(time.RFC3339),
+		s.Provider, s.Model, s.CustomURL,
+		s.SavedEndpointName, s.ThinkingType, s.EffortLevel,
+		boolToInt(s.ReasoningVisible),
+		s.WorkspaceRoot, string(msgs),
+	)
+	if err != nil {
+		return fmt.Errorf("saving session: %w", err)
 	}
 	return nil
 }
 
-// Load reads a session from disk by ID and workspace.
 func Load(workspace, id string) (*Session, error) {
-	dir, err := workspaceDir(workspace)
+	db, err := ensureDB()
 	if err != nil {
-		return nil, fmt.Errorf("getting workspace dir: %w", err)
+		return nil, fmt.Errorf("session db: %w", err)
 	}
 
-	path := filepath.Join(dir, id+".json")
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening session: %w", err)
-	}
-	defer f.Close()
+	row := db.QueryRow(`
+		SELECT id, name, created_at, updated_at, provider, model, custom_url,
+		       saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
+		       workspace_root, messages
+		FROM sessions WHERE id = ? AND workspace_root = ?
+	`, id, workspace)
 
 	var s Session
-	if err := json.NewDecoder(f).Decode(&s); err != nil {
-		return nil, fmt.Errorf("decoding session: %w", err)
+	var createdAt, updatedAt string
+	var msgsJSON string
+	var reasoningVisible int
+
+	if err := row.Scan(
+		&s.ID, &s.Name, &createdAt, &updatedAt,
+		&s.Provider, &s.Model, &s.CustomURL,
+		&s.SavedEndpointName, &s.ThinkingType, &s.EffortLevel,
+		&reasoningVisible, &s.WorkspaceRoot, &msgsJSON,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("session not found: %s", id)
+		}
+		return nil, fmt.Errorf("loading session: %w", err)
 	}
+
+	s.ReasoningVisible = reasoningVisible != 0
+
+	s.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("parsing created_at: %w", err)
+	}
+	s.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parsing updated_at: %w", err)
+	}
+
+	if err := json.Unmarshal([]byte(msgsJSON), &s.Messages); err != nil {
+		return nil, fmt.Errorf("decoding messages: %w", err)
+	}
+
 	return &s, nil
 }
 
-// List returns metadata for all sessions in a workspace, sorted by most recently updated.
 func List(workspace string) ([]Metadata, error) {
-	dir, err := workspaceDir(workspace)
+	db, err := ensureDB()
 	if err != nil {
-		return nil, fmt.Errorf("getting workspace dir: %w", err)
+		return nil, fmt.Errorf("session db: %w", err)
 	}
 
-	entries, err := os.ReadDir(dir)
+	rows, err := db.Query(`
+		SELECT id, name, created_at, updated_at, provider, model,
+		       workspace_root, json_array_length(messages) AS message_count
+		FROM sessions WHERE workspace_root = ?
+		ORDER BY updated_at DESC
+	`, workspace)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading sessions dir: %w", err)
+		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
+	defer rows.Close()
 
 	var metas []Metadata
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for rows.Next() {
+		var m Metadata
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&m.ID, &m.Name, &createdAt, &updatedAt,
+			&m.Provider, &m.Model, &m.WorkspaceRoot, &m.MessageCount,
+		); err != nil {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		var s Session
-		if err := json.NewDecoder(f).Decode(&s); err != nil {
-			f.Close()
-			continue
-		}
-		f.Close()
-
-		metas = append(metas, Metadata{
-			ID:            s.ID,
-			Name:          s.Name,
-			CreatedAt:     s.CreatedAt,
-			UpdatedAt:     s.UpdatedAt,
-			Provider:      s.Provider,
-			Model:         s.Model,
-			WorkspaceRoot: s.WorkspaceRoot,
-			MessageCount:  len(s.Messages),
-		})
+		m.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		m.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		metas = append(metas, m)
 	}
 
 	sort.Slice(metas, func(i, j int) bool {
@@ -183,68 +275,34 @@ func List(workspace string) ([]Metadata, error) {
 	return metas, nil
 }
 
-// Delete removes a session from disk.
 func Delete(workspace, id string) error {
-	dir, err := workspaceDir(workspace)
+	db, err := ensureDB()
 	if err != nil {
-		return fmt.Errorf("getting workspace dir: %w", err)
+		return fmt.Errorf("session db: %w", err)
 	}
-	path := filepath.Join(dir, id+".json")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+
+	res, err := db.Exec("DELETE FROM sessions WHERE id = ? AND workspace_root = ?", id, workspace)
+	if err != nil {
 		return fmt.Errorf("deleting session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil
 	}
 	return nil
 }
 
-// SetActiveSession stores the active session ID for a workspace in config.
-func SetActiveSession(workspace, sessionID string) error {
-	dir, err := workspaceDir(workspace)
-	if err != nil {
-		return fmt.Errorf("getting workspace dir: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("creating sessions dir: %w", err)
-	}
-	path := filepath.Join(dir, "active.txt")
-	if sessionID == "" {
-		os.Remove(path)
-		return nil
-	}
-	return os.WriteFile(path, []byte(sessionID), 0644)
-}
-
-// GetActiveSession reads the active session ID for a workspace.
-func GetActiveSession(workspace string) (string, error) {
-	dir, err := workspaceDir(workspace)
-	if err != nil {
-		return "", fmt.Errorf("getting workspace dir: %w", err)
-	}
-	path := filepath.Join(dir, "active.txt")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("reading active session: %w", err)
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-// NameForMessages returns a display name derived from the first user message.
 func NameForMessages(msgs []llm.Message) string {
 	return generateName(msgs)
 }
 
-// generateName creates a session name from the first user message.
 func generateName(msgs []llm.Message) string {
 	for _, msg := range msgs {
 		if msg.Role == "user" && msg.Content != "" {
 			name := msg.Content
-			// Take first line
 			if idx := strings.Index(name, "\n"); idx != -1 {
 				name = name[:idx]
 			}
-			// Truncate
 			if len(name) > 80 {
 				name = name[:77] + "..."
 			}
@@ -252,4 +310,11 @@ func generateName(msgs []llm.Message) string {
 		}
 	}
 	return "Empty session"
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

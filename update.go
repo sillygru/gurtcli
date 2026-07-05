@@ -1704,7 +1704,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		items := make([]list.Item, len(metas))
 		for i, meta := range metas {
-			items[i] = sessionItem{meta: meta, active: meta.ID == m.sessionID}
+			items[i] = sessionItem{meta: meta}
 		}
 		m.sessionList.SetItems(items)
 		m.state = stateSessionPick

@@ -10,7 +10,7 @@ import (
 func TestSaveLoadListRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	SetDirForTesting(dir)
-	t.Cleanup(func() { SetDirForTesting("") })
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
 
 	workspace := "/tmp/test-workspace"
 	now := time.Now().UTC().Truncate(time.Second)
@@ -57,27 +57,94 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 	}
 }
 
-func TestActiveSession(t *testing.T) {
+func TestSessionListScopedByWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	SetDirForTesting(dir)
-	t.Cleanup(func() { SetDirForTesting("") })
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
 
-	workspace := "/tmp/active-workspace"
+	now := time.Now().UTC().Truncate(time.Second)
 
-	if id, err := GetActiveSession(workspace); err != nil || id != "" {
-		t.Fatalf("initial active: id=%q err=%v", id, err)
+	s1 := &Session{
+		ID:            "s1",
+		Name:          "Project A session",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Provider:      "openai",
+		Model:         "gpt-5.5",
+		WorkspaceRoot: "/project-a",
+		Messages:      []llm.Message{{Role: "user", Content: "hi"}},
+	}
+	s2 := &Session{
+		ID:            "s2",
+		Name:          "Project B session",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Provider:      "anthropic",
+		Model:         "fable-5",
+		WorkspaceRoot: "/project-b",
+		Messages:      []llm.Message{{Role: "user", Content: "hello"}},
 	}
 
-	if err := SetActiveSession(workspace, "session-abc"); err != nil {
-		t.Fatalf("SetActiveSession: %v", err)
+	if err := Save(s1); err != nil {
+		t.Fatalf("Save s1: %v", err)
+	}
+	if err := Save(s2); err != nil {
+		t.Fatalf("Save s2: %v", err)
 	}
 
-	id, err := GetActiveSession(workspace)
+	metas, err := List("/project-a")
 	if err != nil {
-		t.Fatalf("GetActiveSession: %v", err)
+		t.Fatalf("List /project-a: %v", err)
 	}
-	if id != "session-abc" {
-		t.Fatalf("active id: got %q want session-abc", id)
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 session for project-a, got %d", len(metas))
+	}
+	if metas[0].ID != "s1" {
+		t.Fatalf("expected s1, got %s", metas[0].ID)
+	}
+
+	metas, err = List("/project-b")
+	if err != nil {
+		t.Fatalf("List /project-b: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 session for project-b, got %d", len(metas))
+	}
+	if metas[0].ID != "s2" {
+		t.Fatalf("expected s2, got %s", metas[0].ID)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	SetDirForTesting(dir)
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
+
+	workspace := "/tmp/delete-test"
+	s := &Session{
+		ID:            "delete-me",
+		Name:          "To delete",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		Provider:      "openai",
+		Model:         "gpt-5.5",
+		WorkspaceRoot: workspace,
+		Messages:      []llm.Message{{Role: "user", Content: "bye"}},
+	}
+	if err := Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := Delete(workspace, "delete-me"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	metas, err := List(workspace)
+	if err != nil {
+		t.Fatalf("List after delete: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("expected 0 sessions after delete, got %d", len(metas))
 	}
 }
 
