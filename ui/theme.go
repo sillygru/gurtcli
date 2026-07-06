@@ -68,6 +68,10 @@ type Theme struct {
 	EmptyState       lipgloss.Style
 	UpdateBanner     lipgloss.Style
 	WorkingStatus    lipgloss.Style
+	Toast            lipgloss.Style
+	TableBorder      lipgloss.Style
+	TableHeader      lipgloss.Style
+	TableCell        lipgloss.Style
 
 	// Legacy aliases used across views
 	Header    lipgloss.Style
@@ -110,9 +114,9 @@ func DefaultTheme() Theme {
 		ReasoningContent: lipgloss.NewStyle().Foreground(lipgloss.Color(ColorOverlay0)).Padding(0, 2),
 		Divider:          lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSurface2)),
 		UserLabel:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorLavender)),
-		UserContent:      lipgloss.NewStyle().Foreground(lipgloss.Color(ColorText)).PaddingLeft(2),
+		UserContent:      lipgloss.NewStyle().Foreground(lipgloss.Color(ColorText)),
 		AssistantLabel:   brand,
-		AssistantContent: lipgloss.NewStyle().Foreground(lipgloss.Color(ColorText)).PaddingLeft(2),
+		AssistantContent: lipgloss.NewStyle().Foreground(lipgloss.Color(ColorText)),
 		InputPrompt:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorMauve)),
 		ToolLabel:        lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(ColorPink)),
 		DiffAdd: lipgloss.NewStyle().
@@ -143,5 +147,13 @@ func DefaultTheme() Theme {
 		EmptyState:       lipgloss.NewStyle().Foreground(lipgloss.Color(ColorOverlay0)).Italic(true).PaddingLeft(2),
 		UpdateBanner:     lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPeach)).PaddingLeft(1),
 		WorkingStatus:    lipgloss.NewStyle().Foreground(lipgloss.Color(ColorTeal)),
+		Toast: lipgloss.NewStyle().
+			Background(lipgloss.Color(ColorGreen)).
+			Foreground(lipgloss.Color(ColorCrust)).
+			Bold(true).
+			Padding(0, 1),
+		TableBorder: lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSurface2)),
+		TableHeader: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSubtext1)),
+		TableCell:   lipgloss.NewStyle().Foreground(lipgloss.Color(ColorText)),
 	}
 }

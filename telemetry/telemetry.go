@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +13,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -31,6 +30,14 @@ type Event struct {
 	OS        string `json:"os,omitempty"`
 	Arch      string `json:"arch,omitempty"`
 	Sig       string `json:"sig"`
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 func ComputeSig(uuid, projectID, secret string) string {
@@ -54,7 +61,7 @@ func LoadOrCreateUUID(configDir string) string {
 		return string(data)
 	}
 
-	id := uuid.New().String()
+	id := newUUID()
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return id
 	}

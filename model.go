@@ -158,6 +158,15 @@ type versionCheckResult struct {
 	err           error
 }
 
+type toastMsg struct {
+	text string
+	id   int
+}
+
+type toastTimeoutMsg struct {
+	id int
+}
+
 type reasoningState struct {
 	content        *strings.Builder
 	startTime      time.Time
@@ -174,6 +183,15 @@ type pendingPerm struct {
 
 type streamState struct {
 	cancel context.CancelFunc
+}
+
+type textSelection struct {
+	anchorY int  // Content line where drag started
+	anchorX int  // Column in that line
+	focusY  int  // Current content line
+	focusX  int  // Current column
+	active  bool // User is currently dragging
+	exists  bool // Selection finalized (mouse released)
 }
 
 type suggestionState struct {
@@ -247,6 +265,9 @@ type model struct {
 	streamState      *streamState
 	cancelRequested  bool
 	queuedMessage    string
+	selection        textSelection
+	toast            *toastMsg
+	toastSeq         int
 	suggestions      suggestionState
 
 	sessionID        string
@@ -338,7 +359,7 @@ func (m model) enterChatState() model {
 	}
 	m.inputTokens = 0
 	m.outputTokens = 0
-	m.chatViewport.SetContent(buildChatContent(m))
+	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
 	m.state = stateChat
 	return m
@@ -796,6 +817,12 @@ func sendTelemetryCmd(eventType string) tea.Cmd {
 		telemetry.SendEvent(id, Version, eventType, TelemetrySecret)
 		return nil
 	}
+}
+
+func toastTimeoutCmd(id int) tea.Cmd {
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return toastTimeoutMsg{id: id}
+	})
 }
 
 func (m model) fetchModelsCmd() tea.Cmd {

@@ -377,6 +377,7 @@ func (m model) allowManageView() string {
 
 func (m model) chatView() string {
 	var b strings.Builder
+	b.WriteString("\x1b[2 q") // DECSCUSR: non-blinking block cursor
 
 	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
 	b.WriteString("\n")
@@ -398,6 +399,19 @@ func (m model) chatView() string {
 
 	b.WriteString(m.renderSpacerLine())
 	b.WriteString("\n")
+
+	{
+		toastText := ""
+		if m.toast != nil {
+			toastText = m.theme.Toast.Render(" " + m.toast.text + " ")
+		}
+		pad := (m.width - lipgloss.Width(toastText)) / 2
+		if pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteString(toastText)
+		b.WriteString("\n")
+	}
 
 	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", dividerLen)))
 	b.WriteString("\n")

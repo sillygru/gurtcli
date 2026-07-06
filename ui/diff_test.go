@@ -1,14 +1,12 @@
 package ui
 
 import (
+	"os"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 )
 
 func init() {
-	lipgloss.SetColorProfile(termenv.TrueColor)
+	os.Setenv("CLICOLOR_FORCE", "1")
 }
 
 func TestHighlightLineDiffChangedMiddle(t *testing.T) {

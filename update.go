@@ -18,7 +18,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
@@ -55,7 +54,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelList.SetSize(msg.Width-4, h)
 		m.sessionList.SetSize(msg.Width-4, h)
 
-		chatViewHeight := msg.Height - 5
+		chatViewHeight := msg.Height - 6
 		if chatViewHeight < 4 {
 			chatViewHeight = 4
 		}
@@ -211,7 +210,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent = new(strings.Builder)
 		}
 		m.streamingContent.WriteString(msg.content)
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -225,7 +224,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.visible = m.reasoning.defaultVisible
 			m.reasoning.startTime = time.Now()
 		}
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -242,7 +241,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Role:    "assistant",
 				Content: "_Interrupted_",
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			m.chatInput.Focus()
 			if m.queuedMessage != "" {
@@ -253,7 +252,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 				m.workingSpinnerIdx = 0
 				m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 			}
@@ -286,7 +285,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			asm.ToolCalls = msg.toolCalls
 			m.messages = append(m.messages, asm)
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			m.toolCallCycle++
 			if m.toolCallCycle > maxToolCallCycles {
@@ -296,7 +295,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Model:   m.modelName,
 			})
 				m.toolCallCycle = 0
-				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				if m.queuedMessage != "" {
@@ -307,7 +306,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 					m.workingSpinnerIdx = 0
 					m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-					m.chatViewport.SetContent(buildChatContent(m))
+					m.chatViewport.SetContent(buildChatContentHighlighted(m))
 					m.chatViewport.GotoBottom()
 					return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 				}
@@ -324,7 +323,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, msg)
 		}
 		m.toolCallCycle = 0
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
 		if m.queuedMessage != "" {
@@ -335,7 +334,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 			m.workingSpinnerIdx = 0
 			m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 		}
@@ -365,6 +364,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, workingTickCmd()
 
+	case toastTimeoutMsg:
+		if m.toast != nil && m.toast.id == msg.id {
+			m.toast = nil
+		}
+		return m, nil
+
 	case chatStreamError:
 		m.streamingContent = nil
 		m.isStreaming = false
@@ -384,7 +389,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.queuedMessage = ""
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
 		return m, m.persistSessionCmd()
@@ -440,7 +445,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Content:  fmt.Sprintf("_Update failed: %v_", msg.err),
 			})
 		}
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -450,7 +455,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Internal: true,
 			Content:  fmt.Sprintf("_Session save failed: %v_", msg.err),
 		})
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -470,7 +475,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Internal: true,
 			Content:  b.String(),
 		})
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 	}
@@ -1172,7 +1177,7 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Content: fmt.Sprintf("_Failed to load session: %v_", err),
 		})
 		m.state = stateChat
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, saveCmd
 	}
@@ -1347,6 +1352,11 @@ func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.selection.exists || m.selection.active {
+		m.selection = textSelection{}
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+	}
+
 	if m.pendingPerm != nil {
 		tc := m.pendingPerm.toolCall
 		optionCount := optionCountForTool(tc.Function.Name)
@@ -1378,7 +1388,7 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					Content:    "User denied this operation.",
 				})
 				m.toolCallCycle = 0
-				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				return m, m.persistSessionCmd()
@@ -1490,7 +1500,7 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
 		m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 
 		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
@@ -1625,7 +1635,7 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 				toolCall:  tc,
 				remaining: tcs[i+1:],
 			}
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			m.chatInput.Blur()
 			return m, m.persistSessionCmd()
@@ -1639,92 +1649,133 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// 1. Scroll wheel → viewport
 	if msg.Action == tea.MouseActionPress && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
 		var cmd tea.Cmd
+		if m.selection.exists {
+			m.selection = textSelection{}
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		}
 		m.chatViewport, cmd = m.chatViewport.Update(msg)
 		return m, cmd
 	}
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
-		return m, nil
-	}
-	// Compute where the viewport starts in the terminal, accounting for
-	// visual wrapping of the brand and update banner lines.
-	brandWidth := lipgloss.Width(m.theme.Brand.Render("  " + m.modelDisplayName()))
-	brandRows := 1
-	if m.width > 0 && brandWidth > m.width {
-		brandRows = (brandWidth + m.width - 1) / m.width
-	}
-	viewportStartRow := brandRows
-	if m.updateAvailable {
-		bannerText := fmt.Sprintf("  Update %s available — run /update", m.latestVersion)
-		bannerWidth := lipgloss.Width(m.theme.UpdateBanner.Render(bannerText))
-		bannerRows := 1
-		if m.width > 0 && bannerWidth > m.width {
-			bannerRows = (bannerWidth + m.width - 1) / m.width
-		}
-		viewportStartRow += bannerRows
-	}
-	viewportStartRow++ // divider (always present between header and viewport)
-	contentLine := m.chatViewport.YOffset + msg.Y - viewportStartRow
-	if contentLine < 0 {
-		return m, nil
-	}
-	content := buildChatContent(m)
-	lines := strings.Split(content, "\n")
-	if contentLine >= len(lines) {
-		return m, nil
-	}
-	// Expand the hitbox: scan ±2 lines around the click for reasoning markers.
-	const hitboxRadius = 2
 
-	// ▸ — unique to collapsed (inactive) live reasoning.
-	if findMarker(lines, contentLine, hitboxRadius, "▸") >= 0 {
-		m.reasoning.visible = !m.reasoning.visible
-		m.chatViewport.SetContent(buildChatContent(m))
+	// 2. Motion during drag → update selection focus
+	if msg.Action == tea.MouseActionMotion && m.selection.active {
+		line, col, ok := computeContentPosition(m, msg)
+		if ok {
+			m.selection.focusY = line
+			m.selection.focusX = col
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		}
 		return m, nil
 	}
 
-	// ◌ — unique to active live reasoning (not stored).
-	if findMarker(lines, contentLine, hitboxRadius, "◌") >= 0 {
-		m.reasoning.visible = !m.reasoning.visible
-		m.chatViewport.SetContent(buildChatContent(m))
-		return m, nil
-	}
-
-	// ◷ or ▾ — tries stored reasoning first, falls back to live.
-	if idx := findMarker(lines, contentLine, hitboxRadius, "◷", "▾"); idx >= 0 {
-		count := 0
-		for i := 0; i <= idx; i++ {
-			if strings.Contains(lines[i], "◷") {
-				count++
-			}
-		}
-		msgIdx := 0
-		found := 0
-		for i := range m.messages {
-			if m.messages[i].Reasoning != "" {
-				found++
-				if found == count {
-					msgIdx = i
-					break
-				}
-			}
-		}
-		if found == count {
-			m.messages[msgIdx].ReasoningVisible = !m.messages[msgIdx].ReasoningVisible
-			yOff := m.chatViewport.YOffset
-			m.chatViewport.SetContent(buildChatContent(m))
-			if yOff > m.chatViewport.YOffset {
-				m.chatViewport.GotoBottom()
-			} else {
-				m.chatViewport.YOffset = yOff
+	// 3. Button press
+	if msg.Action == tea.MouseActionPress {
+		// Non-left click: clear selection
+		if msg.Button != tea.MouseButtonLeft {
+			if m.selection.exists {
+				m.selection = textSelection{}
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			}
 			return m, nil
 		}
 
-		// No matching stored message — toggle live reasoning.
-		m.reasoning.visible = !m.reasoning.visible
-		m.chatViewport.SetContent(buildChatContent(m))
+		// Left click: check reasoning markers first, then start selection
+		line, col, ok := computeContentPosition(m, msg)
+		if !ok {
+			return m, nil
+		}
+		contentLine := m.chatViewport.YOffset + msg.Y - computeViewportStartRow(m)
+		if contentLine >= 0 {
+			content := buildChatContent(m)
+			lines := strings.Split(content, "\n")
+			if contentLine < len(lines) {
+				const hitboxRadius = 2
+
+				// ▸ — collapsed live reasoning
+				if findMarker(lines, contentLine, hitboxRadius, "▸") >= 0 {
+					m.reasoning.visible = !m.reasoning.visible
+					m.selection = textSelection{}
+					m.chatViewport.SetContent(buildChatContentHighlighted(m))
+					return m, nil
+				}
+
+				// ◌ — active live reasoning
+				if findMarker(lines, contentLine, hitboxRadius, "◌") >= 0 {
+					m.reasoning.visible = !m.reasoning.visible
+					m.selection = textSelection{}
+					m.chatViewport.SetContent(buildChatContentHighlighted(m))
+					return m, nil
+				}
+
+				// ◷ or ▾ — stored reasoning
+				if idx := findMarker(lines, contentLine, hitboxRadius, "◷", "▾"); idx >= 0 {
+					count := 0
+					for i := 0; i <= idx; i++ {
+						if strings.Contains(lines[i], "◷") {
+							count++
+						}
+					}
+					msgIdx := 0
+					found := 0
+					for i := range m.messages {
+						if m.messages[i].Reasoning != "" {
+							found++
+							if found == count {
+								msgIdx = i
+								break
+							}
+						}
+					}
+					if found == count {
+						m.messages[msgIdx].ReasoningVisible = !m.messages[msgIdx].ReasoningVisible
+						yOff := m.chatViewport.YOffset
+						m.selection = textSelection{}
+						m.chatViewport.SetContent(buildChatContentHighlighted(m))
+						if yOff > m.chatViewport.YOffset {
+							m.chatViewport.GotoBottom()
+						} else {
+							m.chatViewport.YOffset = yOff
+						}
+						return m, nil
+					}
+
+					// No matching stored message — toggle live reasoning.
+					m.reasoning.visible = !m.reasoning.visible
+					m.selection = textSelection{}
+					m.chatViewport.SetContent(buildChatContentHighlighted(m))
+					return m, nil
+				}
+			}
+		}
+
+		// Start new text selection
+		m.selection = textSelection{
+			anchorY: line, anchorX: col,
+			focusY: line, focusX: col,
+			active: true,
+		}
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		return m, nil
+	}
+
+	// 4. Button release → auto-copy and clear
+	if msg.Action == tea.MouseActionRelease {
+		if m.selection.active {
+			m.selection.active = false
+			m.selection.exists = true
+			text := extractSelectedText(buildChatContent(m), m.selection)
+			copyToClipboard(text)
+			m.selection = textSelection{}
+			m.chatViewport.SetContent(buildChatContent(m))
+			if text != "" {
+				m.toastSeq++
+				m.toast = &toastMsg{text: "Copied to clipboard", id: m.toastSeq}
+				return m, toastTimeoutCmd(m.toastSeq)
+			}
+		}
 		return m, nil
 	}
 
@@ -1817,7 +1868,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				map[bool]string{true: "visible", false: "hidden"}[newVisible],
 				map[bool]string{true: "visible", false: "hidden"}[oldVisible]),
 		})
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -1830,7 +1881,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					Internal: true,
 					Content:  "Thinking is not supported for this custom API provider",
 				})
-				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				return m, nil
 			}
@@ -1847,7 +1898,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					Internal: true,
 					Content:  fmt.Sprintf("Current thinking type: %s\nUsage: /reasoning <type>  (%s)", m.thinkingType, partsStr),
 				})
-				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				return m, nil
 			}
@@ -1875,7 +1926,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					Content:  fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
 				})
 			}
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -1890,7 +1941,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					Internal: true,
 					Content:  fmt.Sprintf("Current thinking type: %s\nUsage: /reasoning <type>  (%s)", m.thinkingType, partsStr),
 				})
-				m.chatViewport.SetContent(buildChatContent(m))
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				return m, nil
 			}
@@ -1918,7 +1969,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					Content:  fmt.Sprintf("Unknown thinking type: %s. Available: %s", newType, partsStr),
 				})
 			}
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -1938,7 +1989,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Internal: true,
 				Content:  fmt.Sprintf("Current reasoning level: %s\nUsage: /reasoning <level>  (%s)", m.effortLevel, partsStr),
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -1966,7 +2017,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Content:  fmt.Sprintf("Unknown reasoning level: %s. Available: %s", newLevel, partsStr),
 			})
 		}
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -1977,7 +2028,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Internal: true,
 				Content:  "Custom API providers don't support effort levels. Use /reasoning to set reasoning effort instead.",
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -1988,7 +2039,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Internal: true,
 				Content:  "OpenAI models don't support effort levels. Use /reasoning to set reasoning effort instead.",
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -1999,7 +2050,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Internal: true,
 				Content:  "Gemini models don't support effort levels. Use /reasoning to set reasoning effort instead.",
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -2029,7 +2080,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Internal: true,
 				Content:  fmt.Sprintf("Current effort level: %s\nUsage: /effort <level>  (%s)", m.effortLevel, partsStr),
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -2057,7 +2108,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Content:  fmt.Sprintf("Unknown effort level: %s. Available: %s", newEffort, partsStr),
 			})
 		}
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -2072,7 +2123,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			Internal: true,
 			Content:  b.String(),
 		})
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -2090,7 +2141,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			Internal: true,
 			Content:  fmt.Sprintf("Telemetry %s (was %s). No personal data is collected. See README for details.", status, map[bool]string{true: "enabled", false: "disabled"}[oldVal]),
 		})
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 
@@ -2105,7 +2156,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				Internal: true,
 				Content:  fmt.Sprintf("_Failed to list sessions: %v_", err),
 			})
-			m.chatViewport.SetContent(buildChatContent(m))
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			return m, nil
 		}
@@ -2158,7 +2209,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			Internal: true,
 			Content:  fmt.Sprintf("_Unknown command: /%s. Type /help for available commands._", cmd),
 		})
-		m.chatViewport.SetContent(buildChatContent(m))
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m, nil
 	}
@@ -2402,12 +2453,12 @@ func buildChatContent(m model) string {
 				b.WriteString("\n")
 			}
 			if msg.Content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content))
+				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width))
 				b.WriteString("\n")
 			}
 			if msg.Reasoning != "" {
 				if msg.ReasoningVisible {
-					b.WriteString(ui.RenderReasoning(m.theme, false, true, 0, msg.Reasoning, m.width))
+					b.WriteString(ui.RenderReasoning(m.theme, false, true, 0, msg.Reasoning, m.chatViewport.Width))
 					b.WriteString("\n")
 				} else {
 					b.WriteString(ui.RenderReasoningStored(m.theme))
@@ -2416,14 +2467,14 @@ func buildChatContent(m model) string {
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					b.WriteString(ui.RenderToolCall(m.theme, tc, m.width))
+					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width))
 					b.WriteString("\n")
 				}
 			}
 			b.WriteString("\n")
 		case "tool":
 			toolName := toolNames[msg.ToolCallID]
-			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.width))
+			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.chatViewport.Width))
 			b.WriteString("\n\n")
 		}
 	}
@@ -2441,20 +2492,20 @@ func buildChatContent(m model) string {
 			if m.reasoning.content != nil {
 				content = m.reasoning.content.String()
 			}
-			b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.width))
+			b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.chatViewport.Width))
 			b.WriteString("\n")
 		}
 
 		if lastIsCurrent {
 			content := m.messages[len(m.messages)-1].Content
 			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width))
 				b.WriteString("\n")
 			}
 		} else if streamingLen > 0 && m.streamingContent != nil {
 			content := m.streamingContent.String()
 			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width))
 				b.WriteString("\n")
 			}
 		}

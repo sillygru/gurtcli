@@ -40,10 +40,7 @@ func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, conte
 
 	var body strings.Builder
 	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-		guide := t.Divider.Render("│")
 		body.WriteString("  ")
-		body.WriteString(guide)
-		body.WriteString(" ")
 		body.WriteString(t.ReasoningText.Render(line))
 		body.WriteString("\n")
 	}

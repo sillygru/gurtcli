@@ -97,19 +97,29 @@ func RenderAssistantLabel(t Theme, name string) string {
 	return t.AssistantLabel.Render("  " + name)
 }
 
-// RenderAssistantContent renders assistant text with a subtle left guide.
-func RenderAssistantContent(t Theme, content string) string {
+// RenderAssistantContent renders assistant text.
+// Table blocks (pipe-delimited) are detected and rendered as box-drawing grids.
+func RenderAssistantContent(t Theme, content string, width int) string {
 	if content == "" {
 		return ""
 	}
-	guide := t.Divider.Render("│")
+	lines := strings.Split(content, "\n")
 	var b strings.Builder
-	for _, line := range strings.Split(content, "\n") {
-		b.WriteString("  ")
-		b.WriteString(guide)
-		b.WriteString(" ")
-		b.WriteString(t.AssistantContent.Render(line))
-		b.WriteString("\n")
+	i := 0
+	for i < len(lines) {
+		if isTableCandidate(lines, i) {
+			j := i + 1
+			for j < len(lines) && strings.Contains(lines[j], "|") {
+				j++
+			}
+			b.WriteString(renderTable(t, lines[i:j], width))
+			b.WriteString("\n")
+			i = j
+		} else {
+			b.WriteString(t.AssistantContent.Render("  " + lines[i]))
+			b.WriteString("\n")
+			i++
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
