@@ -13,5 +13,11 @@ if (!fs.existsSync(binPath)) {
   process.exit(1);
 }
 
+try {
+  fs.chmodSync(binPath, 0o755);
+} catch {
+  // best-effort; pnpm store may strip executable bit
+}
+
 const proc = spawn(binPath, process.argv.slice(2), { stdio: "inherit" });
 proc.on("exit", (code) => process.exit(code ?? 0));

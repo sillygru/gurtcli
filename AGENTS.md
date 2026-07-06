@@ -47,7 +47,7 @@ Think through:
 
 ## LLM calls
 
-- Support OpenAI, Claude, and any OpenAI-compatible endpoint.
+- Support OpenAI, Anthropic (Claude), Google Gemini, and any OpenAI-compatible endpoint.
 - The provider is selected based on the model name prefix or `GURT_BASE_URL` env var.
 - API errors must be surfaced to the user, not swallowed.
 - Token usage is tracked and printed after each response.
