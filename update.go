@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"text/template"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
+	"github.com/sillygru/gurtcli/debug"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/tools"
@@ -299,16 +301,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.queuedMessage != "" {
 			return m.replayQueuedMessage()
 		}
-		cmds := []tea.Cmd{m.persistSessionCmd()}
-		if m.needsTitle {
-			m.needsTitle = false
-			cmds = append(cmds, generateTitleCmd(m))
-		}
-		return m, tea.Batch(cmds...)
+		return m, m.persistSessionCmd()
 
 	case chatStreamUsage:
 		if msg.inputTokens > 0 {
-			m.inputTokens = msg.inputTokens
+			if msg.inputTokens >= m.contextInputTokens {
+				m.contextInputTokens = msg.inputTokens
+			} else {
+				m.contextInputTokens += msg.inputTokens
+			}
+			m.inputTokens += msg.inputTokens
 		}
 		if msg.outputTokens > 0 {
 			m.outputTokens += msg.outputTokens
@@ -423,6 +425,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
+		return m, nil
+
+	case resourceStatsMsg:
+		m.debugStats = resourceStats{cpuPercent: msg.cpuPercent, memMB: msg.memMB}
+		if m.debug {
+			return m, resourceMonitorTickCmd()
+		}
 		return m, nil
 
 	case versionCheckResult:
@@ -1554,7 +1563,12 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 
-		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+		cmds := []tea.Cmd{m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd()}
+		if m.needsTitle {
+			m.needsTitle = false
+			cmds = append(cmds, generateTitleCmd(m))
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	// Filter partial SGR mouse events that the input reader
@@ -2308,7 +2322,7 @@ func (m model) adjustViewportHeight() model {
 	}
 	fixed++ // top divider
 	// spacer line — 0 when idle, 1 when streaming or showing context bar
-	if (m.isStreaming && m.workingMsg != "") || m.maxInputTokens > 0 || m.inputTokens > 0 {
+	if (m.isStreaming && m.workingMsg != "") || m.maxInputTokens > 0 || m.contextInputTokens > 0 || m.inputTokens > 0 {
 		fixed++
 	}
 	fixed++ // toast line (always 1 — blank line when no toast)
@@ -2446,7 +2460,25 @@ func startChatStreamCmd(m model) tea.Cmd {
 		go func() {
 			var pendingToolCalls []llm.ToolCall
 			doneSent := false
+			var debugEvents []debug.StreamEvent
 			for event := range events {
+				if m.debug {
+					e := debug.StreamEvent{Type: eventTypeName(event.Type)}
+					switch event.Type {
+					case llm.StreamDelta:
+						e.Content = event.Content
+					case llm.StreamReasoning:
+						e.Content = event.Content
+					case llm.StreamUsage:
+						e.InputTokens = event.InputTokens
+						e.OutputTokens = event.OutputTokens
+					case llm.StreamToolCalls:
+						e.ToolCalls = len(event.ToolCalls)
+					case llm.StreamError:
+						e.Error = event.Err.Error()
+					}
+					debugEvents = append(debugEvents, e)
+				}
 				switch event.Type {
 				case llm.StreamDelta:
 					globalProgram.Send(chatStreamChunk{content: event.Content})
@@ -2465,14 +2497,23 @@ func startChatStreamCmd(m model) tea.Cmd {
 						globalProgram.Send(chatStreamDone{toolCalls: calls})
 						doneSent = true
 					}
+					if m.debug {
+						debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
+					}
 					return
 				case llm.StreamError:
 					globalProgram.Send(chatStreamError{err: event.Err})
+					if m.debug {
+						debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
+					}
 					return
 				}
 			}
 			if !doneSent {
 				globalProgram.Send(chatStreamDone{})
+				if m.debug {
+					debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
+				}
 			}
 		}()
 
@@ -2491,6 +2532,42 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
 	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+}
+
+var prevRusage syscall.Rusage
+var prevWall time.Time
+
+func resourceMonitorCmd() tea.Msg {
+	var cur syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cur); err != nil {
+		return resourceStatsMsg{}
+	}
+	curWall := time.Now()
+
+	var cpuPercent float64
+	if !prevWall.IsZero() {
+		curCPU := cur.Utime.Nano() + cur.Stime.Nano()
+		prevCPU := prevRusage.Utime.Nano() + prevRusage.Stime.Nano()
+		cpuDelta := curCPU - prevCPU
+		wallDelta := curWall.Sub(prevWall).Nanoseconds()
+		if wallDelta > 0 {
+			cpuPercent = float64(cpuDelta) / float64(wallDelta) * 100
+		}
+	}
+	prevRusage = cur
+	prevWall = curWall
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	memMB := float64(m.Sys) / 1024 / 1024
+
+	return resourceStatsMsg{cpuPercent: cpuPercent, memMB: memMB}
+}
+
+func resourceMonitorTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return resourceMonitorCmd()
+	})
 }
 
 func workingTickCmd() tea.Cmd {
@@ -2689,4 +2766,23 @@ func filterInternal(msgs []llm.Message) []llm.Message {
 		}
 	}
 	return out
+}
+
+func eventTypeName(t llm.StreamEventType) string {
+	switch t {
+	case llm.StreamDelta:
+		return "delta"
+	case llm.StreamReasoning:
+		return "reasoning"
+	case llm.StreamToolCalls:
+		return "tool_calls"
+	case llm.StreamDone:
+		return "done"
+	case llm.StreamError:
+		return "error"
+	case llm.StreamUsage:
+		return "usage"
+	default:
+		return "unknown"
+	}
 }

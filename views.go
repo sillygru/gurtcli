@@ -544,6 +544,7 @@ var workingMessages = []string{
 
 func (m model) renderSpacerLine() string {
 	ctxBar := m.renderContextBar()
+	debugBar := m.renderDebugBar()
 
 	var left string
 	if m.isStreaming && m.workingMsg != "" {
@@ -552,13 +553,22 @@ func (m model) renderSpacerLine() string {
 		left = m.theme.WorkingStatus.Render(spinner + " " + m.workingMsg)
 	}
 
-	if left == "" && ctxBar == "" {
+	right := ctxBar
+	if debugBar != "" {
+		if right != "" {
+			right = debugBar + "  " + right
+		} else {
+			right = debugBar
+		}
+	}
+
+	if left == "" && right == "" {
 		return ""
 	}
 
 	leftWidth := lipgloss.Width(left)
-	ctxWidth := lipgloss.Width(ctxBar)
-	pad := m.width - leftWidth - ctxWidth
+	rightWidth := lipgloss.Width(right)
+	pad := m.width - leftWidth - rightWidth
 	if pad < 1 {
 		pad = 1
 	}
@@ -567,15 +577,23 @@ func (m model) renderSpacerLine() string {
 	if left != "" {
 		b.WriteString(left)
 	}
-	if ctxBar != "" {
+	if right != "" {
 		b.WriteString(strings.Repeat(" ", pad))
-		b.WriteString(ctxBar)
+		b.WriteString(right)
 	}
 	return b.String()
 }
 
+func (m model) renderDebugBar() string {
+	if !m.debug {
+		return ""
+	}
+	label := fmt.Sprintf("CPU:%5.1f%% RAM:%5.1fMB", m.debugStats.cpuPercent, m.debugStats.memMB)
+	return m.theme.Dim.Render(label)
+}
+
 func (m model) renderContextBar() string {
-	tokens := m.inputTokens
+	tokens := m.contextInputTokens
 	if tokens <= 0 && m.maxInputTokens <= 0 {
 		return ""
 	}

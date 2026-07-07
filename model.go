@@ -150,6 +150,11 @@ type chatStreamUsage struct {
 	outputTokens int
 }
 
+type resourceStatsMsg struct {
+	cpuPercent float64
+	memMB      float64
+}
+
 type workingTickMsg struct{}
 
 type versionCheckResult struct {
@@ -200,11 +205,18 @@ type suggestionState struct {
 	active   bool
 }
 
+type resourceStats struct {
+	cpuPercent float64
+	memMB      float64
+}
+
 type model struct {
 	state            state
 	yolo             bool
 	reconfigure      bool
 	forceLocal       bool
+	debug            bool
+	debugStats       resourceStats
 	theme            ui.Theme
 	themeName        string
 	width            int
@@ -283,9 +295,10 @@ type model struct {
 	sessionCreatedAt time.Time
 	needsTitle       bool
 
-	maxInputTokens    int
-	inputTokens       int
-	outputTokens      int
+	maxInputTokens      int
+	inputTokens         int
+	contextInputTokens  int
+	outputTokens        int
 	workingMsg        string
 	workingMsgIndex   int
 	workingSpinnerIdx int
@@ -368,12 +381,15 @@ func (m model) enterChatState() (model, tea.Cmd) {
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
 	m.state = stateChat
-	var cmd tea.Cmd
+	var cmds []tea.Cmd
 	if !m.updateCheckStarted {
 		m.updateCheckStarted = true
-		cmd = checkForUpdateCmd()
+		cmds = append(cmds, checkForUpdateCmd())
 	}
-	return m, cmd
+	if m.debug {
+		cmds = append(cmds, resourceMonitorTickCmd())
+	}
+	return m, tea.Batch(cmds...)
 }
 
 type providerPickKind int
@@ -481,7 +497,7 @@ func (m model) smallModelForProvider() string {
 	}
 }
 
-func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, forceLocal bool) model {
+func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, forceLocal bool, debug bool) model {
 	cleanOldBinary()
 
 	cfg, err := config.Load()
@@ -686,6 +702,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		yolo:                 yolo,
 		forceLocal:           forceLocal,
 		reconfigure:          reconfigure,
+		debug:                debug,
 		forceKeyAfterURL:     false,
 		theme:                s,
 		themeName:            themeName,
@@ -792,6 +809,7 @@ func (m model) applySession(s *sessions.Session) model {
 	m.streamingContent = nil
 	m.reasoning = reasoningState{defaultVisible: s.ReasoningVisible, visible: s.ReasoningVisible}
 	m.inputTokens = s.InputTokens
+	m.contextInputTokens = s.InputTokens
 	m.outputTokens = s.OutputTokens
 	return m
 }
@@ -805,6 +823,7 @@ func (m model) resetToNewSession() model {
 	m.streamingContent = nil
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible, visible: m.reasoning.defaultVisible}
 	m.inputTokens = 0
+	m.contextInputTokens = 0
 	m.outputTokens = 0
 	return m.initNewSession()
 }

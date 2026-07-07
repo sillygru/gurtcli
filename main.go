@@ -17,6 +17,7 @@ func main() {
 	reconfigure := flag.Bool("reconfigure", false, "force provider and model setup")
 	forceLocal := flag.Bool("force-local", false, "use embedded llmdetails.json instead of fetching from GitHub")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	debugFlag := flag.Bool("debug", false, "enable debug logging and resource monitor")
 	flag.Parse()
 
 	if *showVersion {
@@ -36,7 +37,7 @@ func main() {
 
 	skipPerms := *yolo || *dangerous
 
-	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure, *forceLocal)
+	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure, *forceLocal, *debugFlag)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	globalProgram = p
 	if _, err := p.Run(); err != nil {
