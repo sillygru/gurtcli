@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/zalando/go-keyring"
@@ -27,7 +28,7 @@ func GetAPIKey(provider, customBaseURL, savedEndpointName string) (string, error
 		return key, nil
 	}
 	if !errors.Is(err, keyring.ErrNotFound) {
-		return "", fmt.Errorf("keyring error: %w", err)
+		log.Printf("keychain unavailable (%v), falling back to env/.env", err)
 	}
 
 	if v := os.Getenv("GURT_API_KEY"); v != "" {

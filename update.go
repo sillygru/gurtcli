@@ -113,6 +113,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDotenvPick(msg)
 		case stateDotenvKeyName:
 			return m.updateDotenvKeyName(msg)
+		case stateDotenvKeyExists:
+			return m.updateDotenvKeyExists(msg)
 		}
 		return m, nil
 
@@ -765,13 +767,11 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.apiKey = key
 
-	if m.customMode == customModeSave {
-		if err := config.SetAPIKey(m.provider, m.customURL, m.savedEndpointName, key); err != nil {
-			m.err = err
-			m.state = stateDotenvPrompt
-			m.dotenvCursor = 0
-			return m, nil
-		}
+	if err := config.SetAPIKey(m.provider, m.customURL, m.savedEndpointName, key); err != nil {
+		m.err = err
+		m.state = stateDotenvPrompt
+		m.dotenvCursor = 0
+		return m, nil
 	}
 
 	return m.continueAfterAPIKey()
@@ -847,6 +847,17 @@ func (m model) updateDotenvKeyName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	dk, err := config.GetDotenvKeys()
+	if err == nil {
+		if existing, ok := dk[name]; ok {
+			m.dotenvKeyName = name
+			m.dotenvExistingKeyValue = existing
+			m.dotenvKeyExistsCursor = 0
+			m.state = stateDotenvKeyExists
+			return m, nil
+		}
+	}
+
 	if err := config.SaveDotenv(name, m.apiKey); err != nil {
 		m.err = err
 		m.errChoice = 0
@@ -855,6 +866,35 @@ func (m model) updateDotenvKeyName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.dotenvKeyName = name
 	return m.continueAfterAPIKey()
+}
+
+func (m model) updateDotenvKeyExists(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up":
+		m.dotenvKeyExistsCursor = (m.dotenvKeyExistsCursor + 2) % 3
+	case "down":
+		m.dotenvKeyExistsCursor = (m.dotenvKeyExistsCursor + 1) % 3
+	case "enter":
+		switch m.dotenvKeyExistsCursor {
+		case 0:
+			if err := config.SaveDotenv(m.dotenvKeyName, m.apiKey); err != nil {
+				m.err = err
+				m.errChoice = 0
+				m.state = stateError
+				return m, nil
+			}
+			return m.continueAfterAPIKey()
+		case 1:
+			m.apiKey = m.dotenvExistingKeyValue
+			return m.continueAfterAPIKey()
+		case 2:
+			m.dotenvInput.Reset()
+			m.dotenvInput.Focus()
+			m.state = stateDotenvKeyName
+			return m, nil
+		}
+	}
+	return m, nil
 }
 
 func (m model) updateCustomName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

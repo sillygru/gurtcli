@@ -46,6 +46,7 @@ const (
 	stateDotenvPrompt
 	stateDotenvPick
 	stateDotenvKeyName
+	stateDotenvKeyExists
 )
 
 const (
@@ -263,8 +264,10 @@ type model struct {
 	customModeCursor    int
 	dotenvCursor        int
 	dotenvPickCursor    int
-	dotenvKeyName       string
-	dotenvKeys          []string
+	dotenvKeyName           string
+	dotenvExistingKeyValue  string
+	dotenvKeyExistsCursor   int
+	dotenvKeys              []string
 	savedEndpointName   string
 	confirmDeleteEndpoint string
 

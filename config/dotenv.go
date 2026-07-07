@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 func DotenvPath() (string, error) {
@@ -22,7 +23,41 @@ func SaveDotenv(key, value string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(p, []byte(key+"="+value+"\n"), 0600)
+
+	entry := key + "=" + value
+
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return os.WriteFile(p, []byte(entry+"\n"), 0600)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimLeftFunc(line, unicode.IsSpace)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if eq := strings.IndexByte(trimmed, '='); eq > 0 {
+			k := strings.TrimSpace(trimmed[:eq])
+			if k == key {
+				lines[i] = entry
+				found = true
+				break
+			}
+		}
+	}
+
+	if !found {
+		lines = append(lines, entry)
+	}
+
+	output := strings.Join(lines, "\n")
+	if !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+
+	return os.WriteFile(p, []byte(output), 0600)
 }
 
 func GetDotenvKeys() (map[string]string, error) {

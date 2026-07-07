@@ -49,6 +49,8 @@ func (m model) View() string {
 		content = m.dotenvPickView()
 	case stateDotenvKeyName:
 		content = m.dotenvKeyNameView()
+	case stateDotenvKeyExists:
+		content = m.dotenvKeyExistsView()
 	}
 	if content == "" {
 		return ""
@@ -298,7 +300,33 @@ func (m model) dotenvKeyNameView() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.dotenvInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render("enter confirm • esc back • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) dotenvKeyExistsView() string {
+	var b strings.Builder
+	b.WriteString(m.theme.Brand.Render("  gurt"))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render(fmt.Sprintf("Key %q already exists in .env.", m.dotenvKeyName)))
+	b.WriteString("\n\n")
+	items := []string{
+		"Overwrite existing value",
+		"Load existing value and continue",
+		"Change key name",
+	}
+	for i, item := range items {
+		prefix := "  "
+		style := m.theme.Dim
+		if i == m.dotenvKeyExistsCursor {
+			prefix = "> "
+			style = m.theme.Header
+		}
+		b.WriteString(style.Render(prefix + item))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
 	return b.String()
 }
 
