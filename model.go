@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +43,9 @@ const (
 	stateChat
 	stateSessionPick
 	stateAllowManage
+	stateDotenvPrompt
+	stateDotenvPick
+	stateDotenvKeyName
 )
 
 const (
@@ -257,6 +261,10 @@ type model struct {
 	forceKeyAfterURL    bool
 	customMode          int
 	customModeCursor    int
+	dotenvCursor        int
+	dotenvPickCursor    int
+	dotenvKeyName       string
+	dotenvKeys          []string
 	savedEndpointName   string
 	confirmDeleteEndpoint string
 
@@ -270,6 +278,7 @@ type model struct {
 	keyInput       textinput.Model
 	nameInput      textinput.Model
 	manualInput    textinput.Model
+	dotenvInput    textinput.Model
 	spinner        spinner.Model
 
 	messages         []llm.Message
@@ -390,6 +399,69 @@ func (m model) enterChatState() (model, tea.Cmd) {
 		cmds = append(cmds, resourceMonitorTickCmd())
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func (m model) continueAfterAPIKey() (tea.Model, tea.Cmd) {
+	if m.dotenvKeyName != "" {
+		cfg, _ := config.Load()
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+		cfg.DotenvKeyName = m.dotenvKeyName
+		config.Save(cfg)
+	}
+
+	if m.customMode == customModeSave {
+		cfg, _ := config.Load()
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+
+		if err := cfg.AddSavedEndpoint(m.savedEndpointName, m.customURL); err != nil {
+			m.err = err
+			m.errChoice = 0
+			m.state = stateError
+			return m, nil
+		}
+
+		cfg.Provider = m.provider
+		cfg.Model = m.modelName
+		cfg.CustomBaseURL = m.customURL
+		cfg.SavedEndpointName = m.savedEndpointName
+		cfg.ReasoningVisible = m.reasoning.defaultVisible
+		cfg.ThinkingType = m.thinkingType
+		cfg.EffortLevel = m.effortLevel
+
+		if err := config.Save(cfg); err != nil {
+			m.err = err
+			m.errChoice = 0
+			m.state = stateError
+			return m, nil
+		}
+
+		m.providerList.SetItems(buildProviderItems(cfg.SavedEndpoints))
+		m.customMode = 0
+
+		if m.modelName != "" {
+			return m.enterChatState()
+		}
+
+		m.state = stateModelFetch
+		return m, tea.Batch(
+			m.spinner.Tick,
+			m.fetchModelsCmd(),
+		)
+	}
+
+	if m.modelName != "" {
+		return m.enterChatState()
+	}
+
+	m.state = stateModelFetch
+	return m, tea.Batch(
+		m.spinner.Tick,
+		m.fetchModelsCmd(),
+	)
 }
 
 type providerPickKind int
@@ -605,6 +677,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	mi.Width = 60
 	mi.CharLimit = 100
 
+	di := textinput.New()
+	di.Placeholder = "GURT_API_KEY"
+	di.Width = 60
+	di.CharLimit = 200
+
 	ci := textinput.New()
 	ci.Placeholder = "Ask something..."
 	ci.Width = 60
@@ -651,6 +728,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	}
 
 	var startState state
+	var envKeys []string
 	if reconfigure {
 		if provider != "" {
 			key, _ := config.GetAPIKey(provider, customURL, savedEndpointName)
@@ -663,7 +741,17 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		key, _ := config.GetAPIKey(provider, customURL, savedEndpointName)
 		apiKey = key
 		if apiKey == "" {
-			startState = stateAPIKeyInput
+			dk, _ := config.GetDotenvKeys()
+			if len(dk) > 0 {
+				startState = stateDotenvPick
+				envKeys = make([]string, 0, len(dk))
+				for k := range dk {
+					envKeys = append(envKeys, k)
+				}
+				sort.Strings(envKeys)
+			} else {
+				startState = stateAPIKeyInput
+			}
 		} else if modelName == "" {
 			startState = stateModelFetch
 		} else {
@@ -711,6 +799,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		customURL:            customURL,
 		savedEndpointName:    savedEndpointName,
 		apiKey:               apiKey,
+		dotenvKeys:           envKeys,
 		workspaceRoot:        wd,
 		allowedBashPrefixes:        allowedBashPrefixes,
 		allowedBashPrefixesSession: make(map[string]bool),
@@ -729,6 +818,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		keyInput:             ki,
 		nameInput:            ni,
 		manualInput:          mi,
+		dotenvInput:          di,
 		spinner:              sp,
 		messages:             []llm.Message{},
 		chatInput:            ci,

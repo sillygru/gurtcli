@@ -43,6 +43,12 @@ func (m model) View() string {
 		content = m.chatView()
 	case stateAllowManage:
 		content = m.allowManageView()
+	case stateDotenvPrompt:
+		content = m.dotenvPromptView()
+	case stateDotenvPick:
+		content = m.dotenvPickView()
+	case stateDotenvKeyName:
+		content = m.dotenvKeyNameView()
 	}
 	if content == "" {
 		return ""
@@ -228,6 +234,71 @@ func (m model) errorView() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) dotenvPromptView() string {
+	var b strings.Builder
+	b.WriteString(m.theme.Brand.Render("  gurt"))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Error.Render("Could not save API key to OS keychain"))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render(m.err.Error()))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render("The key is active for this session. How should it be saved for future sessions?"))
+	b.WriteString("\n\n")
+	items := []string{
+		"Use key this session only (will need to re-enter next time)",
+		"Save API key to .env file",
+	}
+	for i, item := range items {
+		prefix := "  "
+		style := m.theme.Dim
+		if i == m.dotenvCursor {
+			prefix = "> "
+			style = m.theme.Header
+		}
+		b.WriteString(style.Render(prefix + item))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) dotenvPickView() string {
+	var b strings.Builder
+	b.WriteString(m.theme.Brand.Render("  gurt"))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render("Found API key(s) in environment file:"))
+	b.WriteString("\n\n")
+	items := append(m.dotenvKeys, "Enter a new API key")
+	for i, item := range items {
+		prefix := "  "
+		style := m.theme.Dim
+		if i == m.dotenvPickCursor {
+			prefix = "> "
+			style = m.theme.Header
+		}
+		b.WriteString(style.Render(prefix + item))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	return b.String()
+}
+
+func (m model) dotenvKeyNameView() string {
+	var b strings.Builder
+	b.WriteString(m.theme.Brand.Render("  gurt"))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render("Save API key to .env file."))
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render("Enter the environment variable name:"))
+	b.WriteString("\n\n")
+	b.WriteString(m.dotenvInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
 	return b.String()
 }
 

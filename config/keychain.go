@@ -34,6 +34,17 @@ func GetAPIKey(provider, customBaseURL, savedEndpointName string) (string, error
 		return v, nil
 	}
 
+	if err := LoadDotenv(); err == nil {
+		if v := os.Getenv("GURT_API_KEY"); v != "" {
+			return v, nil
+		}
+		if cfg, cfgErr := Load(); cfgErr == nil && cfg.DotenvKeyName != "" {
+			if v := os.Getenv(cfg.DotenvKeyName); v != "" {
+				return v, nil
+			}
+		}
+	}
+
 	return "", nil
 }
 

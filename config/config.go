@@ -72,6 +72,7 @@ type Config struct {
 	Theme              string          `json:"theme,omitempty"`
 
 	UpdateVersion    string `json:"update_version,omitempty"`
+	DotenvKeyName    string `json:"dotenv_key_name,omitempty"`
 }
 
 func Dir() (string, error) {

@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"syscall"
 	"text/template"
 	"time"
 
@@ -108,6 +107,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSessionPick(msg)
 		case stateAllowManage:
 			return m.updateAllowManage(msg)
+		case stateDotenvPrompt:
+			return m.updateDotenvPrompt(msg)
+		case stateDotenvPick:
+			return m.updateDotenvPick(msg)
+		case stateDotenvKeyName:
+			return m.updateDotenvKeyName(msg)
 		}
 		return m, nil
 
@@ -761,66 +766,95 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.apiKey = key
 
 	if m.customMode == customModeSave {
-		cfg, _ := config.Load()
-		if cfg == nil {
-			cfg = &config.Config{}
-		}
-
-		if err := cfg.AddSavedEndpoint(m.savedEndpointName, m.customURL); err != nil {
-			m.err = err
-			m.errChoice = 0
-			m.state = stateError
-			return m, nil
-		}
-
 		if err := config.SetAPIKey(m.provider, m.customURL, m.savedEndpointName, key); err != nil {
 			m.err = err
-			m.errChoice = 0
-			m.state = stateError
+			m.state = stateDotenvPrompt
+			m.dotenvCursor = 0
 			return m, nil
 		}
+	}
 
-		cfg.Provider = m.provider
-		cfg.Model = m.modelName
-		cfg.CustomBaseURL = m.customURL
-		cfg.SavedEndpointName = m.savedEndpointName
-		cfg.ReasoningVisible = m.reasoning.defaultVisible
-		cfg.ThinkingType = m.thinkingType
-		cfg.EffortLevel = m.effortLevel
+	return m.continueAfterAPIKey()
+}
 
-		if err := config.Save(cfg); err != nil {
-			m.err = err
-			m.errChoice = 0
-			m.state = stateError
+func (m model) updateDotenvPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "down":
+		m.dotenvCursor = (m.dotenvCursor + 1) % 2
+	case "enter":
+		switch m.dotenvCursor {
+		case 0:
+			return m.continueAfterAPIKey()
+		case 1:
+			m.dotenvInput.SetValue("GURT_API_KEY")
+			m.dotenvInput.Focus()
+			m.state = stateDotenvKeyName
 			return m, nil
 		}
+	}
+	return m, nil
+}
 
-		// Rebuild provider list to include new saved endpoint
-		m.providerList.SetItems(buildProviderItems(cfg.SavedEndpoints))
-		m.customMode = 0
-
-		if m.modelName != "" {
-			m2, cmd := m.enterChatState()
-	return m2, cmd
+func (m model) updateDotenvPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	total := len(m.dotenvKeys) + 1
+	switch msg.String() {
+	case "up":
+		m.dotenvPickCursor--
+		if m.dotenvPickCursor < 0 {
+			m.dotenvPickCursor = total - 1
 		}
+	case "down":
+		m.dotenvPickCursor++
+		if m.dotenvPickCursor >= total {
+			m.dotenvPickCursor = 0
+		}
+	case "enter":
+		if m.dotenvPickCursor < len(m.dotenvKeys) {
+			dk, err := config.GetDotenvKeys()
+			if err != nil {
+				m.err = err
+				m.errChoice = 0
+				m.state = stateError
+				return m, nil
+			}
+			name := m.dotenvKeys[m.dotenvPickCursor]
+			m.apiKey = dk[name]
+			m.dotenvKeyName = name
+			return m.continueAfterAPIKey()
+		}
+		m.state = stateAPIKeyInput
+		m.keyInput.Reset()
+		m.keyInput.Focus()
+		return m, nil
+	}
+	return m, nil
+}
 
-		m.state = stateModelFetch
-		return m, tea.Batch(
-			m.spinner.Tick,
-			m.fetchModelsCmd(),
-		)
+func (m model) updateDotenvKeyName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.dotenvInput, cmd = m.dotenvInput.Update(msg)
+
+	if msg.String() == "esc" {
+		m.state = stateDotenvPrompt
+		return m, nil
+	}
+	if msg.String() != "enter" {
+		return m, cmd
 	}
 
-	if m.modelName != "" {
-		m2, cmd := m.enterChatState()
-	return m2, cmd
+	name := strings.TrimSpace(m.dotenvInput.Value())
+	if name == "" {
+		return m, nil
 	}
 
-	m.state = stateModelFetch
-	return m, tea.Batch(
-		m.spinner.Tick,
-		m.fetchModelsCmd(),
-	)
+	if err := config.SaveDotenv(name, m.apiKey); err != nil {
+		m.err = err
+		m.errChoice = 0
+		m.state = stateError
+		return m, nil
+	}
+	m.dotenvKeyName = name
+	return m.continueAfterAPIKey()
 }
 
 func (m model) updateCustomName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2532,36 +2566,6 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
 	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
-}
-
-var prevRusage syscall.Rusage
-var prevWall time.Time
-
-func resourceMonitorCmd() tea.Msg {
-	var cur syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cur); err != nil {
-		return resourceStatsMsg{}
-	}
-	curWall := time.Now()
-
-	var cpuPercent float64
-	if !prevWall.IsZero() {
-		curCPU := cur.Utime.Nano() + cur.Stime.Nano()
-		prevCPU := prevRusage.Utime.Nano() + prevRusage.Stime.Nano()
-		cpuDelta := curCPU - prevCPU
-		wallDelta := curWall.Sub(prevWall).Nanoseconds()
-		if wallDelta > 0 {
-			cpuPercent = float64(cpuDelta) / float64(wallDelta) * 100
-		}
-	}
-	prevRusage = cur
-	prevWall = curWall
-
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	memMB := float64(m.Sys) / 1024 / 1024
-
-	return resourceStatsMsg{cpuPercent: cpuPercent, memMB: memMB}
 }
 
 func resourceMonitorTickCmd() tea.Cmd {
