@@ -31,7 +31,9 @@ if (!goos || !goarch) {
 }
 
 const binaryName = goos === "windows" ? "gurtcli.exe" : "gurtcli";
-const archive = `gurtcli_${version}_${goos}_${goarch}.tar.gz`;
+const archive = goos === "windows" 
+  ? `gurtcli_${version}_${goos}_${goarch}.zip`
+  : `gurtcli_${version}_${goos}_${goarch}.tar.gz`;
 const baseUrl = `https://github.com/sillygru/gurtcli/releases/download/v${version}`;
 const archiveUrl = `${baseUrl}/${archive}`;
 const checksumsUrl = `${baseUrl}/checksums.txt`;
@@ -155,7 +157,11 @@ async function main() {
 
     console.log("Extracting...");
     fs.mkdirSync(binDir, { recursive: true });
-    execSync(`tar -xzf "${archivePath}" -C "${binDir}"`, { stdio: "pipe" });
+    if (goos === "windows") {
+      execSync(`powershell Expand-Archive -Path "${archivePath}" -DestinationPath "${binDir}" -Force`, { stdio: "pipe" });
+    } else {
+      execSync(`tar -xzf "${archivePath}" -C "${binDir}"`, { stdio: "pipe" });
+    }
     fs.unlinkSync(archivePath);
     fs.rmdirSync(tmpDir);
 

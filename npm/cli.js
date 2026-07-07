@@ -125,7 +125,9 @@ async function ensureBinary() {
     process.exit(1);
   }
 
-  const archive = `gurtcli_${version}_${goos}_${goarch}.tar.gz`;
+  const archive = goos === "windows"
+    ? `gurtcli_${version}_${goos}_${goarch}.zip`
+    : `gurtcli_${version}_${goos}_${goarch}.tar.gz`;
   const baseUrl = `https://github.com/sillygru/gurtcli/releases/download/v${version}`;
   const archiveUrl = `${baseUrl}/${archive}`;
 
@@ -139,7 +141,11 @@ async function ensureBinary() {
     await verifyChecksum(archivePath, archive);
 
     console.error("Extracting...");
-    execSync(`tar -xzf "${archivePath}" -C "${tmpDir}"`, { stdio: "pipe" });
+    if (goos === "windows") {
+      execSync(`powershell Expand-Archive -Path "${archivePath}" -DestinationPath "${tmpDir}" -Force`, { stdio: "pipe" });
+    } else {
+      execSync(`tar -xzf "${archivePath}" -C "${tmpDir}"`, { stdio: "pipe" });
+    }
 
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
