@@ -18,7 +18,7 @@ const (
 
 // RenderToolCall renders a tool invocation as a bordered card.
 func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
-	accent := ToolAccentFor(tc.Function.Name)
+	accent := t.ToolAccentFor(tc.Function.Name)
 	args := parseToolArgs(tc.Function.Arguments)
 
 	var body strings.Builder
@@ -37,13 +37,13 @@ func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 		renderGenericArgs(&body, t, args)
 	}
 
-	header := renderToolHeader(accent)
+	header := renderToolHeader(t, accent)
 	content := header
 	if body.Len() > 0 {
 		content += "\n" + body.String()
 	}
 
-	return wrapToolCard(accent.Color, content, cardWidth(width))
+	return wrapToolCard(t, accent, content, cardWidth(width))
 }
 
 // RenderToolResult renders the output of a completed tool call.
@@ -124,25 +124,46 @@ func RenderAssistantContent(t Theme, content string, width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// PermissionOptions returns the permission option labels for a tool.
+// This is the single source of truth for option count and order.
+// bashPrefix is embedded for run_bash labels.
+func PermissionOptions(toolName, bashPrefix string) []string {
+	switch toolName {
+	case "run_bash":
+		return []string{
+			"Yes",
+			"Allow " + bashPrefix + " for this session",
+			"Always allow " + bashPrefix,
+			"Allow everything for this session",
+			"No",
+		}
+	case "edit_file", "write_file":
+		return []string{
+			"Yes",
+			"Allow every edit for this session",
+			"Allow everything for this session",
+			"Always allow edits",
+			"No",
+		}
+	case "delete_file":
+		return []string{
+			"Yes",
+			"Allow deletion of files for this session",
+			"Allow everything for this session",
+			"No",
+		}
+	default:
+		return []string{"Yes", "Allow everything for this session", "No"}
+	}
+}
+
 // RenderPermissionPrompt renders the permission confirmation box content.
 // cursor is the index of the currently selected option.
 // bashPrefix is the command prefix to display in bash-related options, if any.
 func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string) string {
 	content := RenderToolCall(t, tc, width) + "\n\n"
 
-	var options []string
-	switch tc.Function.Name {
-	case "run_bash":
-		label := "Allow " + bashPrefix + " for this session"
-		labelPerm := "Always allow " + bashPrefix
-		options = []string{"Yes", label, labelPerm, "Allow everything for this session", "No"}
-	case "edit_file", "write_file":
-		options = []string{"Yes", "Allow every edit for this session", "Allow everything for this session", "No"}
-	case "delete_file":
-		options = []string{"Yes", "Allow deletion of files for this session", "Allow everything for this session", "No"}
-	default:
-		options = []string{"Yes", "Allow everything for this session", "No"}
-	}
+	options := PermissionOptions(tc.Function.Name, bashPrefix)
 
 	b := new(strings.Builder)
 	b.WriteString(content)
@@ -161,12 +182,14 @@ func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bas
 	return b.String()
 }
 
-func renderToolHeader(accent ToolAccent) string {
+func renderToolHeader(t Theme, accent ToolAccent) string {
 	badge := lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Base)).
 		Bold(true).
 		Foreground(lipgloss.Color(accent.Color))
 
 	icon := lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Base)).
 		Foreground(lipgloss.Color(accent.Color)).
 		Bold(true).
 		Render(accent.Icon)
@@ -174,10 +197,11 @@ func renderToolHeader(accent ToolAccent) string {
 	return "  " + icon + " " + badge.Render(accent.Label)
 }
 
-func wrapToolCard(accentColor, content string, width int) string {
+func wrapToolCard(t Theme, accent ToolAccent, content string, width int) string {
 	card := lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Base)).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(accentColor)).
+		BorderForeground(lipgloss.Color(accent.Color)).
 		Padding(0, 1).
 		Margin(0, 0, 1, 0).
 		Width(width)

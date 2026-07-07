@@ -104,7 +104,7 @@ func TestShortenPath(t *testing.T) {
 
 func TestToolAccentForUnknown(t *testing.T) {
 	t.Parallel()
-	a := ToolAccentFor("unknown_tool")
+	a := DefaultTheme().ToolAccentFor("unknown_tool")
 	if a.Icon == "" || a.Label != "unknown_tool" {
 		t.Fatalf("unexpected accent: %+v", a)
 	}

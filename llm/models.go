@@ -229,13 +229,6 @@ func FetchModels(ctx context.Context, provider, apiKey, baseURL string) ([]Model
 
 		models, lastErr = fetchModelsOnce(ctx, reqURL, provider, apiKey)
 		if lastErr == nil {
-			ids := make([]string, 0, len(models))
-			for i, m := range models {
-				if i < 10 {
-					ids = append(ids, m.ID)
-				}
-			}
-			LogDebug("FetchModels: provider=%s count=%d sample_ids=%v", provider, len(models), ids)
 			return models, nil
 		}
 	}
@@ -317,8 +310,11 @@ func parseGeminiModelsResponse(r io.Reader) ([]ModelInfo, error) {
 
 	models := make([]ModelInfo, 0, len(result.Models))
 	for _, m := range result.Models {
+		if !strings.HasPrefix(m.Name, "models/") {
+			continue
+		}
 		id := strings.TrimPrefix(m.Name, "models/")
-		if id == "" || id == m.Name {
+		if id == "" {
 			continue
 		}
 		if !isGeminiChatModel(id, m.SupportedMethods) {

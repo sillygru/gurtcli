@@ -64,25 +64,29 @@ func CheckLatestVersion(ctx context.Context) (string, error) {
 }
 
 func compareVersions(a, b string) int {
-	parse := func(v string) []int {
+	parse := func(v string) (nums []int, preRelease bool) {
 		v = strings.TrimPrefix(v, "v")
-		parts := strings.Split(v, ".")
-		nums := make([]int, len(parts))
-		for i, p := range parts {
-			n, err := strconv.Atoi(p)
-			if err != nil {
-				return nil
+		for _, p := range strings.Split(v, ".") {
+			base := p
+			if idx := strings.IndexByte(p, '-'); idx >= 0 {
+				preRelease = true
+				base = p[:idx]
 			}
-			nums[i] = n
+			n, err := strconv.Atoi(base)
+			if err != nil {
+				preRelease = true
+				break
+			}
+			nums = append(nums, n)
+			if preRelease {
+				break
+			}
 		}
-		return nums
+		return
 	}
 
-	va := parse(a)
-	vb := parse(b)
-	if va == nil || vb == nil {
-		return 0
-	}
+	va, aPre := parse(a)
+	vb, bPre := parse(b)
 
 	maxLen := len(va)
 	if len(vb) > maxLen {
@@ -102,6 +106,13 @@ func compareVersions(a, b string) int {
 		if na > nb {
 			return 1
 		}
+	}
+
+	if aPre != bPre {
+		if aPre {
+			return -1
+		}
+		return 1
 	}
 	return 0
 }

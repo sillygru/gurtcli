@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/charmbracelet/bubbletea"
+	"github.com/sillygru/gurtcli/stats"
 )
 
 func main() {
@@ -23,10 +24,20 @@ func main() {
 		os.Exit(0)
 	}
 
+	if flag.NArg() > 0 && flag.Arg(0) == "stats" {
+		s, err := stats.Compute()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		stats.Render(os.Stdout, s)
+		os.Exit(0)
+	}
+
 	skipPerms := *yolo || *dangerous
 
 	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure, *forceLocal)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	globalProgram = p
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

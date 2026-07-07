@@ -29,21 +29,16 @@ type providerModels struct {
 // and uses the embedded copy directly.
 func FetchLLMDetails(ctx context.Context, forceLocal bool) (map[string]ModelInfo, error) {
 	if forceLocal {
-		LogDebug("FetchLLMDetails: force-local enabled, using embedded")
 		return parseLLMDetails(embeddedLLMDetails)
 	}
 
 	data, err := fetchRemoteLLMDetails(ctx)
 	if err != nil {
-		LogDebug("FetchLLMDetails: remote fetch failed, using embedded: %v", err)
 		return parseLLMDetails(embeddedLLMDetails)
 	}
 
-	LogDebug("FetchLLMDetails: remote fetch succeeded (%d bytes)", len(data))
-
 	details, err := parseLLMDetails(data)
 	if err != nil {
-		LogDebug("FetchLLMDetails: remote parse failed (%v), falling back to embedded", err)
 		return parseLLMDetails(embeddedLLMDetails)
 	}
 
@@ -120,8 +115,6 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 			result[m.Slug] = m
 		}
 	}
-	LogDebug("parseLLMDetails: openai=%d anthropic=%d gemini=%d others=%d total=%d",
-		len(file.OpenAI.Data), len(file.Anthropic.Data), len(file.Gemini.Data), len(file.Others.Data), len(result))
 	return result, nil
 }
 
@@ -146,20 +139,6 @@ func EnrichModels(apiModels []ModelInfo, details map[string]ModelInfo, provider 
 			matched++
 		}
 	}
-	LogDebug("EnrichModels: api_models=%d matched=%d total_details=%d provider=%s",
-		len(apiModels), matched, len(details), provider)
-	if matched < len(apiModels) {
-		var missingIDs []string
-		for _, m := range apiModels {
-			if _, ok := details[m.ID]; !ok {
-				missingIDs = append(missingIDs, m.ID)
-				if len(missingIDs) >= 10 {
-					break
-				}
-			}
-		}
-		LogDebug("EnrichModels: unmatched sample_ids=%v", missingIDs)
-	}
 	return enriched
 }
 
@@ -170,10 +149,6 @@ func hasNoneThinking(levels []string) bool {
 		}
 	}
 	return false
-}
-
-func IsProviderOpenAI(provider string) bool {
-	return provider == ProviderOpenAI || provider == ProviderCustom || provider == ProviderGemini
 }
 
 func (e EffortCapabilities) EffortLevels() []string {

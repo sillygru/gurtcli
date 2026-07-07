@@ -1,12 +1,12 @@
 package sessions
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -49,7 +49,7 @@ func configDir() (string, error) {
 	return filepath.Join(home, ".config", "gurtcli"), nil
 }
 
-func ensureDB() (*sql.DB, error) {
+func EnsureDB() (*sql.DB, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -96,27 +96,48 @@ func removeOldSessionsDir(cfgDir string) {
 }
 
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS sessions (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			provider TEXT NOT NULL,
-			model TEXT NOT NULL,
-			custom_url TEXT NOT NULL DEFAULT '',
-			saved_endpoint_name TEXT NOT NULL DEFAULT '',
-			thinking_type TEXT NOT NULL DEFAULT '',
-			effort_level TEXT NOT NULL DEFAULT '',
-			reasoning_visible INTEGER NOT NULL DEFAULT 0,
-			workspace_root TEXT NOT NULL,
-			messages TEXT NOT NULL DEFAULT '[]'
-		);
-		CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_root);
-	`)
-	if err != nil {
-		return fmt.Errorf("migrate: %w", err)
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("reading schema version: %w", err)
 	}
+
+	if version < 1 {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				provider TEXT NOT NULL,
+				model TEXT NOT NULL,
+				custom_url TEXT NOT NULL DEFAULT '',
+				saved_endpoint_name TEXT NOT NULL DEFAULT '',
+				thinking_type TEXT NOT NULL DEFAULT '',
+				effort_level TEXT NOT NULL DEFAULT '',
+				reasoning_visible INTEGER NOT NULL DEFAULT 0,
+				workspace_root TEXT NOT NULL,
+				messages TEXT NOT NULL DEFAULT '[]'
+			);
+			CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_root);
+			PRAGMA user_version = 1;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v1: %w", err)
+		}
+		version = 1
+	}
+
+	if version < 2 {
+		_, err := db.Exec(`
+			ALTER TABLE sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+			PRAGMA user_version = 2;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v2: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -134,6 +155,8 @@ type Session struct {
 	ReasoningVisible  bool          `json:"reasoning_visible,omitempty"`
 	WorkspaceRoot     string        `json:"workspace_root"`
 	Messages          []llm.Message `json:"messages"`
+	InputTokens       int           `json:"input_tokens,omitempty"`
+	OutputTokens      int           `json:"output_tokens,omitempty"`
 }
 
 type Metadata struct {
@@ -148,11 +171,15 @@ type Metadata struct {
 }
 
 func GenerateID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x_%d", b, time.Now().UnixNano())
 }
 
 func Save(s *Session) error {
-	db, err := ensureDB()
+	db, err := EnsureDB()
 	if err != nil {
 		return fmt.Errorf("session db: %w", err)
 	}
@@ -171,8 +198,8 @@ func Save(s *Session) error {
 		INSERT OR REPLACE INTO sessions
 			(id, name, created_at, updated_at, provider, model, custom_url,
 			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
-			 workspace_root, messages)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 workspace_root, messages, input_tokens, output_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		s.ID, s.Name,
 		s.CreatedAt.UTC().Format(time.RFC3339),
@@ -181,6 +208,7 @@ func Save(s *Session) error {
 		s.SavedEndpointName, s.ThinkingType, s.EffortLevel,
 		boolToInt(s.ReasoningVisible),
 		s.WorkspaceRoot, string(msgs),
+		s.InputTokens, s.OutputTokens,
 	)
 	if err != nil {
 		return fmt.Errorf("saving session: %w", err)
@@ -189,7 +217,7 @@ func Save(s *Session) error {
 }
 
 func Load(workspace, id string) (*Session, error) {
-	db, err := ensureDB()
+	db, err := EnsureDB()
 	if err != nil {
 		return nil, fmt.Errorf("session db: %w", err)
 	}
@@ -197,7 +225,7 @@ func Load(workspace, id string) (*Session, error) {
 	row := db.QueryRow(`
 		SELECT id, name, created_at, updated_at, provider, model, custom_url,
 		       saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
-		       workspace_root, messages
+		       workspace_root, messages, input_tokens, output_tokens
 		FROM sessions WHERE id = ? AND workspace_root = ?
 	`, id, workspace)
 
@@ -211,6 +239,7 @@ func Load(workspace, id string) (*Session, error) {
 		&s.Provider, &s.Model, &s.CustomURL,
 		&s.SavedEndpointName, &s.ThinkingType, &s.EffortLevel,
 		&reasoningVisible, &s.WorkspaceRoot, &msgsJSON,
+		&s.InputTokens, &s.OutputTokens,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("session not found: %s", id)
@@ -237,14 +266,14 @@ func Load(workspace, id string) (*Session, error) {
 }
 
 func List(workspace string) ([]Metadata, error) {
-	db, err := ensureDB()
+	db, err := EnsureDB()
 	if err != nil {
 		return nil, fmt.Errorf("session db: %w", err)
 	}
 
 	rows, err := db.Query(`
 		SELECT id, name, created_at, updated_at, provider, model,
-		       workspace_root, json_array_length(messages) AS message_count
+		       workspace_root, (SELECT count(*) FROM json_each(messages) WHERE json_extract(value, '$.role') = 'user') AS message_count
 		FROM sessions WHERE workspace_root = ?
 		ORDER BY updated_at DESC
 	`, workspace)
@@ -268,26 +297,18 @@ func List(workspace string) ([]Metadata, error) {
 		metas = append(metas, m)
 	}
 
-	sort.Slice(metas, func(i, j int) bool {
-		return metas[i].UpdatedAt.After(metas[j].UpdatedAt)
-	})
-
 	return metas, nil
 }
 
 func Delete(workspace, id string) error {
-	db, err := ensureDB()
+	db, err := EnsureDB()
 	if err != nil {
 		return fmt.Errorf("session db: %w", err)
 	}
 
-	res, err := db.Exec("DELETE FROM sessions WHERE id = ? AND workspace_root = ?", id, workspace)
+	_, err = db.Exec("DELETE FROM sessions WHERE id = ? AND workspace_root = ?", id, workspace)
 	if err != nil {
 		return fmt.Errorf("deleting session: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return nil
 	}
 	return nil
 }

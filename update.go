@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
@@ -36,6 +37,10 @@ type sessionTitleGeneratedMsg struct {
 }
 
 var dateSuffixRegex = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
+
+// partialMouseEventRe matches the tail of a split SGR mouse sequence
+// (e.g. "<64;117;26M") that the input reader parsed as key runes.
+var partialMouseEventRe = regexp.MustCompile(`^<\d+;\d+;\d+[Mm]?$`)
 
 func hasDateSuffix(name string) bool {
 	return dateSuffixRegex.MatchString(name)
@@ -61,7 +66,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.Width = msg.Width - 4
 		m.chatViewport.Height = chatViewHeight
 		m.chatInput.Width = msg.Width - 4
-		return m, nil
+		return m.adjustViewportHeight(), nil
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -115,7 +120,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case llmDetailsLoadedMsg:
 		m.llmDetails = msg.details
 		m.llmDetailsReady = true
-		llm.LogDebug("model: llmdetails loaded (%d entries)", len(msg.details))
 		return m, nil
 
 	case modelsFetchedMsg:
@@ -126,7 +130,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		models := append([]llm.ModelInfo(nil), msg.models...)
-		beforeFilter := len(models)
 		if m.provider == llm.ProviderOpenAI {
 			excluded := make([]string, 0)
 			filtered := models[:0]
@@ -143,9 +146,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			models = filtered
-			if len(excluded) > 0 {
-				llm.LogDebug("modelsFetchedMsg: openai before=%d after=%d excluded=%v", beforeFilter, len(models), excluded)
-			}
 		} else if m.provider == llm.ProviderAnthropic {
 			filtered := models[:0]
 			for _, model := range models {
@@ -154,7 +154,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			models = filtered
-			llm.LogDebug("modelsFetchedMsg: anthropic before=%d after=%d", beforeFilter, len(models))
 		} else if m.provider == llm.ProviderGemini {
 			excluded := make([]string, 0)
 			filtered := models[:0]
@@ -171,16 +170,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				filtered = append(filtered, model)
 			}
 			models = filtered
-			if len(excluded) > 0 {
-				llm.LogDebug("modelsFetchedMsg: gemini before=%d after=%d excluded=%v", beforeFilter, len(models), excluded)
-			}
 		}
-		if m.provider == llm.ProviderGemini {
-			for i, j := 0, len(models)-1; i < j; i, j = i+1, j-1 {
-				models[i], models[j] = models[j], models[i]
-			}
-		}
-		if m.provider == llm.ProviderOpenAI {
+		if m.provider == llm.ProviderGemini || m.provider == llm.ProviderOpenAI {
 			for i, j := 0, len(models)-1; i < j; i, j = i+1, j-1 {
 				models[i], models[j] = models[j], models[i]
 			}
@@ -189,11 +180,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		items := make([]list.Item, len(models))
 		for i, model := range models {
 			items[i] = modelItem{info: model, provider: m.provider}
-		}
-		if len(models) > 0 {
-			llm.LogDebug("modelsFetchedMsg: final count=%d first_item display=%q id=%q", len(models), models[0].DisplayName, models[0].ID)
-		} else {
-			llm.LogDebug("modelsFetchedMsg: final count=0 - no models to display!")
 		}
 		m.modelList.SetItems(items)
 		m.state = stateModelPick
@@ -245,16 +231,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatViewport.GotoBottom()
 			m.chatInput.Focus()
 			if m.queuedMessage != "" {
-				qmsg := m.queuedMessage
-				m.queuedMessage = ""
-				m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
-				m.isStreaming = true
-				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-				m.workingSpinnerIdx = 0
-				m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-				m.chatViewport.SetContent(buildChatContentHighlighted(m))
-				m.chatViewport.GotoBottom()
-				return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+				return m.replayQueuedMessage()
 			}
 			return m, m.persistSessionCmd()
 		}
@@ -263,10 +240,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamingContent != nil {
 			contentStr = strings.TrimSpace(m.streamingContent.String())
 		}
-	reasoningStr := ""
-	if m.reasoning.content != nil {
-		reasoningStr = strings.TrimSpace(m.reasoning.content.String())
-	}
+		reasoningStr := ""
+		if m.reasoning.content != nil {
+			reasoningStr = strings.TrimSpace(m.reasoning.content.String())
+		}
 		m.streamingContent = nil
 		m.isStreaming = false
 		m.workingMsg = ""
@@ -282,6 +259,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			asm := llm.Message{Role: "assistant", Content: contentStr, Model: m.modelName}
 			if reasoningStr != "" {
 				asm.Reasoning = reasoningStr
+				asm.ReasoningDuration = m.reasoning.duration
 			}
 			asm.ToolCalls = msg.toolCalls
 			m.messages = append(m.messages, asm)
@@ -289,26 +267,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatViewport.GotoBottom()
 			m.toolCallCycle++
 			if m.toolCallCycle > maxToolCallCycles {
-			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "_Interrupted_",
-				Model:   m.modelName,
-			})
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: "_Interrupted_",
+					Model:   m.modelName,
+				})
 				m.toolCallCycle = 0
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				if m.queuedMessage != "" {
-					qmsg := m.queuedMessage
-					m.queuedMessage = ""
-					m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
-					m.isStreaming = true
-					m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-					m.workingSpinnerIdx = 0
-					m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-					m.chatViewport.SetContent(buildChatContentHighlighted(m))
-					m.chatViewport.GotoBottom()
-					return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+					return m.replayQueuedMessage()
 				}
 				return m, m.persistSessionCmd()
 			}
@@ -319,6 +288,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg := llm.Message{Role: "assistant", Content: contentStr, Model: m.modelName}
 			if reasoningStr != "" {
 				msg.Reasoning = reasoningStr
+				msg.ReasoningDuration = m.reasoning.duration
 			}
 			m.messages = append(m.messages, msg)
 		}
@@ -327,16 +297,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
 		if m.queuedMessage != "" {
-			qmsg := m.queuedMessage
-			m.queuedMessage = ""
-			m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
-			m.isStreaming = true
-			m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-			m.workingSpinnerIdx = 0
-			m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-			m.chatViewport.GotoBottom()
-			return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+			return m.replayQueuedMessage()
 		}
 		cmds := []tea.Cmd{m.persistSessionCmd()}
 		if m.needsTitle {
@@ -366,7 +327,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toastTimeoutMsg:
 		if m.toast != nil && m.toast.id == msg.id {
-			m.toast = nil
+			if m.yolo {
+				m.toastSeq++
+				m.toast = &toastMsg{text: "YOLO mode", id: m.toastSeq}
+			} else {
+				m.toast = nil
+			}
 		}
 		return m, nil
 
@@ -508,7 +474,8 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.fetchModelsCmd(),
 			)
 		}
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 	if m.provider == "" {
 		m.state = stateProviderPick
@@ -530,7 +497,8 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fetchModelsCmd(),
 		)
 	}
-	return m.enterChatState(), nil
+	m2, cmd := m.enterChatState()
+	return m2, cmd
 }
 
 func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -570,7 +538,8 @@ func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.providerList, cmd = m.providerList.Update(msg)
 
 	if msg.String() == "esc" {
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 
 	// Delete saved endpoint
@@ -693,7 +662,8 @@ func (m model) continueProviderPick() (tea.Model, tea.Cmd) {
 	if key != "" {
 		m.apiKey = key
 		if m.modelName != "" {
-			return m.enterChatState(), nil
+			m2, cmd := m.enterChatState()
+	return m2, cmd
 		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
@@ -740,7 +710,8 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key != "" {
 		m.apiKey = key
 		if m.modelName != "" {
-			return m.enterChatState(), nil
+			m2, cmd := m.enterChatState()
+	return m2, cmd
 		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
@@ -820,7 +791,8 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.customMode = 0
 
 		if m.modelName != "" {
-			return m.enterChatState(), nil
+			m2, cmd := m.enterChatState()
+	return m2, cmd
 		}
 
 		m.state = stateModelFetch
@@ -830,16 +802,9 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 	}
 
-	// One-time: save key and proceed
-	if err := config.SetAPIKey(m.provider, m.customURL, m.savedEndpointName, key); err != nil {
-		m.err = err
-		m.errChoice = 0
-		m.state = stateError
-		return m, nil
-	}
-
 	if m.modelName != "" {
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 
 	m.state = stateModelFetch
@@ -889,6 +854,7 @@ func saveConfig(m model) error {
 	cfg.AlwaysAllowTools = m.alwaysAllowTools
 	cfg.AlwaysAllowCommandPrefixes = m.alwaysAllowCommandPrefixes
 	cfg.TelemetryEnabled = &m.telemetryEnabled
+	cfg.Theme = m.themeName
 	return config.Save(cfg)
 }
 
@@ -897,7 +863,8 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.modelList, cmd = m.modelList.Update(msg)
 
 	if msg.String() == "esc" {
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -934,7 +901,7 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.effortLevel == "" {
 			m.effortLevel = m.effortOptions[0]
 		}
-		goto validateAndShow
+		return m.showReasoningConfig()
 
 	case llm.ProviderOpenAI, llm.ProviderGemini, llm.ProviderCustom:
 		m.thinkingOptions = nil
@@ -944,7 +911,7 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.effortOptions) == 0 {
 			break
 		}
-		goto validateAndShow
+		return m.showReasoningConfig()
 	}
 
 	if err := saveConfig(m); err != nil {
@@ -954,9 +921,11 @@ func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m.enterChatState(), nil
+	m2, cmd := m.enterChatState()
+	return m2, cmd
+}
 
-validateAndShow:
+func (m model) showReasoningConfig() (tea.Model, tea.Cmd) {
 	if len(m.thinkingOptions) > 0 && m.thinkingType == "" {
 		m.thinkingType = m.thinkingOptions[0]
 	}
@@ -1011,32 +980,32 @@ func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "left":
 		if m.reasoningField == 0 && len(m.thinkingOptions) > 0 {
-			for i := len(m.thinkingOptions) - 1; i > 0; i-- {
+			for i := range m.thinkingOptions {
 				if m.thinkingOptions[i] == m.thinkingType {
-					m.thinkingType = m.thinkingOptions[i-1]
+					m.thinkingType = m.thinkingOptions[(i-1+len(m.thinkingOptions))%len(m.thinkingOptions)]
 					break
 				}
 			}
-		} else {
-			for i := len(m.effortOptions) - 1; i > 0; i-- {
+		} else if len(m.effortOptions) > 0 {
+			for i := range m.effortOptions {
 				if m.effortOptions[i] == m.effortLevel {
-					m.effortLevel = m.effortOptions[i-1]
+					m.effortLevel = m.effortOptions[(i-1+len(m.effortOptions))%len(m.effortOptions)]
 					break
 				}
 			}
 		}
 	case "right":
 		if m.reasoningField == 0 && len(m.thinkingOptions) > 0 {
-			for i := 0; i < len(m.thinkingOptions)-1; i++ {
+			for i := range m.thinkingOptions {
 				if m.thinkingOptions[i] == m.thinkingType {
-					m.thinkingType = m.thinkingOptions[i+1]
+					m.thinkingType = m.thinkingOptions[(i+1)%len(m.thinkingOptions)]
 					break
 				}
 			}
-		} else {
-			for i := 0; i < len(m.effortOptions)-1; i++ {
+		} else if len(m.effortOptions) > 0 {
+			for i := range m.effortOptions {
 				if m.effortOptions[i] == m.effortLevel {
-					m.effortLevel = m.effortOptions[i+1]
+					m.effortLevel = m.effortOptions[(i+1)%len(m.effortOptions)]
 					break
 				}
 			}
@@ -1051,7 +1020,8 @@ func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateError
 			return m, nil
 		}
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 	return m, nil
 }
@@ -1124,7 +1094,8 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.manualInput, cmd = m.manualInput.Update(msg)
 
 	if msg.String() == "esc" && m.isMidSession() {
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -1143,7 +1114,8 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m.enterChatState(), nil
+	m2, cmd := m.enterChatState()
+	return m2, cmd
 }
 
 func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1151,7 +1123,8 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.sessionList, cmd = m.sessionList.Update(msg)
 
 	if msg.String() == "esc" {
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -1162,7 +1135,8 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if selected.meta.ID == m.sessionID {
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 
 	var saveCmd tea.Cmd
@@ -1183,12 +1157,20 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m = m.applySession(loaded)
-	m = m.enterChatState()
+	var checkCmd tea.Cmd
+	m, checkCmd = m.enterChatState()
 	title := "gurt"
 	if m.sessionName != "" {
 		title = "gurt | " + m.sessionName
 	}
-	return m, tea.Batch(saveCmd, tea.SetWindowTitle(title))
+	cmds := []tea.Cmd{tea.SetWindowTitle(title)}
+	if checkCmd != nil {
+		cmds = append(cmds, checkCmd)
+	}
+	if saveCmd != nil {
+		cmds = append(cmds, saveCmd)
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func toggleInList(list []string, item string) []string {
@@ -1259,7 +1241,8 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cmds := m.alwaysAllowCommandPrefixes
 	if len(cmds) == 0 {
 		if msg.String() == "esc" {
-			return m.enterChatState(), nil
+			m2, cmd := m.enterChatState()
+	return m2, cmd
 		}
 		return m, nil
 	}
@@ -1312,7 +1295,8 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "esc":
-		return m.enterChatState(), nil
+		m2, cmd := m.enterChatState()
+	return m2, cmd
 	}
 
 	// Adjust scroll to keep cursor row in view
@@ -1343,11 +1327,6 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if !m.updateCheckStarted {
-		m.updateCheckStarted = true
-		m2, cmd := m.handleChatMessage(msg)
-		return m2, tea.Batch(checkForUpdateCmd(), cmd)
-	}
 	return m.handleChatMessage(msg)
 }
 
@@ -1359,7 +1338,7 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.pendingPerm != nil {
 		tc := m.pendingPerm.toolCall
-		optionCount := optionCountForTool(tc.Function.Name)
+		optionCount := len(ui.PermissionOptions(tc.Function.Name, ""))
 
 		switch msg.String() {
 		case "up":
@@ -1379,6 +1358,7 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cursor := m.permCursor
 			m.pendingPerm = nil
 			m.permCursor = 0
+			m = m.adjustViewportHeight()
 
 			name := tc.Function.Name
 			deny := func() (tea.Model, tea.Cmd) {
@@ -1417,8 +1397,11 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.allowDeletions = true
 					m = m.executeTool(tc)
 					return m.processToolCalls(remaining)
+				default:
+					m.alwaysAllowPerms = true
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
 				}
-				return m, nil
 			case 2:
 				switch name {
 				case "run_bash":
@@ -1431,13 +1414,20 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				return deny()
 			case 3:
-				if name == "run_bash" {
+				switch name {
+				case "run_bash":
 					m.alwaysAllowPerms = true
+					m = m.executeTool(tc)
+					return m.processToolCalls(remaining)
+				case "edit_file", "write_file":
+					m.alwaysAllowTools = toggleInList(m.alwaysAllowTools, "edit_file")
+					m.alwaysAllowTools = toggleInList(m.alwaysAllowTools, "write_file")
+					saveConfig(m)
 					m = m.executeTool(tc)
 					return m.processToolCalls(remaining)
 				}
 				return deny()
-			case 4: // No (only run_bash)
+			case 4: // No
 				return deny()
 			}
 			return m, nil
@@ -1449,6 +1439,56 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.streamState.cancel()
 		m.cancelRequested = true
 		return m, nil
+	}
+
+	if m.showThemePicker {
+		switch msg.String() {
+		case "up":
+			m.themePickerCursor--
+			if m.themePickerCursor < 0 {
+				m.themePickerCursor = len(ui.ThemeRegistry) - 1
+			}
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		case "down":
+			m.themePickerCursor++
+			if m.themePickerCursor >= len(ui.ThemeRegistry) {
+				m.themePickerCursor = 0
+			}
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		case "enter":
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.showThemePicker = false
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			if cfg, _ := config.Load(); cfg != nil {
+				cfg.Theme = entry.Name
+				_ = config.Save(cfg)
+			}
+			m.chatInput.Focus()
+			m = m.adjustViewportHeight()
+			return m, nil
+		case "esc":
+			m.theme = m.themePickerOrigTheme
+			m.themeName = m.themePickerOrigName
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			m.showThemePicker = false
+			m.chatInput.Focus()
+			m = m.adjustViewportHeight()
+			return m, nil
+		}
 	}
 
 	if m.suggestions.active && len(m.suggestions.items) > 0 && !m.isStreaming && m.pendingPerm == nil {
@@ -1472,11 +1512,22 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.chatInput.SetCursor(len("/" + m.suggestions.items[sel].name + " "))
 			}
 			m.suggestions = suggestionState{}
-			return m, nil
+			return m.adjustViewportHeight(), nil
 		case "esc":
 			m.suggestions = suggestionState{}
-			return m, nil
+			return m.adjustViewportHeight(), nil
 		}
+	}
+
+	if msg.String() == "ctrl+y" {
+		m.yolo = !m.yolo
+		m.toastSeq++
+		if m.yolo {
+			m.toast = &toastMsg{text: "YOLO mode", id: m.toastSeq}
+		} else {
+			m.toast = nil
+		}
+		return m, nil
 	}
 
 	if msg.String() == "enter" {
@@ -1506,10 +1557,23 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 	}
 
+	// Filter partial SGR mouse events that the input reader
+	// couldn't decode — they arrive as Alt+[ or <digits>;… runes.
+	if msg.Alt && len(msg.Runes) == 1 && msg.Runes[0] == '[' {
+		return m, nil
+	}
+	if msg.Type == tea.KeyRunes && partialMouseEventRe.MatchString(string(msg.Runes)) {
+		return m, nil
+	}
+
 	var cmd tea.Cmd
-	m.chatViewport, _ = m.chatViewport.Update(msg)
+	switch msg.String() {
+	case "up", "down", "pgup", "pgdown", "home", "end":
+		m.chatViewport, _ = m.chatViewport.Update(msg)
+	}
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	m = m.updateSuggestions()
+	m = m.adjustViewportHeight()
 	return m, cmd
 }
 
@@ -1559,17 +1623,6 @@ func (m model) allowBashPrefix(tc llm.ToolCall) model {
 		}
 	}
 	return m.executeTool(tc)
-}
-
-func optionCountForTool(name string) int {
-	switch name {
-	case "run_bash":
-		return 5
-	case "edit_file", "write_file", "delete_file":
-		return 4
-	default:
-		return 3
-	}
 }
 
 func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
@@ -1638,6 +1691,7 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			m.chatInput.Blur()
+			m = m.adjustViewportHeight()
 			return m, m.persistSessionCmd()
 		}
 		m = m.executeTool(tc)
@@ -1651,11 +1705,20 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// 1. Scroll wheel → viewport
 	if msg.Action == tea.MouseActionPress && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
-		var cmd tea.Cmd
 		if m.selection.exists {
 			m.selection = textSelection{}
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		}
+
+		// Don't forward wheel events past boundaries to avoid the
+		// bubbletea input reader splitting SGR mouse events across
+		// a read boundary, which leaks raw escape bytes as keypresses.
+		if (msg.Button == tea.MouseButtonWheelUp && m.chatViewport.AtTop()) ||
+			(msg.Button == tea.MouseButtonWheelDown && m.chatViewport.AtBottom()) {
+			return m, nil
+		}
+
+		var cmd tea.Cmd
 		m.chatViewport, cmd = m.chatViewport.Update(msg)
 		return m, cmd
 	}
@@ -1687,15 +1750,14 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		contentLine := m.chatViewport.YOffset + msg.Y - computeViewportStartRow(m)
-		if contentLine >= 0 {
+		if line >= 0 {
 			content := buildChatContent(m)
 			lines := strings.Split(content, "\n")
-			if contentLine < len(lines) {
+			if line < len(lines) {
 				const hitboxRadius = 2
 
 				// ▸ — collapsed live reasoning
-				if findMarker(lines, contentLine, hitboxRadius, "▸") >= 0 {
+				if findMarker(lines, line, hitboxRadius, "▸") >= 0 {
 					m.reasoning.visible = !m.reasoning.visible
 					m.selection = textSelection{}
 					m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -1703,7 +1765,7 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 
 				// ◌ — active live reasoning
-				if findMarker(lines, contentLine, hitboxRadius, "◌") >= 0 {
+				if findMarker(lines, line, hitboxRadius, "◌") >= 0 {
 					m.reasoning.visible = !m.reasoning.visible
 					m.selection = textSelection{}
 					m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -1711,7 +1773,7 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 
 				// ◷ or ▾ — stored reasoning
-				if idx := findMarker(lines, contentLine, hitboxRadius, "◷", "▾"); idx >= 0 {
+				if idx := findMarker(lines, line, hitboxRadius, "◷", "▾"); idx >= 0 {
 					count := 0
 					for i := 0; i <= idx; i++ {
 						if strings.Contains(lines[i], "◷") {
@@ -1739,7 +1801,7 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 						} else {
 							m.chatViewport.YOffset = yOff
 						}
-						return m, nil
+						return m, m.persistSessionCmd()
 					}
 
 					// No matching stored message — toggle live reasoning.
@@ -1805,6 +1867,7 @@ func findMarker(lines []string, contentLine, radius int, markers ...string) int 
 
 func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	m.suggestions = suggestionState{}
+	m = m.adjustViewportHeight()
 	parts := strings.Fields(input)
 	cmd := strings.TrimPrefix(parts[0], "/")
 
@@ -1848,17 +1911,16 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			switch strings.ToLower(parts[1]) {
 			case "true", "yes":
 				newVisible = true
-				m.reasoning.defaultVisible = true
 			case "false", "no":
 				newVisible = false
-				m.reasoning.defaultVisible = false
 			}
 		}
 		m.reasoning.visible = newVisible
+		m.reasoning.defaultVisible = newVisible
 		saveConfig(m)
 		for i := range m.messages {
 			if m.messages[i].Reasoning != "" {
-				m.messages[i].ReasoningVisible = !m.messages[i].ReasoningVisible
+				m.messages[i].ReasoningVisible = newVisible
 			}
 		}
 		m.messages = append(m.messages, llm.Message{
@@ -2022,39 +2084,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "effort":
-		if m.provider == llm.ProviderCustom {
-			m.messages = append(m.messages, llm.Message{
-				Role:     "assistant",
-				Internal: true,
-				Content:  "Custom API providers don't support effort levels. Use /reasoning to set reasoning effort instead.",
-			})
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-			m.chatViewport.GotoBottom()
-			return m, nil
-		}
-
-		if m.provider == llm.ProviderOpenAI {
-			m.messages = append(m.messages, llm.Message{
-				Role:     "assistant",
-				Internal: true,
-				Content:  "OpenAI models don't support effort levels. Use /reasoning to set reasoning effort instead.",
-			})
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-			m.chatViewport.GotoBottom()
-			return m, nil
-		}
-
-		if m.provider == llm.ProviderGemini {
-			m.messages = append(m.messages, llm.Message{
-				Role:     "assistant",
-				Internal: true,
-				Content:  "Gemini models don't support effort levels. Use /reasoning to set reasoning effort instead.",
-			})
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-			m.chatViewport.GotoBottom()
-			return m, nil
-		}
-
 		model := m.currentModelInfo()
 
 		var opts []string
@@ -2127,6 +2156,21 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.chatViewport.GotoBottom()
 		return m, nil
 
+	case "theme":
+		m.showThemePicker = true
+		m.themePickerOrigTheme = m.theme
+		m.themePickerOrigName = m.themeName
+		m.themePickerCursor = 0
+		for i, entry := range ui.ThemeRegistry {
+			if entry.Name == m.themeName {
+				m.themePickerCursor = i
+				break
+			}
+		}
+		m.chatInput.Blur()
+		m = m.adjustViewportHeight()
+		return m, nil
+
 	case "telemetry":
 		oldVal := m.telemetryEnabled
 		m.telemetryEnabled = !oldVal
@@ -2135,7 +2179,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if !m.telemetryEnabled {
 			status = "disabled"
 		}
-		sendTelemetryCmd("telemetry_toggle")()
 		m.messages = append(m.messages, llm.Message{
 			Role:     "assistant",
 			Internal: true,
@@ -2143,7 +2186,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
-		return m, nil
+		return m, sendTelemetryCmd("telemetry_toggle")
 
 	case "session":
 		if m.isStreaming {
@@ -2177,8 +2220,16 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			saveCmd = m.persistSessionCmd()
 		}
 		m = m.resetToNewSession()
-		m = m.enterChatState()
-		return m, tea.Batch(saveCmd, tea.SetWindowTitle("gurt"))
+		var checkCmd tea.Cmd
+		m, checkCmd = m.enterChatState()
+		cmds := []tea.Cmd{tea.SetWindowTitle("gurt")}
+		if checkCmd != nil {
+			cmds = append(cmds, checkCmd)
+		}
+		if saveCmd != nil {
+			cmds = append(cmds, saveCmd)
+		}
+		return m, tea.Batch(cmds...)
 
 	case "allow":
 		if m.isStreaming {
@@ -2249,6 +2300,88 @@ func (m model) updateSuggestions() model {
 	return m
 }
 
+func (m model) adjustViewportHeight() model {
+	fixed := 0
+	fixed++ // title
+	if m.updateAvailable {
+		fixed++ // update banner
+	}
+	fixed++ // top divider
+	// spacer line — 0 when idle, 1 when streaming or showing context bar
+	if (m.isStreaming && m.workingMsg != "") || m.maxInputTokens > 0 || m.inputTokens > 0 {
+		fixed++
+	}
+	fixed++ // toast line (always 1 — blank line when no toast)
+	fixed++ // bottom divider
+	// bottom section
+	switch {
+	case m.pendingPerm != nil:
+		fixed += m.permOverlayHeight()
+	case m.showThemePicker:
+		fixed += m.themePickerOverlayHeight()
+	default:
+		fixed += 2 // input line + help line
+		if m.suggestions.active && len(m.suggestions.items) > 0 {
+			fixed += len(m.suggestions.items)
+		}
+	}
+	m.chatViewport.Height = m.height - fixed
+	if m.chatViewport.Height < 1 {
+		m.chatViewport.Height = 1
+	}
+	return m
+}
+
+func (m model) permOverlayHeight() int {
+	tc := m.pendingPerm.toolCall
+	bashPrefix := ""
+	if tc.Function.Name == "run_bash" {
+		if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+			bashPrefix = tools.BashCommandPrefix(cmd)
+		}
+	}
+	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix) + "\n" +
+		m.theme.Dim.Render("  ↑/↓ navigate • enter select")
+	boxW := m.width - 2
+	if boxW < 30 {
+		boxW = 30
+	}
+	box := lipgloss.NewStyle().
+		Background(lipgloss.Color(m.theme.Base)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.theme.Mauve)).
+		Width(boxW).
+		Padding(1, 1)
+	return strings.Count(box.Render(content), "\n") + 1
+}
+
+func (m model) themePickerOverlayHeight() int {
+	boxW := m.width - 4
+	if boxW < 30 {
+		boxW = 30
+	}
+	if boxW > 50 {
+		boxW = 50
+	}
+	var pc strings.Builder
+	pc.WriteString(m.theme.Header.Render("Select Theme"))
+	pc.WriteString("\n\n")
+	for _, entry := range ui.ThemeRegistry {
+		style := m.theme.Dim
+		pc.WriteString(style.Render("  " + entry.Name))
+		pc.WriteString("\n")
+	}
+	pc.WriteString("\n")
+	pc.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • esc dismiss"))
+	popup := lipgloss.NewStyle().
+		Background(lipgloss.Color(m.theme.Base)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.theme.Mauve)).
+		Width(boxW).
+		Padding(1, 2)
+	return strings.Count(popup.Render(pc.String()), "\n") + 1
+}
+
 func startChatStreamCmd(m model) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2288,13 +2421,18 @@ func startChatStreamCmd(m model) tea.Cmd {
 			reasoningEffort = "high"
 		}
 
+		maxTokens := 128000
+		if info := m.currentModelInfo(); info.MaxTokens > 0 {
+			maxTokens = info.MaxTokens
+		}
+
 		req := llm.ChatRequest{
 			Model:           m.modelName,
 			Messages:        filterInternal(m.messages),
 			SystemPrompt:    systemPrompt,
 			Tools:           tools.Definitions(),
 			Thinking:        thinkingCfg,
-			MaxTokens:       128000,
+			MaxTokens:       maxTokens,
 			ReasoningEffort: reasoningEffort,
 		}
 
@@ -2340,6 +2478,19 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		return nil
 	}
+}
+
+func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
+	qmsg := m.queuedMessage
+	m.queuedMessage = ""
+	m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
+	m.isStreaming = true
+	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+	m.workingSpinnerIdx = 0
+	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.chatViewport.SetContent(buildChatContentHighlighted(m))
+	m.chatViewport.GotoBottom()
+	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 }
 
 func workingTickCmd() tea.Cmd {
@@ -2452,18 +2603,18 @@ func buildChatContent(m model) string {
 				b.WriteString(ui.RenderAssistantLabel(m.theme, m.displayNameForModel(msg.Model)))
 				b.WriteString("\n")
 			}
+			if msg.Reasoning != "" {
+				if msg.ReasoningVisible {
+					b.WriteString(ui.RenderReasoning(m.theme, false, true, msg.ReasoningDuration, msg.Reasoning, m.chatViewport.Width))
+					b.WriteString("\n")
+				} else {
+					b.WriteString(ui.RenderReasoningStored(m.theme, msg.ReasoningDuration))
+					b.WriteString("\n")
+				}
+			}
 			if msg.Content != "" {
 				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width))
 				b.WriteString("\n")
-			}
-			if msg.Reasoning != "" {
-				if msg.ReasoningVisible {
-					b.WriteString(ui.RenderReasoning(m.theme, false, true, 0, msg.Reasoning, m.chatViewport.Width))
-					b.WriteString("\n")
-				} else {
-					b.WriteString(ui.RenderReasoningStored(m.theme))
-					b.WriteString("\n")
-				}
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {

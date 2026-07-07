@@ -13,43 +13,47 @@ import (
 )
 
 func (m model) View() string {
+	var content string
 	switch m.state {
 	case stateWelcome:
-		return m.welcomeView()
+		content = m.welcomeView()
 	case stateProviderPick:
-		return m.providerPickView()
+		content = m.providerPickView()
 	case stateCustomModePick:
-		return m.customModePickView()
+		content = m.customModePickView()
 	case stateCustomURL:
-		return m.customURLView()
+		content = m.customURLView()
 	case stateAPIKeyInput:
-		return m.apiKeyView()
-	case stateCustomName:
-		return m.customNameView()
+		content = m.apiKeyView()
 	case stateModelFetch:
-		return m.modelFetchView()
+		content = m.modelFetchView()
 	case stateModelPick:
-		return m.modelPickView()
+		content = m.modelPickView()
 	case stateReasoningConfig:
-		return m.reasoningConfigView()
+		content = m.reasoningConfigView()
 	case stateError:
-		return m.errorView()
+		content = m.errorView()
 	case stateManualModel:
-		return m.manualModelView()
+		content = m.manualModelView()
+	case stateCustomName:
+		content = m.customNameView()
 	case stateSessionPick:
-		return m.sessionPickView()
+		content = m.sessionPickView()
 	case stateChat:
-		return m.chatView()
+		content = m.chatView()
 	case stateAllowManage:
-		return m.allowManageView()
+		content = m.allowManageView()
 	}
-	return ""
+	if content == "" {
+		return ""
+	}
+	return ui.WrapScreen(content, m.width, m.height, m.theme.Base)
 }
 
 func (m model) welcomeView() string {
 	return m.theme.Brand.Render("  gurt") + "\n\n" +
 		m.theme.Dim.Render("  A coding agent in your terminal.") + "\n\n" +
-		"  Press enter to start." + "\n" +
+		m.theme.Dim.Render("  Press enter to start.") + "\n" +
 		m.theme.Dim.Render("  ctrl+c quit")
 }
 
@@ -74,7 +78,8 @@ func (m model) customModePickView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString("Custom endpoint mode:\n\n")
+	b.WriteString(m.theme.Dim.Render("Custom endpoint mode:"))
+	b.WriteString("\n\n")
 	items := []string{"Use one-time", "Save for later"}
 	for i, item := range items {
 		prefix := "  "
@@ -95,7 +100,8 @@ func (m model) customURLView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString("Enter the base URL for your custom provider:\n\n")
+	b.WriteString(m.theme.Dim.Render("Enter the base URL for your custom provider:"))
+	b.WriteString("\n\n")
 	b.WriteString(m.urlInput.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
@@ -106,7 +112,8 @@ func (m model) apiKeyView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "Enter your API key for %s:\n\n", llm.DisplayName(m.provider))
+	b.WriteString(m.theme.Dim.Render(fmt.Sprintf("Enter your API key for %s:", llm.DisplayName(m.provider))))
+	b.WriteString("\n\n")
 	if m.customURL != "" {
 		b.WriteString(m.theme.Dim.Render("Endpoint: " + m.customURL))
 		b.WriteString("\n\n")
@@ -121,7 +128,8 @@ func (m model) modelFetchView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "Fetching models from %s...\n\n", llm.DisplayName(m.provider))
+	b.WriteString(m.theme.Dim.Render(fmt.Sprintf("Fetching models from %s...", llm.DisplayName(m.provider))))
+	b.WriteString("\n\n")
 	b.WriteString(m.spinner.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.theme.Dim.Render("ctrl+c quit"))
@@ -150,7 +158,7 @@ func (m model) reasoningConfigView() string {
 	if len(m.thinkingOptions) > 0 && len(m.effortOptions) > 0 {
 		// Two-field mode: Thinking + Effort (Anthropic)
 		think := m.thinkingType
-		thinkLine := fmt.Sprintf("  Thinking:  %s", think)
+		thinkLine := m.theme.Dim.Render(fmt.Sprintf("  Thinking:  %s", think))
 		if m.reasoningField == 0 {
 			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(think), m.theme.Dim.Render("← →"))
 		}
@@ -158,7 +166,7 @@ func (m model) reasoningConfigView() string {
 		b.WriteString("\n")
 
 		effort := m.effortLevel
-		effortLine := fmt.Sprintf("  Effort:    %s", effort)
+		effortLine := m.theme.Dim.Render(fmt.Sprintf("  Effort:    %s", effort))
 		if m.reasoningField == 1 {
 			effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(effort), m.theme.Dim.Render("← →"))
 		}
@@ -171,7 +179,7 @@ func (m model) reasoningConfigView() string {
 	} else if len(m.thinkingOptions) > 0 {
 		// Thinking-only mode (no effort levels)
 		think := m.thinkingType
-		thinkLine := fmt.Sprintf("  Thinking:  %s", think)
+		thinkLine := m.theme.Dim.Render(fmt.Sprintf("  Thinking:  %s", think))
 		if m.reasoningField == 0 {
 			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(think), m.theme.Dim.Render("← →"))
 		}
@@ -184,7 +192,7 @@ func (m model) reasoningConfigView() string {
 	} else {
 		// Single-field mode: Reasoning effort (OpenAI)
 		effort := m.effortLevel
-		effortLine := fmt.Sprintf("  Reasoning: %s", effort)
+		effortLine := m.theme.Dim.Render(fmt.Sprintf("  Reasoning: %s", effort))
 		if m.reasoningField == 0 {
 			effortLine = fmt.Sprintf("  %s Reasoning: %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(effort), m.theme.Dim.Render("← →"))
 		}
@@ -204,7 +212,7 @@ func (m model) errorView() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.theme.Error.Render("Error"))
 	b.WriteString("\n\n")
-	b.WriteString(m.err.Error())
+	b.WriteString(m.theme.Dim.Render(m.err.Error()))
 	b.WriteString("\n\n")
 	for i, action := range m.errorActions() {
 		prefix := "  "
@@ -227,7 +235,8 @@ func (m model) customNameView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString("Name this endpoint to save for later:\n\n")
+	b.WriteString(m.theme.Dim.Render("Name this endpoint to save for later:"))
+	b.WriteString("\n\n")
 	b.WriteString(m.nameInput.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
@@ -238,7 +247,8 @@ func (m model) manualModelView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString("\n\n")
-	b.WriteString("Enter the model name:\n\n")
+	b.WriteString(m.theme.Dim.Render("Enter the model name:"))
+	b.WriteString("\n\n")
 	b.WriteString(m.manualInput.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
@@ -403,7 +413,15 @@ func (m model) chatView() string {
 	{
 		toastText := ""
 		if m.toast != nil {
-			toastText = m.theme.Toast.Render(" " + m.toast.text + " ")
+			style := m.theme.Toast
+			if m.yolo && m.toast.text == "YOLO mode" {
+				style = lipgloss.NewStyle().
+					Background(lipgloss.Color(m.theme.Peach)).
+					Foreground(lipgloss.Color(m.theme.Crust)).
+					Bold(true).
+					Padding(0, 1)
+			}
+			toastText = style.Render(" " + m.toast.text + " ")
 		}
 		pad := (m.width - lipgloss.Width(toastText)) / 2
 		if pad > 0 {
@@ -431,8 +449,9 @@ func (m model) chatView() string {
 			boxW = 30
 		}
 		permBox := lipgloss.NewStyle().
+			Background(lipgloss.Color(m.theme.Base)).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(ui.ColorMauve)).
+			BorderForeground(lipgloss.Color(m.theme.Mauve)).
 			Width(boxW).
 			Padding(1, 1)
 
@@ -440,15 +459,44 @@ func (m model) chatView() string {
 			m.theme.Dim.Render("  ↑/↓ navigate • enter select")
 
 		b.WriteString(permBox.Render(content))
-	} else {
-		b.WriteString(m.theme.InputPrompt.Render("  ❯ "))
-		b.WriteString(m.chatInput.View())
+	} else if m.showThemePicker {
+		boxW := m.width - 4
+		if boxW < 30 {
+			boxW = 30
+		}
+		if boxW > 50 {
+			boxW = 50
+		}
+		popup := lipgloss.NewStyle().
+			Background(lipgloss.Color(m.theme.Base)).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(m.theme.Mauve)).
+			Width(boxW).
+			Padding(1, 2)
 
+		var pc strings.Builder
+		pc.WriteString(m.theme.Header.Render("Select Theme"))
+		pc.WriteString("\n\n")
+		for i, entry := range ui.ThemeRegistry {
+			prefix := "  "
+			style := m.theme.Dim
+			if i == m.themePickerCursor {
+				prefix = "> "
+				style = m.theme.Header
+			}
+			pc.WriteString(style.Render(prefix + entry.Name))
+			pc.WriteString("\n")
+		}
+		pc.WriteString("\n")
+		pc.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • esc dismiss"))
+
+		b.WriteString(popup.Render(pc.String()))
+	} else {
 		help := "enter send • ↑↓ scroll • ctrl+c quit"
 		if m.isStreaming {
 			help = "esc cancel • ctrl+c quit"
 		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
-			b.WriteString("\n")
+			help = "↑↓ navigate • tab select • esc dismiss"
 			for i, item := range m.suggestions.items {
 				prefix := "  "
 				style := m.theme.Dim
@@ -460,8 +508,10 @@ func (m model) chatView() string {
 				b.WriteString(m.theme.Dim.Render("  " + item.description))
 				b.WriteString("\n")
 			}
-			help = "↑↓ navigate • tab select • esc dismiss"
 		}
+
+		b.WriteString(m.theme.InputPrompt.Render("  ❯ "))
+		b.WriteString(m.chatInput.View())
 		b.WriteString("\n")
 		b.WriteString(m.helpWithStatus(help))
 	}
@@ -525,10 +575,15 @@ func (m model) renderSpacerLine() string {
 }
 
 func (m model) renderContextBar() string {
-	if m.maxInputTokens <= 0 {
+	tokens := m.inputTokens
+	if tokens <= 0 && m.maxInputTokens <= 0 {
 		return ""
 	}
-	tokens := m.inputTokens
+
+	if m.maxInputTokens <= 0 {
+		return m.theme.ContextBar.Render(formatTokens(tokens))
+	}
+
 	if tokens <= 0 {
 		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", strings.Repeat("░", 20), formatTokens(m.maxInputTokens)))
 	}
@@ -540,7 +595,7 @@ func (m model) renderContextBar() string {
 	}
 	bar := strings.Repeat("▓", filled) + strings.Repeat("░", barWidth-filled)
 	pctStr := fmt.Sprintf("%3.0f%%", pct*100)
-	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s", bar, pctStr, formatTokens(tokens)))
+	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s / %s", bar, pctStr, formatTokens(tokens), formatTokens(m.maxInputTokens)))
 }
 
 func formatTokens(n int) string {
@@ -548,7 +603,7 @@ func formatTokens(n int) string {
 	case n >= 1_000_000:
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	case n >= 1_000:
-		return fmt.Sprintf("%dK", n/1_000)
+		return fmt.Sprintf("%dK", (n+500)/1_000)
 	default:
 		return fmt.Sprintf("%d", n)
 	}

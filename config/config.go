@@ -69,9 +69,9 @@ type Config struct {
 	AlwaysAllowTools          []string `json:"always_allow_tools,omitempty"`
 	TelemetryEnabled        *bool    `json:"telemetry_enabled,omitempty"`
 	AlwaysAllowCommandPrefixes []string `json:"always_allow_command_prefixes,omitempty"`
+	Theme              string          `json:"theme,omitempty"`
 
 	UpdateVersion    string `json:"update_version,omitempty"`
-	UpdateTempBinary string `json:"update_temp_binary,omitempty"`
 }
 
 func Dir() (string, error) {

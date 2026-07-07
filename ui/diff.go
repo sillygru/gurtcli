@@ -2,27 +2,60 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
-// GitHub-inspired diff colors on dark background
-const (
-	ColorDiffDelBG        = "#3d2028"
-	ColorDiffDelHighlight = "#6e3040"
-	ColorDiffDelText      = "#cdd6f4"
-	ColorDiffDelChange    = "#f38ba8"
-	ColorDiffAddBG        = "#1a2e28"
-	ColorDiffAddHighlight = "#2a4538"
-	ColorDiffAddText      = "#cdd6f4"
-	ColorDiffAddChange    = "#a6e3a1"
-)
+// ansiBackground returns the ANSI escape sequence to set the background
+// to the given hex color (e.g. "#1e1e2e").
+func ansiBackground(hex string) string {
+	r, _ := strconv.ParseUint(hex[1:3], 16, 8)
+	g, _ := strconv.ParseUint(hex[3:5], 16, 8)
+	b, _ := strconv.ParseUint(hex[5:7], 16, 8)
+	return fmt.Sprintf("\033[48;2;%d;%d;%dm", r, g, b)
+}
 
-// WrapScreen is a no-op passthrough; kept for API stability.
-func WrapScreen(content string, _, _ int) string {
-	return content
+// WrapScreen fills the terminal area with the given base background color and
+// places content at the top. Remaining vertical space is padded with
+// background-colored blank lines.
+func WrapScreen(content string, width, height int, baseColor string) string {
+	if width <= 0 || height <= 0 {
+		return content
+	}
+	bgSeq := ansiBackground(baseColor)
+	reset := "\033[0m"
+
+	lines := strings.Split(content, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		rawWidth := lipgloss.Width(line)
+		// After every ANSI reset inside the line, re-set the background
+		// so styled text always has the base background behind it.
+		line = strings.ReplaceAll(line, reset, reset+bgSeq)
+
+		b.WriteString(bgSeq)
+		b.WriteString(line)
+		pad := width - rawWidth
+		if pad > 0 {
+			b.WriteString(bgSeq)
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteString(reset)
+		if i < height-1 {
+			b.WriteString("\n")
+		}
+	}
+	emptyLine := bgSeq + strings.Repeat(" ", width) + reset
+	for i := len(lines); i < height; i++ {
+		b.WriteString(emptyLine)
+		if i < height-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 // RenderReasoning renders the reasoning toggle and optional expanded content.
@@ -50,10 +83,14 @@ func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, conte
 }
 
 // RenderReasoningStored renders a collapsed reasoning indicator for finalized messages.
-func RenderReasoningStored(t Theme) string {
+func RenderReasoningStored(t Theme, duration time.Duration) string {
 	icon := t.ReasoningHeader.Render("◷")
-	label := t.ReasoningToggle.Render(" reasoning available")
-	return "  " + icon + label
+	label := " reasoning available"
+	if duration > 0 {
+		label = " thought for " + formatDuration(duration)
+	}
+	labelStyled := t.ReasoningToggle.Render(label)
+	return "  " + icon + labelStyled
 }
 
 func renderReasoningHeader(t Theme, active, visible bool, elapsed time.Duration) string {
@@ -81,16 +118,24 @@ func formatDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
-	secs := d.Seconds()
-	if secs < 10 {
-		return fmt.Sprintf("%.1fs", secs)
+	totalSecs := int(d.Seconds())
+	if totalSecs >= 60 {
+		mins := totalSecs / 60
+		rem := totalSecs % 60
+		if rem == 0 {
+			return fmt.Sprintf("%dm", mins)
+		}
+		return fmt.Sprintf("%dm %ds", mins, rem)
 	}
-	return fmt.Sprintf("%.0fs", secs)
+	if totalSecs < 10 {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return fmt.Sprintf("%ds", totalSecs)
 }
 
-// ScreenStyle is unused; retained so callers compile without background fill.
-func ScreenStyle() lipgloss.Style {
-	return lipgloss.NewStyle()
+// ScreenStyle returns a style with the given background color for screen-level use.
+func ScreenStyle(baseColor string) lipgloss.Style {
+	return lipgloss.NewStyle().Background(lipgloss.Color(baseColor))
 }
 
 // renderDiffRemovedLine renders a removed line with red fill and change highlights.
@@ -147,16 +192,12 @@ func commonPrefixLen(a, b string) int {
 }
 
 func commonSuffixLen(a, b string, max int) int {
+	if a == "" || b == "" {
+		return 0
+	}
 	count := 0
 	for count < max && a[len(a)-1-count] == b[len(b)-1-count] {
 		count++
 	}
 	return count
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

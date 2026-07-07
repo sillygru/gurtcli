@@ -16,8 +16,9 @@ import (
 type Message struct {
 	Role             string     `json:"role"`
 	Content          string     `json:"content"`
-	Reasoning        string     `json:"reasoning,omitempty"`
-	ReasoningVisible bool       `json:"-"`
+	Reasoning          string        `json:"reasoning,omitempty"`
+	ReasoningDuration  time.Duration `json:"reasoning_duration,omitempty"`
+	ReasoningVisible   bool          `json:"reasoning_visible,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	Model            string     `json:"model,omitempty"`
@@ -437,10 +438,10 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 					continue
 				}
+				if chunk.Usage != nil {
+					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
+				}
 				if len(chunk.Choices) == 0 {
-					if chunk.Usage != nil {
-						events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
-					}
 					continue
 				}
 				choice := chunk.Choices[0]
@@ -480,11 +481,11 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					continue
 				}
 
-				if choice.Delta.Content != "" {
-					events <- StreamEvent{Type: StreamDelta, Content: choice.Delta.Content}
-				}
 				if choice.Delta.ReasoningContent != "" {
 					events <- StreamEvent{Type: StreamReasoning, Content: choice.Delta.ReasoningContent}
+				}
+				if choice.Delta.Content != "" {
+					events <- StreamEvent{Type: StreamDelta, Content: choice.Delta.Content}
 				}
 
 			case ProviderAnthropic:

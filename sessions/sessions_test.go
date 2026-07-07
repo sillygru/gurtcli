@@ -24,6 +24,8 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 		Model:            "gpt-5.5",
 		WorkspaceRoot:    workspace,
 		ReasoningVisible: true,
+		InputTokens:      142,
+		OutputTokens:     57,
 		Messages: []llm.Message{
 			{Role: "user", Content: "Hello world"},
 			{Role: "assistant", Content: "Hi there"},
@@ -44,6 +46,12 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 	if len(loaded.Messages) != 2 {
 		t.Fatalf("messages: got %d want 2", len(loaded.Messages))
 	}
+	if loaded.InputTokens != 142 {
+		t.Fatalf("input_tokens: got %d want 142", loaded.InputTokens)
+	}
+	if loaded.OutputTokens != 57 {
+		t.Fatalf("output_tokens: got %d want 57", loaded.OutputTokens)
+	}
 
 	metas, err := List(workspace)
 	if err != nil {
@@ -52,8 +60,8 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 	if len(metas) != 1 {
 		t.Fatalf("list count: got %d want 1", len(metas))
 	}
-	if metas[0].MessageCount != 2 {
-		t.Fatalf("message count: got %d want 2", metas[0].MessageCount)
+	if metas[0].MessageCount != 1 {
+		t.Fatalf("message count: got %d want 1", metas[0].MessageCount)
 	}
 }
 

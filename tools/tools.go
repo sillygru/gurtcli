@@ -19,12 +19,23 @@ func safePath(workspaceRoot, path string) (string, error) {
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("workspace root is not set")
 	}
-	cleanRoot := filepath.Clean(workspaceRoot)
+	cleanRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolving workspace root: %w", err)
+	}
 	cleanPath := filepath.Clean(path)
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = filepath.Join(cleanRoot, cleanPath)
 	}
 	cleanPath = filepath.Clean(cleanPath)
+
+	// Resolve symlinks. If the full path doesn't exist yet, try the parent.
+	if resolved, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = resolved
+	} else if parent, err := filepath.EvalSymlinks(filepath.Dir(cleanPath)); err == nil {
+		cleanPath = filepath.Join(parent, filepath.Base(cleanPath))
+	}
+
 	if !strings.HasPrefix(cleanPath, cleanRoot) {
 		return "", fmt.Errorf("path %q escapes workspace root", path)
 	}
@@ -227,17 +238,4 @@ func ExtractBashCommand(args json.RawMessage) (string, error) {
 	return a.Command, nil
 }
 
-// IsSafeBashCommand checks if a command starts with an allowed prefix
-// from the provided list.
-func IsSafeBashCommand(command string, extraPrefixes []string) bool {
-	prefix := BashCommandPrefix(command)
-	if prefix == "" {
-		return false
-	}
-	for _, p := range extraPrefixes {
-		if prefix == p {
-			return true
-		}
-	}
-	return false
-}
+

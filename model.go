@@ -206,6 +206,7 @@ type model struct {
 	reconfigure      bool
 	forceLocal       bool
 	theme            ui.Theme
+	themeName        string
 	width            int
 	height           int
 	workspaceRoot        string
@@ -247,14 +248,17 @@ type model struct {
 	savedEndpointName   string
 	confirmDeleteEndpoint string
 
-	providerList list.Model
-	modelList    list.Model
-	sessionList  list.Model
-	urlInput     textinput.Model
-	keyInput     textinput.Model
-	nameInput    textinput.Model
-	manualInput  textinput.Model
-	spinner      spinner.Model
+	providerList   list.Model
+	providerDel    *list.DefaultDelegate
+	modelList      list.Model
+	modelDel       *list.DefaultDelegate
+	sessionList    list.Model
+	sessionDel     *list.DefaultDelegate
+	urlInput       textinput.Model
+	keyInput       textinput.Model
+	nameInput      textinput.Model
+	manualInput    textinput.Model
+	spinner        spinner.Model
 
 	messages         []llm.Message
 	chatInput        textinput.Model
@@ -268,7 +272,11 @@ type model struct {
 	selection        textSelection
 	toast            *toastMsg
 	toastSeq         int
-	suggestions      suggestionState
+	suggestions           suggestionState
+	showThemePicker       bool
+	themePickerCursor     int
+	themePickerOrigTheme  ui.Theme
+	themePickerOrigName   string
 
 	sessionID        string
 	sessionName      string
@@ -342,12 +350,12 @@ func (m model) cmdGridDimensions() (numRows, numCols, colWidth int) {
 	return numRows, numCols, colWidth
 }
 
-func (m model) enterChatState() model {
+func (m model) enterChatState() (model, tea.Cmd) {
 	if m.sessionID == "" {
 		m = m.initNewSession()
 	}
 	m.chatInput.Focus()
-	m.reasoning = reasoningState{}
+	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 	m.streamingContent = nil
 	if m.maxInputTokens == 0 {
 		for _, mdl := range m.models {
@@ -357,12 +365,15 @@ func (m model) enterChatState() model {
 			}
 		}
 	}
-	m.inputTokens = 0
-	m.outputTokens = 0
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
 	m.state = stateChat
-	return m
+	var cmd tea.Cmd
+	if !m.updateCheckStarted {
+		m.updateCheckStarted = true
+		cmd = checkForUpdateCmd()
+	}
+	return m, cmd
 }
 
 type providerPickKind int
@@ -428,8 +439,9 @@ var slashCommands = []slashCommand{
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 	{name: "update", description: "Update to the latest version"},
 	{name: "allow", description: "Manage always-allowed tools and commands"},
-	{name: "telemetry", description: "Toggle anonymous usage telemetry"},
-	{name: "version", description: "Show current version and check for updates"},
+	{name: "theme",        description: "Change the color theme"},
+	{name: "telemetry",    description: "Toggle anonymous usage telemetry"},
+	{name: "version",      description: "Show current version and check for updates"},
 }
 
 func (m model) modelDisplayName() string {
@@ -471,9 +483,18 @@ func (m model) smallModelForProvider() string {
 
 func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, forceLocal bool) model {
 	cleanOldBinary()
-	s := ui.DefaultTheme()
 
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: config corrupt, using defaults: %v\n", err)
+		cfg = nil
+	}
+
+	themeName := "Catppuccin Mocha"
+	if cfg != nil && cfg.Theme != "" {
+		themeName = cfg.Theme
+	}
+	s := ui.ThemeByName(themeName)
 
 	savedEndpoints := []config.SavedEndpoint{}
 	if cfg != nil {
@@ -485,15 +506,18 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	pd := list.NewDefaultDelegate()
 	pd.ShowDescription = true
 	pd.Styles.SelectedTitle = pd.Styles.SelectedTitle.
-		Foreground(lipgloss.Color(ui.ColorMauve)).
-		Background(lipgloss.Color(ui.ColorSurface0)).
+		Foreground(lipgloss.Color(s.Mauve)).
+		Background(lipgloss.Color(s.Surface0)).
 		Bold(true)
 	pd.Styles.SelectedDesc = pd.Styles.SelectedDesc.
-		Foreground(lipgloss.Color(ui.ColorOverlay2))
+		Foreground(lipgloss.Color(s.Overlay2)).
+		Background(lipgloss.Color(s.Surface0))
 	pd.Styles.NormalTitle = pd.Styles.NormalTitle.
-		Foreground(lipgloss.Color(ui.ColorText))
+		Foreground(lipgloss.Color(s.Text)).
+		Background(lipgloss.Color(s.Base))
 	pd.Styles.NormalDesc = pd.Styles.NormalDesc.
-		Foreground(lipgloss.Color(ui.ColorOverlay1))
+		Foreground(lipgloss.Color(s.Overlay1)).
+		Background(lipgloss.Color(s.Base))
 	pl := list.New(providerItems, pd, 0, 0)
 	pl.Title = "Pick a provider"
 	pl.SetShowHelp(false)
@@ -504,11 +528,18 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	md := list.NewDefaultDelegate()
 	md.ShowDescription = true
 	md.Styles.SelectedTitle = md.Styles.SelectedTitle.
-		Foreground(lipgloss.Color(ui.ColorMauve)).
-		Background(lipgloss.Color(ui.ColorSurface0)).
+		Foreground(lipgloss.Color(s.Mauve)).
+		Background(lipgloss.Color(s.Surface0)).
 		Bold(true)
+	md.Styles.SelectedDesc = md.Styles.SelectedDesc.
+		Foreground(lipgloss.Color(s.Overlay2)).
+		Background(lipgloss.Color(s.Surface0))
 	md.Styles.NormalTitle = md.Styles.NormalTitle.
-		Foreground(lipgloss.Color(ui.ColorText))
+		Foreground(lipgloss.Color(s.Text)).
+		Background(lipgloss.Color(s.Base))
+	md.Styles.NormalDesc = md.Styles.NormalDesc.
+		Foreground(lipgloss.Color(s.Overlay1)).
+		Background(lipgloss.Color(s.Base))
 	ml := list.New(nil, md, 0, 0)
 	ml.Title = "Pick a model"
 	ml.SetShowHelp(false)
@@ -518,15 +549,18 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	sd := list.NewDefaultDelegate()
 	sd.ShowDescription = true
 	sd.Styles.SelectedTitle = sd.Styles.SelectedTitle.
-		Foreground(lipgloss.Color(ui.ColorMauve)).
-		Background(lipgloss.Color(ui.ColorSurface0)).
+		Foreground(lipgloss.Color(s.Mauve)).
+		Background(lipgloss.Color(s.Surface0)).
 		Bold(true)
 	sd.Styles.SelectedDesc = sd.Styles.SelectedDesc.
-		Foreground(lipgloss.Color(ui.ColorOverlay2))
+		Foreground(lipgloss.Color(s.Overlay2)).
+		Background(lipgloss.Color(s.Surface0))
 	sd.Styles.NormalTitle = sd.Styles.NormalTitle.
-		Foreground(lipgloss.Color(ui.ColorText))
+		Foreground(lipgloss.Color(s.Text)).
+		Background(lipgloss.Color(s.Base))
 	sd.Styles.NormalDesc = sd.Styles.NormalDesc.
-		Foreground(lipgloss.Color(ui.ColorOverlay1))
+		Foreground(lipgloss.Color(s.Overlay1)).
+		Background(lipgloss.Color(s.Base))
 	sl := list.New(nil, sd, 0, 0)
 	sl.Title = "Sessions"
 	sl.SetShowHelp(false)
@@ -561,9 +595,10 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	ci.CharLimit = 4096
 
 	cv := viewport.New(0, 0)
+	cv.Style = lipgloss.NewStyle().Background(lipgloss.Color(s.Base))
 
 	sp := spinner.New()
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(ui.ColorMauve))
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(s.Mauve)).Background(lipgloss.Color(s.Base))
 	sp.Spinner = spinner.Dot
 
 	provider := providerArg
@@ -633,7 +668,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	alwaysAllowCommandPrefixes := []string{}
 	if cfg == nil {
 		// Fresh install: populate defaults so users can see and remove them.
-		alwaysAllowTools = []string{"read_file", "write_file", "edit_file"}
+		alwaysAllowTools = []string{"read_file"}
 		alwaysAllowCommandPrefixes = tools.DefaultSafeBashPrefixes()
 	} else {
 		alwaysAllowTools = append(alwaysAllowTools, cfg.AlwaysAllowTools...)
@@ -651,7 +686,9 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		yolo:                 yolo,
 		forceLocal:           forceLocal,
 		reconfigure:          reconfigure,
+		forceKeyAfterURL:     false,
 		theme:                s,
+		themeName:            themeName,
 		provider:             provider,
 		modelName:            modelName,
 		customURL:            customURL,
@@ -666,8 +703,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		allowManageScroll:    0,
 		allowManageInput:     allowIn,
 		providerList:         pl,
+		providerDel:          &pd,
 		modelList:            ml,
+		modelDel:             &md,
 		sessionList:          sl,
+		sessionDel:           &sd,
 		urlInput:             urlIn,
 		keyInput:             ki,
 		nameInput:            ni,
@@ -690,7 +730,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		if m.maxInputTokens == 0 && m.modelName != "" {
 			m.maxInputTokens = llm.LookupModelMaxTokens(m.modelName)
 		}
-		m = m.enterChatState()
+		m, _ = m.enterChatState()
 	}
 
 	return m
@@ -724,6 +764,8 @@ func (m model) toSession() *sessions.Session {
 		ReasoningVisible:  m.reasoning.defaultVisible,
 		WorkspaceRoot:     m.workspaceRoot,
 		Messages:          msgs,
+		InputTokens:       m.inputTokens,
+		OutputTokens:      m.outputTokens,
 	}
 }
 
@@ -749,6 +791,8 @@ func (m model) applySession(s *sessions.Session) model {
 	m.isStreaming = false
 	m.streamingContent = nil
 	m.reasoning = reasoningState{defaultVisible: s.ReasoningVisible, visible: s.ReasoningVisible}
+	m.inputTokens = s.InputTokens
+	m.outputTokens = s.OutputTokens
 	return m
 }
 
@@ -760,7 +804,38 @@ func (m model) resetToNewSession() model {
 	m.isStreaming = false
 	m.streamingContent = nil
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible, visible: m.reasoning.defaultVisible}
+	m.inputTokens = 0
+	m.outputTokens = 0
 	return m.initNewSession()
+}
+
+// applyThemeToLists restyles the list delegates, spinner, and viewport
+// to match the current m.theme. Call this after changing the theme.
+func (m *model) applyThemeToLists() {
+	s := m.theme
+	styleDelegate := func(d *list.DefaultDelegate) {
+		d.ShowDescription = true
+		d.Styles.SelectedTitle = d.Styles.SelectedTitle.
+			Foreground(lipgloss.Color(s.Mauve)).
+			Background(lipgloss.Color(s.Surface0)).
+			Bold(true)
+		d.Styles.SelectedDesc = d.Styles.SelectedDesc.
+			Foreground(lipgloss.Color(s.Overlay2)).
+			Background(lipgloss.Color(s.Surface0))
+		d.Styles.NormalTitle = d.Styles.NormalTitle.
+			Foreground(lipgloss.Color(s.Text)).
+			Background(lipgloss.Color(s.Base))
+		d.Styles.NormalDesc = d.Styles.NormalDesc.
+			Foreground(lipgloss.Color(s.Overlay1)).
+			Background(lipgloss.Color(s.Base))
+	}
+
+	styleDelegate(m.providerDel)
+	styleDelegate(m.modelDel)
+	styleDelegate(m.sessionDel)
+
+	m.chatViewport.Style = lipgloss.NewStyle().Background(lipgloss.Color(s.Base))
+	m.spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(s.Mauve)).Background(lipgloss.Color(s.Base))
 }
 
 func (m model) persistSessionCmd() tea.Cmd {
@@ -798,11 +873,9 @@ func prefetchLLMDetailsCmd(forceLocal bool) tea.Cmd {
 
 		details, err := llm.FetchLLMDetails(ctx, forceLocal)
 		if err != nil || len(details) == 0 {
-			llm.LogDebug("prefetchLLMDetailsCmd: failed, will fetch later if needed: %v", err)
 			return nil
 		}
 
-		llm.LogDebug("prefetchLLMDetailsCmd: loaded %d model details", len(details))
 		return llmDetailsLoadedMsg{details: details}
 	}
 }
@@ -837,17 +910,12 @@ func (m model) fetchModelsCmd() tea.Cmd {
 
 		if m.llmDetailsReady && len(m.llmDetails) > 0 {
 			models = llm.EnrichModels(models, m.llmDetails, m.provider)
-			llm.LogDebug("fetchModelsCmd: enriched from prefetched, first=%q display=%q",
-				models[0].ID, models[0].DisplayName)
 			return modelsFetchedMsg{models: models}
 		}
 
-		llm.LogDebug("fetchModelsCmd: prefetched not ready, fetching inline (%d models)", len(models))
 		details, err := llm.FetchLLMDetails(ctx, m.forceLocal)
 		if err == nil && len(details) > 0 {
 			models = llm.EnrichModels(models, details, m.provider)
-		} else {
-			llm.LogDebug("fetchModelsCmd: no llmdetails to enrich (%d models)", len(models))
 		}
 
 		return modelsFetchedMsg{models: models}
