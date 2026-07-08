@@ -23,6 +23,7 @@ type Message struct {
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	Model            string     `json:"model,omitempty"`
 	Internal         bool       `json:"-"`
+	IsError          bool       `json:"is_error,omitempty"`
 }
 
 type ThinkingConfig struct {

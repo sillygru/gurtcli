@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 )
 
-func WriteFile(workspaceRoot, filePath, content string) (string, error) {
-	safe, err := safePath(workspaceRoot, filePath)
+func WriteFile(workspaceRoot, filePath, content string, allowedExternalDirs []string) (string, error) {
+	safe, err := safePathWithExternals(workspaceRoot, filePath, allowedExternalDirs)
 	if err != nil {
 		return "", err
 	}

@@ -42,6 +42,7 @@ type sessionTitleGeneratedMsg struct {
 type toolResultMsg struct {
 	toolCallID string
 	content    string
+	isError    bool
 }
 
 var dateSuffixRegex = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
@@ -79,27 +80,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
-			if m.state == stateChat && m.isStreaming {
+			if m.state == stateChat && (m.isStreaming || (m.toolExec != nil && m.toolExec.active)) {
+				m.cancelRequested = true
 				if m.streamState.cancel != nil {
 					m.streamState.cancel()
-					m.cancelRequested = true
 				}
-				return m, nil
-			}
-			if m.state == stateChat && m.toolExec != nil && m.toolExec.cancel != nil {
-				m.toolExec.cancel()
-				m.toolExec.cancel = nil
-				m.toolExec.active = false
-				m.toolExec.title = ""
-				m.toolQueue = nil
+				if m.toolExec != nil && m.toolExec.cancel != nil {
+					m.toolExec.cancel()
+				}
+				m = m.resetStreamingState()
 				m.messages = append(m.messages, llm.Message{
 					Role:    "assistant",
 					Content: "_Interrupted_",
 				})
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
-				m.chatInput.Focus()
-				m.toolCallCycle = 0
 				return m, m.persistSessionCmd()
 			}
 			return m, tea.Quit
@@ -229,9 +224,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent = new(strings.Builder)
 		}
 		m.streamingContent.WriteString(msg.content)
-		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		if m.stickToBottom {
-			m.chatViewport.GotoBottom()
+		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
+			m.lastStreamRender = time.Now()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			if m.stickToBottom {
+				m.chatViewport.GotoBottom()
+			}
 		}
 		return m, nil
 
@@ -245,36 +243,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.visible = m.reasoning.defaultVisible
 			m.reasoning.startTime = time.Now()
 		}
-		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		if m.stickToBottom {
-			m.chatViewport.GotoBottom()
+		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
+			m.lastStreamRender = time.Now()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			if m.stickToBottom {
+				m.chatViewport.GotoBottom()
+			}
 		}
 		return m, nil
 
 	case chatStreamDone:
 		if m.cancelRequested {
 			m.cancelRequested = false
-			m.streamingContent = nil
-			m.isStreaming = false
-			m.workingMsg = ""
-			m.workingSpinnerIdx = 0
-			m.toolExec.active = false
-			m.toolExec.title = ""
-			m.streamState.cancel = nil
-			m.reasoning = reasoningState{}
-			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "_Interrupted_",
-			})
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
-		m.stickToBottom = true
-		m.chatInput.Focus()
-		if m.queuedMessage != "" {
-			return m.replayQueuedMessage()
+			m.chatInput.Focus()
+			return m, nil
 		}
-		return m, m.persistSessionCmd()
-	}
 
 		contentStr := ""
 		if m.streamingContent != nil {
@@ -284,24 +267,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.reasoning.content != nil {
 			reasoningStr = strings.TrimSpace(m.reasoning.content.String())
 		}
-		m.streamingContent = nil
-		m.isStreaming = false
-		m.workingMsg = ""
-		m.workingSpinnerIdx = 0
-		m.toolExec.active = false
-		m.toolExec.title = ""
-		m.streamState.cancel = nil
+		reasoningDuration := m.reasoning.duration
 		if m.reasoning.active {
-			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
-			m.reasoning.active = false
-			m.reasoning.content = nil
+			reasoningDuration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
 		}
+		m = m.resetStreamingState()
 
 		if len(msg.toolCalls) > 0 {
 			asm := llm.Message{Role: "assistant", Content: contentStr, Model: m.modelName}
 			if reasoningStr != "" {
 				asm.Reasoning = reasoningStr
-				asm.ReasoningDuration = m.reasoning.duration
+				asm.ReasoningDuration = reasoningDuration
 			}
 			asm.ToolCalls = msg.toolCalls
 			m.messages = append(m.messages, asm)
@@ -330,11 +306,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg := llm.Message{Role: "assistant", Content: contentStr, Model: m.modelName}
 			if reasoningStr != "" {
 				msg.Reasoning = reasoningStr
-				msg.ReasoningDuration = m.reasoning.duration
+				msg.ReasoningDuration = reasoningDuration
 			}
 			m.messages = append(m.messages, msg)
 		}
-		m.toolCallCycle = 0
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
@@ -368,18 +343,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Role:       "tool",
 			ToolCallID: msg.toolCallID,
 			Content:    msg.content,
+			IsError:    msg.isError,
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		return m.executeNextTool()
 
 	case workingTickMsg:
-		if !m.isStreaming && !m.toolExec.active {
-			return m, nil
-		}
 		m.workingSpinnerIdx++
-		if m.workingSpinnerIdx%40 == 0 {
-			m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+		if m.isStreaming || m.toolExec.active {
+			if m.workingSpinnerIdx%40 == 0 {
+				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+			}
 		}
 		return m, workingTickCmd()
 
@@ -395,25 +370,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case chatStreamError:
-		m.streamingContent = nil
-		m.isStreaming = false
-		m.workingMsg = ""
-		m.workingSpinnerIdx = 0
-		m.toolExec.active = false
-		m.toolExec.title = ""
-		m.streamState.cancel = nil
 		if m.cancelRequested {
 			m.cancelRequested = false
-			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: "_Interrupted_",
-			})
-		} else {
-			m.messages = append(m.messages, llm.Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("_Error: %v_", msg.err),
-			})
+			m.chatInput.Focus()
+			return m, nil
 		}
+		m = m.resetStreamingState()
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("_Error: %v_", msg.err),
+		})
 		m.queuedMessage = ""
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
@@ -459,6 +425,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case updatePerformResult:
+		m.isStreaming = false
+		m.workingMsg = ""
+		m.workingSpinnerIdx = 0
 		if msg.upToDate {
 			m.messages = append(m.messages, llm.Message{
 				Role:     "assistant",
@@ -494,6 +463,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case versionCheckResult:
+		m.isStreaming = false
+		m.workingMsg = ""
+		m.workingSpinnerIdx = 0
 		var b strings.Builder
 		b.WriteString(VersionString())
 		b.WriteString("\n")
@@ -988,6 +960,7 @@ func saveConfig(m model) error {
 	cfg.EffortLevel = m.effortLevel
 	cfg.AlwaysAllowTools = m.alwaysAllowTools
 	cfg.AlwaysAllowCommandPrefixes = m.alwaysAllowCommandPrefixes
+	cfg.AlwaysAllowExternal = m.alwaysAllowExternal
 	cfg.TelemetryEnabled = &m.telemetryEnabled
 	cfg.Theme = m.themeName
 	return config.Save(cfg)
@@ -1473,7 +1446,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if m.pendingPerm != nil {
 		tc := m.pendingPerm.toolCall
-		optionCount := len(ui.PermissionOptions(tc.Function.Name, ""))
+		optionCount := len(ui.PermissionOptions(tc.Function.Name, "", m.pendingPerm.externalPath))
 
 		switch msg.String() {
 		case "up":
@@ -1490,6 +1463,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			remaining := m.pendingPerm.remaining
+			externalPath := m.pendingPerm.externalPath
 			cursor := m.permCursor
 			m.pendingPerm = nil
 			m.permCursor = 0
@@ -1507,6 +1481,39 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				return m, m.persistSessionCmd()
+			}
+
+			// External path permission prompt.
+			if externalPath != "" {
+				fileDir := filepath.Dir(externalPath)
+				if !filepath.IsAbs(fileDir) {
+					fileDir = filepath.Join(m.workspaceRoot, fileDir)
+				}
+				switch cursor {
+				case 0: // Allow this operation
+					m.toolQueue = append(m.toolQueue, tc)
+					return m.processToolCalls(remaining)
+				case 1: // Allow this directory for session
+					m.allowedExternalPathsSession[filepath.Clean(fileDir)] = true
+					m.toolQueue = append(m.toolQueue, tc)
+					return m.processToolCalls(remaining)
+				case 2: // Allow every directory for this session
+					m.allowAllExternal = true
+					m.toastSeq++
+					m.toast = &toastMsg{text: "Allowing all external dirs for session", id: m.toastSeq}
+					m.toolQueue = append(m.toolQueue, tc)
+					return m.processToolCalls(remaining)
+				case 3: // Always allow external (forever)
+					m.alwaysAllowExternal = true
+					m.toastSeq++
+					m.toast = &toastMsg{text: "Always allowing external dirs", id: m.toastSeq}
+					saveConfig(m)
+					m.toolQueue = append(m.toolQueue, tc)
+					return m.processToolCalls(remaining)
+				case 4: // No
+					return deny()
+				}
+				return m, nil
 			}
 
 			switch cursor {
@@ -1575,18 +1582,15 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.String() == "esc" && m.isStreaming && m.streamState.cancel != nil {
-		m.streamState.cancel()
+	if msg.String() == "esc" && (m.isStreaming || (m.toolExec != nil && m.toolExec.active)) {
 		m.cancelRequested = true
-		return m, nil
-	}
-
-	if msg.String() == "esc" && !m.isStreaming && m.toolExec != nil && m.toolExec.cancel != nil {
-		m.toolExec.cancel()
-		m.toolExec.cancel = nil
-		m.toolExec.active = false
-		m.toolExec.title = ""
-		m.toolQueue = nil
+		if m.streamState.cancel != nil {
+			m.streamState.cancel()
+		}
+		if m.toolExec != nil && m.toolExec.cancel != nil {
+			m.toolExec.cancel()
+		}
+		m = m.resetStreamingState()
 		m.messages = append(m.messages, llm.Message{
 			Role:    "assistant",
 			Content: "_Interrupted_",
@@ -1594,7 +1598,6 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
-		m.toolCallCycle = 0
 		return m, m.persistSessionCmd()
 	}
 
@@ -1769,7 +1772,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 
-		cmds := []tea.Cmd{m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd()}
+		cmds := []tea.Cmd{m.persistSessionCmd(), startChatStreamCmd(m)}
 		if m.needsTitle {
 			m.needsTitle = false
 			cmds = append(cmds, generateTitleCmd(m))
@@ -1804,7 +1807,7 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
-		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 	}
 
 	tc := m.toolQueue[0]
@@ -1824,7 +1827,19 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 	m.toolExec.cancel = cancel
 
 	args := json.RawMessage(tc.Function.Arguments)
-	opts := tools.Options{WorkspaceRoot: m.workspaceRoot}
+
+	// Build list of allowed external directories.
+	var allowedDirs []string
+	for dir := range m.allowedExternalPathsSession {
+		allowedDirs = append(allowedDirs, dir)
+	}
+	if m.alwaysAllowExternal || m.allowAllExternal {
+		allowedDirs = append(allowedDirs, "/")
+	}
+	opts := tools.Options{
+		WorkspaceRoot:       m.workspaceRoot,
+		AllowedExternalDirs: allowedDirs,
+	}
 
 	return m, tea.Batch(func() tea.Msg {
 		defer cancel()
@@ -1833,11 +1848,14 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 			return nil
 		}
 		content := result
+		if content == "" && err == nil {
+			content = "(no output)"
+		}
 		if err != nil {
 			content = fmt.Sprintf("Error: %v", err)
 		}
-		return toolResultMsg{toolCallID: tc.ID, content: content}
-	}, workingTickCmd())
+		return toolResultMsg{toolCallID: tc.ID, content: content, isError: err != nil}
+	})
 }
 
 // allowBashPrefix adds the command prefix from a run_bash tool call to the
@@ -1921,6 +1939,31 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 		if m.allowDeletions && tc.Function.Name == "delete_file" {
 			m.toolQueue = append(m.toolQueue, tc)
 			continue
+		}
+
+		// Check for file tools targeting paths outside the workspace root.
+		if !m.yolo && !m.alwaysAllowPerms && !m.alwaysAllowExternal && !m.allowAllExternal {
+			if tc.Function.Name == "read_file" || tc.Function.Name == "write_file" ||
+				tc.Function.Name == "edit_file" || tc.Function.Name == "delete_file" {
+				if filePath, err := tools.ExtractFileToolPath(tc.Function.Name, json.RawMessage(tc.Function.Arguments)); err == nil && tools.IsPathOutsideWorkspace(m.workspaceRoot, filePath) {
+					fileDir := filepath.Dir(filePath)
+					if !filepath.IsAbs(fileDir) {
+						fileDir = filepath.Join(m.workspaceRoot, fileDir)
+					}
+					if !m.allowedExternalPathsSession[filepath.Clean(fileDir)] {
+						m.pendingPerm = &pendingPerm{
+							toolCall:     tc,
+							remaining:    tcs[i+1:],
+							externalPath: filePath,
+						}
+						m.chatViewport.SetContent(buildChatContentHighlighted(m))
+						m.chatViewport.GotoBottom()
+						m.chatInput.Blur()
+						m = m.adjustViewportHeight()
+						return m, m.persistSessionCmd()
+					}
+				}
+			}
 		}
 
 		if tools.IsDestructive(tc.Function.Name) && !m.yolo && !m.alwaysAllowPerms {
@@ -2481,12 +2524,18 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "update":
+		m.isStreaming = true
+		m.workingMsg = "Downloading update..."
+		m.workingSpinnerIdx = 0
 		if m.latestVersion == "" {
 			return m, checkAndUpdateCmd()
 		}
 		return m, performUpdateCmd(m.latestVersion)
 
 	case "version":
+		m.isStreaming = true
+		m.workingMsg = "Checking for updates..."
+		m.workingSpinnerIdx = 0
 		return m, checkVersionCmd()
 
 	default:
@@ -2620,7 +2669,7 @@ func (m model) permOverlayHeight() int {
 			bashPrefix = tools.BashCommandPrefix(cmd)
 		}
 	}
-	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix) + "\n" +
+	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath) + "\n" +
 		m.theme.Dim.Render("  ↑/↓ navigate • enter select")
 	boxW := m.width - 2
 	if boxW < 30 {
@@ -2787,6 +2836,22 @@ func startChatStreamCmd(m model) tea.Cmd {
 	}
 }
 
+func (m model) resetStreamingState() model {
+	m.streamingContent = nil
+	m.isStreaming = false
+	m.workingMsg = ""
+	m.workingSpinnerIdx = 0
+	m.toolExec.active = false
+	m.toolExec.title = ""
+	m.toolExec.cancel = nil
+	m.toolQueue = nil
+	m.toolCallCycle = 0
+	m.streamState.cancel = nil
+	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.stickToBottom = true
+	return m
+}
+
 func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	qmsg := m.queuedMessage
 	m.queuedMessage = ""
@@ -2802,7 +2867,7 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
-	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 }
 
 func resourceMonitorTickCmd() tea.Cmd {
@@ -2905,6 +2970,7 @@ func buildChatContent(m model) string {
 	}
 
 	skipLast := lastIsCurrent
+	skipResultIDs := make(map[string]bool)
 	for i, msg := range m.messages {
 		isLast := i == len(m.messages)-1
 		if isLast && skipLast {
@@ -2936,14 +3002,23 @@ func buildChatContent(m model) string {
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
-					b.WriteString("\n")
+					if i+1 < len(m.messages) && m.messages[i+1].Role == "tool" && m.messages[i+1].ToolCallID == tc.ID {
+						b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[i+1].Content, m.chatViewport.Width(), m.messages[i+1].IsError))
+						b.WriteString("\n")
+						skipResultIDs[tc.ID] = true
+					} else {
+						b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
+						b.WriteString("\n")
+					}
 				}
 			}
 			b.WriteString("\n")
 		case "tool":
+			if skipResultIDs[msg.ToolCallID] {
+				continue
+			}
 			toolName := toolNames[msg.ToolCallID]
-			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.chatViewport.Width()))
+			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.chatViewport.Width(), msg.IsError))
 			b.WriteString("\n\n")
 		}
 	}

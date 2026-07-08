@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-func ReadFile(workspaceRoot, filePath string, offset, limit int) (string, error) {
-	safe, err := safePath(workspaceRoot, filePath)
+func ReadFile(workspaceRoot, filePath string, offset, limit int, allowedExternalDirs []string) (string, error) {
+	safe, err := safePathWithExternals(workspaceRoot, filePath, allowedExternalDirs)
 	if err != nil {
 		return "", err
 	}

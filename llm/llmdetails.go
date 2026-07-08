@@ -118,8 +118,8 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 	return result, nil
 }
 
-// EnrichModels overlays capability data from llmdetails onto API-fetched models.
-// Only the Capabilities, MaxInputTokens, and MaxTokens fields are enriched.
+// EnrichModels fills in details from llmdetails.json only when the API response
+// does not already provide them. API values take priority over the static file.
 func EnrichModels(apiModels []ModelInfo, details map[string]ModelInfo, provider string) []ModelInfo {
 	enriched := make([]ModelInfo, len(apiModels))
 	matched := 0
@@ -127,13 +127,13 @@ func EnrichModels(apiModels []ModelInfo, details map[string]ModelInfo, provider 
 		enriched[i] = m
 		if d, ok := details[m.ID]; ok {
 			enriched[i].Capabilities = d.Capabilities
-			if d.MaxInputTokens > 0 {
+			if enriched[i].MaxInputTokens == 0 && d.MaxInputTokens > 0 {
 				enriched[i].MaxInputTokens = d.MaxInputTokens
 			}
-			if d.MaxTokens > 0 {
+			if enriched[i].MaxTokens == 0 && d.MaxTokens > 0 {
 				enriched[i].MaxTokens = d.MaxTokens
 			}
-			if d.DisplayName != "" {
+			if enriched[i].DisplayName == "" && d.DisplayName != "" {
 				enriched[i].DisplayName = d.DisplayName
 			}
 			matched++

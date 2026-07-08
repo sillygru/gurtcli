@@ -2,10 +2,10 @@ package main
 
 import "fmt"
 
-var Version = "1.1.0"
+var Version = "1.1.1"
 var CommitCount = "0"
 var TelemetrySecret = ""
 
 func VersionString() string {
-	return fmt.Sprintf("gurtcli v%s+%s", Version, CommitCount)
+	return fmt.Sprintf("gurtcli v%s", Version)
 }

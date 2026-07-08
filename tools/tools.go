@@ -11,11 +11,18 @@ import (
 )
 
 type Options struct {
-	WorkspaceRoot string
+	WorkspaceRoot       string
+	AllowedExternalDirs []string
 }
 
 // safePath resolves path relative to workspace root and verifies it stays within.
 func safePath(workspaceRoot, path string) (string, error) {
+	return safePathWithExternals(workspaceRoot, path, nil)
+}
+
+// safePathWithExternals resolves path relative to workspace root, allowing
+// paths that either stay within the root or are in the explicitly allowed set.
+func safePathWithExternals(workspaceRoot, path string, allowedExternalDirs []string) (string, error) {
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("workspace root is not set")
 	}
@@ -36,10 +43,52 @@ func safePath(workspaceRoot, path string) (string, error) {
 		cleanPath = filepath.Join(parent, filepath.Base(cleanPath))
 	}
 
-	if !strings.HasPrefix(cleanPath, cleanRoot) {
-		return "", fmt.Errorf("path %q escapes workspace root", path)
+	if strings.HasPrefix(cleanPath, cleanRoot) {
+		return cleanPath, nil
 	}
-	return cleanPath, nil
+
+	// Check allowed external directories.
+	for _, d := range allowedExternalDirs {
+		cleanAllowed := filepath.Clean(d)
+		if !filepath.IsAbs(cleanAllowed) {
+			cleanAllowed = filepath.Join(cleanRoot, cleanAllowed)
+		}
+		cleanAllowed = filepath.Clean(cleanAllowed)
+		if resolved, err := filepath.EvalSymlinks(cleanAllowed); err == nil {
+			cleanAllowed = resolved
+		} else if parent, err := filepath.EvalSymlinks(filepath.Dir(cleanAllowed)); err == nil {
+			cleanAllowed = filepath.Join(parent, filepath.Base(cleanAllowed))
+		}
+		if strings.HasPrefix(cleanPath, cleanAllowed) {
+			return cleanPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("path %q escapes workspace root", path)
+}
+
+// IsPathOutsideWorkspace checks whether the given path is outside the workspace root.
+func IsPathOutsideWorkspace(workspaceRoot, path string) bool {
+	if workspaceRoot == "" {
+		return true
+	}
+	cleanRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return true
+	}
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(cleanRoot, cleanPath)
+	}
+	cleanPath = filepath.Clean(cleanPath)
+
+	if resolved, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = resolved
+	} else if parent, err := filepath.EvalSymlinks(filepath.Dir(cleanPath)); err == nil {
+		cleanPath = filepath.Join(parent, filepath.Base(cleanPath))
+	}
+
+	return !strings.HasPrefix(cleanPath, cleanRoot)
 }
 
 type readFileArgs struct {
@@ -151,6 +200,38 @@ func Definitions() []llm.Tool {
 	}
 }
 
+// ExtractFileToolPath extracts the file path argument from any file-based tool call.
+func ExtractFileToolPath(name string, args json.RawMessage) (string, error) {
+	switch name {
+	case "read_file":
+		var a readFileArgs
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", fmt.Errorf("invalid read_file arguments: %w", err)
+		}
+		return a.FilePath, nil
+	case "write_file":
+		var a writeFileArgs
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", fmt.Errorf("invalid write_file arguments: %w", err)
+		}
+		return a.FilePath, nil
+	case "edit_file":
+		var a editFileArgs
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", fmt.Errorf("invalid edit_file arguments: %w", err)
+		}
+		return a.FilePath, nil
+	case "delete_file":
+		var a deleteFileArgs
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", fmt.Errorf("invalid delete_file arguments: %w", err)
+		}
+		return a.FilePath, nil
+	default:
+		return "", fmt.Errorf("not a file tool: %s", name)
+	}
+}
+
 // Execute dispatches a tool call to the appropriate implementation.
 func Execute(ctx context.Context, name string, args json.RawMessage, opts Options) (string, error) {
 	switch name {
@@ -159,28 +240,28 @@ func Execute(ctx context.Context, name string, args json.RawMessage, opts Option
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("invalid read_file arguments: %w", err)
 		}
-		return ReadFile(opts.WorkspaceRoot, a.FilePath, a.Offset, a.Limit)
+		return ReadFile(opts.WorkspaceRoot, a.FilePath, a.Offset, a.Limit, opts.AllowedExternalDirs)
 
 	case "write_file":
 		var a writeFileArgs
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("invalid write_file arguments: %w", err)
 		}
-		return WriteFile(opts.WorkspaceRoot, a.FilePath, a.Content)
+		return WriteFile(opts.WorkspaceRoot, a.FilePath, a.Content, opts.AllowedExternalDirs)
 
 	case "edit_file":
 		var a editFileArgs
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("invalid edit_file arguments: %w", err)
 		}
-		return EditFile(opts.WorkspaceRoot, a.FilePath, a.OldString, a.NewString)
+		return EditFile(opts.WorkspaceRoot, a.FilePath, a.OldString, a.NewString, opts.AllowedExternalDirs)
 
 	case "delete_file":
 		var a deleteFileArgs
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("invalid delete_file arguments: %w", err)
 		}
-		return DeleteFile(opts.WorkspaceRoot, a.FilePath)
+		return DeleteFile(opts.WorkspaceRoot, a.FilePath, opts.AllowedExternalDirs)
 
 	case "run_bash":
 		var a runBashArgs
@@ -223,13 +304,32 @@ func DefaultSafeBashPrefixes() []string {
 	}
 }
 
-// BashCommandPrefix extracts the first word from a shell command.
+// BashCommandPrefix extracts the first shell segment from a command,
+// stopping before common shell operators (&&, ||, ;, |) while respecting quotes.
 func BashCommandPrefix(command string) string {
 	command = strings.TrimSpace(command)
-	if idx := strings.IndexAny(command, " \t"); idx > 0 {
-		return command[:idx]
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch {
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+		case !inSingle && !inDouble:
+			if ch == ';' || ch == '|' {
+				goto done
+			}
+			if ch == '&' && i+1 < len(command) && command[i+1] == '&' {
+				goto done
+			}
+		}
+		buf.WriteByte(ch)
 	}
-	return command
+done:
+	return strings.TrimSpace(buf.String())
 }
 
 // ExtractBashCommand parses a run_bash tool call arguments and returns the command string.

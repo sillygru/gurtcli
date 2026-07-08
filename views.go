@@ -497,11 +497,6 @@ func (m model) chatView() string {
 	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
 	b.WriteString("\n")
 
-	if m.updateAvailable {
-		b.WriteString(m.theme.UpdateBanner.Render(fmt.Sprintf("  Update %s available — run /update", m.latestVersion)))
-		b.WriteString("\n")
-	}
-
 	dividerLen := m.width
 	if dividerLen < 4 {
 		dividerLen = 40
@@ -560,7 +555,7 @@ func (m model) chatView() string {
 			Width(boxW).
 			Padding(1, 1)
 
-		content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix) + "\n" +
+		content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath) + "\n" +
 			m.theme.Dim.Render("  ↑/↓ navigate • enter select")
 
 		b.WriteString(permBox.Render(content))
@@ -597,7 +592,10 @@ func (m model) chatView() string {
 
 		b.WriteString(popup.Render(pc.String()))
 	} else {
-		help := "enter send • shift+enter newline • ↑↓ pgup pgdn scroll • ctrl+c quit"
+		help := VersionString() + " • " + m.cwdDisplay
+		if m.updateAvailable {
+			help = VersionString() + " • " + m.cwdDisplay + " — Update " + m.latestVersion + " — /update"
+		}
 		if m.isStreaming {
 			help = "esc cancel • ctrl+c quit"
 		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
@@ -610,9 +608,19 @@ func (m model) chatView() string {
 				style = m.theme.Header
 			}
 			if m.suggestions.isFiles {
-				b.WriteString(style.Render(prefix + "@" + item.name))
+				if i == m.suggestions.selected {
+					b.WriteString(style.Render(prefix + "@" + item.name))
+				} else {
+					b.WriteString(style.Render(prefix))
+					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("@" + item.name))
+				}
 			} else {
-				b.WriteString(style.Render(prefix + "/" + item.name))
+				if i == m.suggestions.selected {
+					b.WriteString(style.Render(prefix + "/" + item.name))
+				} else {
+					b.WriteString(style.Render(prefix))
+					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Mauve)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("/" + item.name))
+				}
 				b.WriteString(m.theme.Dim.Render("  " + item.description))
 			}
 			b.WriteString("\n")

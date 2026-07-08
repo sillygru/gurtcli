@@ -16,6 +16,61 @@ const (
 	maxResultLines   = 6
 )
 
+// RenderUnifiedToolCard renders a tool call and its result together in one bordered card.
+func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width int, isError bool) string {
+	accent := t.ToolAccentFor(tc.Function.Name)
+	args := parseToolArgs(tc.Function.Arguments)
+
+	var body strings.Builder
+	switch tc.Function.Name {
+	case "run_bash":
+		renderBashArgs(&body, t, args)
+	case "edit_file":
+		renderEditArgs(&body, t, args, width)
+	case "write_file":
+		renderWriteArgs(&body, t, args)
+	case "read_file":
+		renderReadArgs(&body, t, args)
+	case "delete_file":
+		renderDeleteArgs(&body, t, args)
+	default:
+		renderGenericArgs(&body, t, args)
+	}
+
+	icon := "✓"
+	resultStyle := t.ToolResultOK
+	if isError {
+		icon = "✕"
+		resultStyle = t.ToolResultErr
+	}
+
+	summary := summarizeToolResult(tc.Function.Name, resultContent, isError)
+
+	if body.Len() > 0 {
+		body.WriteString(t.Muted.Render(fmt.Sprintf("  %s", strings.Repeat("─", cardWidth(width)-4))))
+		body.WriteString("\n")
+	}
+
+	body.WriteString(resultStyle.Render(fmt.Sprintf("  %s %s", icon, summary)))
+	body.WriteString("\n")
+
+	preview := toolResultPreview(resultContent, tc.Function.Name)
+	if preview != "" {
+		for _, line := range strings.Split(preview, "\n") {
+			body.WriteString(t.ToolCode.Render("    " + line))
+			body.WriteString("\n")
+		}
+	}
+
+	header := renderToolHeader(t, accent)
+	content := header
+	if body.Len() > 0 {
+		content += "\n" + body.String()
+	}
+
+	return wrapToolCard(t, accent, content, cardWidth(width))
+}
+
 // RenderToolCall renders a tool invocation as a bordered card.
 func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 	accent := t.ToolAccentFor(tc.Function.Name)
@@ -46,38 +101,38 @@ func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 	return wrapToolCard(t, accent, content, cardWidth(width))
 }
 
-// RenderToolResult renders the output of a completed tool call.
-func RenderToolResult(t Theme, toolName, content string, width int) string {
+// RenderToolResult renders the output of a completed tool call in a bordered card.
+func RenderToolResult(t Theme, toolName, content string, width int, isError bool) string {
 	if content == "" {
 		return ""
 	}
 
-	lower := strings.ToLower(content)
-	isErr := strings.Contains(lower, "error") ||
-		strings.Contains(lower, "failed") ||
-		strings.Contains(lower, "timed out") ||
-		strings.Contains(lower, "denied")
+	accent := t.ToolAccentFor(toolName)
 
 	icon := "✓"
 	resultStyle := t.ToolResultOK
-	if isErr {
+	if isError {
 		icon = "✕"
 		resultStyle = t.ToolResultErr
 	}
 
-	summary := summarizeToolResult(toolName, content)
-	header := resultStyle.Render(fmt.Sprintf("  %s %s", icon, summary))
+	summary := summarizeToolResult(toolName, content, isError)
 
 	var body strings.Builder
+	body.WriteString(renderToolHeader(t, accent))
+	body.WriteString("\n")
+	body.WriteString(resultStyle.Render(fmt.Sprintf("  %s %s", icon, summary)))
+
 	preview := toolResultPreview(content, toolName)
 	if preview != "" {
-		body.WriteString(t.ToolResultBody.Render(preview))
+		body.WriteString("\n")
+		for _, line := range strings.Split(preview, "\n") {
+			body.WriteString(t.ToolCode.Render("    " + line))
+			body.WriteString("\n")
+		}
 	}
 
-	if body.Len() == 0 {
-		return header
-	}
-	return header + "\n" + body.String()
+	return wrapToolCard(t, accent, body.String(), cardWidth(width))
 }
 
 // RenderUserMessage renders a user message block.
@@ -127,7 +182,17 @@ func RenderAssistantContent(t Theme, content string, width int) string {
 // PermissionOptions returns the permission option labels for a tool.
 // This is the single source of truth for option count and order.
 // bashPrefix is embedded for run_bash labels.
-func PermissionOptions(toolName, bashPrefix string) []string {
+// externalPath is non-empty when the tool targets a path outside the workspace.
+func PermissionOptions(toolName, bashPrefix, externalPath string) []string {
+	if externalPath != "" {
+		return []string{
+			"Yes",
+			"Allow this directory for this session",
+			"Allow every directory for this session",
+			"Always allow every directory outside working space (forever)",
+			"No",
+		}
+	}
 	switch toolName {
 	case "run_bash":
 		return []string{
@@ -160,10 +225,15 @@ func PermissionOptions(toolName, bashPrefix string) []string {
 // RenderPermissionPrompt renders the permission confirmation box content.
 // cursor is the index of the currently selected option.
 // bashPrefix is the command prefix to display in bash-related options, if any.
-func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string) string {
+// externalPath is the external file path being accessed, if any (triggers external access prompt).
+func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string, externalPath string) string {
 	content := RenderToolCall(t, tc, width) + "\n\n"
+	if externalPath != "" {
+		content += t.PermPrompt.Render("  External path: " + externalPath)
+		content += "\n\n"
+	}
 
-	options := PermissionOptions(tc.Function.Name, bashPrefix)
+	options := PermissionOptions(tc.Function.Name, bashPrefix, externalPath)
 
 	b := new(strings.Builder)
 	b.WriteString(content)
@@ -364,22 +434,12 @@ func renderGenericArgs(b *strings.Builder, t Theme, args map[string]interface{})
 	}
 }
 
-func summarizeToolResult(toolName, content string) string {
-	lower := strings.ToLower(content)
-	if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
-		first := strings.SplitN(strings.TrimSpace(content), "\n", 2)[0]
-		if len(first) > 72 {
-			first = first[:69] + "…"
-		}
-		return first
-	}
-
-	if strings.Contains(lower, "denied") {
-		return "Denied"
-	}
-
+func summarizeToolResult(toolName, content string, isError bool) string {
 	switch toolName {
 	case "read_file":
+		if isError {
+			return firstLineTrimmed(content, 72)
+		}
 		if idx := strings.Index(content, "("); idx > 0 {
 			return strings.TrimSpace(content[:idx])
 		}
@@ -388,10 +448,19 @@ func summarizeToolResult(toolName, content string) string {
 		if strings.HasPrefix(content, "Successfully wrote") {
 			return content
 		}
+		if isError {
+			return firstLineTrimmed(content, 72)
+		}
 		return "Write complete"
 	case "edit_file":
+		if isError {
+			return firstLineTrimmed(content, 72)
+		}
 		return "Edit applied"
 	case "delete_file":
+		if isError {
+			return firstLineTrimmed(content, 72)
+		}
 		return "File deleted"
 	case "run_bash":
 		lines := strings.Split(strings.TrimSpace(content), "\n")
@@ -407,12 +476,16 @@ func summarizeToolResult(toolName, content string) string {
 		}
 		return fmt.Sprintf("%d lines of output", len(lines))
 	default:
-		first := strings.SplitN(strings.TrimSpace(content), "\n", 2)[0]
-		if len(first) > 72 {
-			first = first[:69] + "…"
-		}
-		return first
+		return firstLineTrimmed(content, 72)
 	}
+}
+
+func firstLineTrimmed(content string, maxLen int) string {
+	first := strings.SplitN(strings.TrimSpace(content), "\n", 2)[0]
+	if len(first) > maxLen {
+		first = first[:maxLen-3] + "…"
+	}
+	return first
 }
 
 func toolResultPreview(content, toolName string) string {
@@ -432,9 +505,6 @@ func toolResultPreview(content, toolName string) string {
 	case "run_bash":
 		return joinPreviewLines(lines, maxResultLines)
 	default:
-		if len(lines) == 1 && len(lines[0]) < 80 {
-			return ""
-		}
 		return joinPreviewLines(lines, maxResultLines)
 	}
 }

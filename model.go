@@ -194,8 +194,9 @@ type reasoningState struct {
 }
 
 type pendingPerm struct {
-	toolCall  llm.ToolCall
-	remaining []llm.ToolCall
+	toolCall     llm.ToolCall
+	remaining    []llm.ToolCall
+	externalPath string // set when the prompt is about an external path
 }
 
 type streamState struct {
@@ -247,6 +248,7 @@ type model struct {
 	width            int
 	height           int
 	workspaceRoot        string
+	cwdDisplay           string
 	alwaysAllowPerms          bool
 	allowEdits               bool
 	allowDeletions           bool
@@ -254,6 +256,9 @@ type model struct {
 	allowedBashPrefixesSession map[string]bool
 	alwaysAllowTools           []string
 	alwaysAllowCommandPrefixes []string
+	allowedExternalPathsSession map[string]bool
+	allowAllExternal            bool
+	alwaysAllowExternal         bool
 	allowManageCursor          int
 	allowManageScroll          int
 	allowManageInput          textinput.Model
@@ -310,6 +315,7 @@ type model struct {
 	isStreaming      bool
 	stickToBottom    bool
 	streamingContent *strings.Builder
+	lastStreamRender time.Time
 	reasoning        reasoningState
 	streamState      *streamState
 	toolExec         *toolExecState
@@ -803,6 +809,10 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	}
 
 	wd, _ := os.Getwd()
+	cwdDisplay := wd
+	if homedir, err := os.UserHomeDir(); err == nil {
+		cwdDisplay = strings.Replace(wd, homedir, "~", 1)
+	}
 
 	allowedBashPrefixes := make(map[string]bool)
 	if cfg != nil {
@@ -820,6 +830,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	} else {
 		alwaysAllowTools = append(alwaysAllowTools, cfg.AlwaysAllowTools...)
 		alwaysAllowCommandPrefixes = append(alwaysAllowCommandPrefixes, cfg.AlwaysAllowCommandPrefixes...)
+	}
+
+	alwaysAllowExternal := false
+	if cfg != nil {
+		alwaysAllowExternal = cfg.AlwaysAllowExternal
 	}
 
 	allowIn := textinput.New()
@@ -844,10 +859,13 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		apiKey:               apiKey,
 		dotenvKeys:           envKeys,
 		workspaceRoot:        wd,
+		cwdDisplay:           cwdDisplay,
 		allowedBashPrefixes:        allowedBashPrefixes,
 		allowedBashPrefixesSession: make(map[string]bool),
 		alwaysAllowTools:           alwaysAllowTools,
 		alwaysAllowCommandPrefixes: alwaysAllowCommandPrefixes,
+		allowedExternalPathsSession: make(map[string]bool),
+		alwaysAllowExternal:         alwaysAllowExternal,
 		allowManageCursor:    0,
 		allowManageScroll:    0,
 		allowManageInput:     allowIn,
@@ -868,6 +886,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		chatViewport:         cv,
 		streamState:          &streamState{},
 		toolExec:             &toolExecState{},
+		windowTitle:          "gurt",
 	}
 
 	h, _ := history.Load()
@@ -1012,16 +1031,12 @@ func (m model) persistSessionCmd() tea.Cmd {
 
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	m.windowTitle = "gurt"
-	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal))
+	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal), workingTickCmd())
 	if m.telemetryEnabled {
 		cmds = append(cmds, sendTelemetryCmd("startup"))
 	}
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
-	}
-	if len(cmds) == 0 {
-		return nil
 	}
 	return tea.Batch(cmds...)
 }

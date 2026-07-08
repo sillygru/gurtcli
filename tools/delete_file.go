@@ -5,8 +5,8 @@ import (
 	"os"
 )
 
-func DeleteFile(workspaceRoot, filePath string) (string, error) {
-	safe, err := safePath(workspaceRoot, filePath)
+func DeleteFile(workspaceRoot, filePath string, allowedExternalDirs []string) (string, error) {
+	safe, err := safePathWithExternals(workspaceRoot, filePath, allowedExternalDirs)
 	if err != nil {
 		return "", err
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -23,15 +22,6 @@ func computeViewportStartRow(m model) int {
 		brandRows = (brandWidth + m.width - 1) / m.width
 	}
 	row := brandRows
-	if m.updateAvailable {
-		bannerText := fmt.Sprintf("  Update %s available — run /update", m.latestVersion)
-		bannerWidth := lipgloss.Width(m.theme.UpdateBanner.Render(bannerText))
-		bannerRows := 1
-		if m.width > 0 && bannerWidth > m.width {
-			bannerRows = (bannerWidth + m.width - 1) / m.width
-		}
-		row += bannerRows
-	}
 	return row + 1 // divider
 }
 

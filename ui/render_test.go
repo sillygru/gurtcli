@@ -70,18 +70,38 @@ func TestRenderToolCallEditFile(t *testing.T) {
 func TestRenderToolResultSuccess(t *testing.T) {
 	t.Parallel()
 	theme := DefaultTheme()
-	out := RenderToolResult(theme, "write_file", "Successfully wrote 42 bytes to main.go", 80)
+	out := RenderToolResult(theme, "write_file", "Successfully wrote 42 bytes to main.go", 80, false)
+	if !strings.Contains(out, "Write") {
+		t.Fatalf("expected tool label, got: %q", out)
+	}
 	if !strings.Contains(out, "✓") {
 		t.Fatalf("expected success icon, got: %q", out)
+	}
+	if !strings.Contains(out, "╭") {
+		t.Fatalf("expected card border, got: %q", out)
 	}
 }
 
 func TestRenderToolResultError(t *testing.T) {
 	t.Parallel()
 	theme := DefaultTheme()
-	out := RenderToolResult(theme, "run_bash", "command failed: exit status 1", 80)
+
+	// run_bash with "Error:" prefix (actual tool execution error)
+	out := RenderToolResult(theme, "run_bash", "Error: exit status 1", 80, true)
+	if !strings.Contains(out, "Shell") {
+		t.Fatalf("expected tool label for Shell, got: %q", out)
+	}
 	if !strings.Contains(out, "✕") {
-		t.Fatalf("expected error icon, got: %q", out)
+		t.Fatalf("expected error icon for run_bash with Error: prefix, got: %q", out)
+	}
+	if !strings.Contains(out, "╭") {
+		t.Fatalf("expected card border, got: %q", out)
+	}
+
+	// run_bash with regular content (no error)
+	out2 := RenderToolResult(theme, "run_bash", "command finished successfully", 80, false)
+	if !strings.Contains(out2, "✓") {
+		t.Fatalf("expected success icon for run_bash regular output, got: %q", out2)
 	}
 }
 

@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-func EditFile(workspaceRoot, filePath, oldString, newString string) (string, error) {
-	safe, err := safePath(workspaceRoot, filePath)
+func EditFile(workspaceRoot, filePath, oldString, newString string, allowedExternalDirs []string) (string, error) {
+	safe, err := safePathWithExternals(workspaceRoot, filePath, allowedExternalDirs)
 	if err != nil {
 		return "", err
 	}
