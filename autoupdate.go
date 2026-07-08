@@ -173,7 +173,7 @@ func extractTarGz(r io.Reader, destDir string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("reading tar: %w", err)
 		}
-		if hdr.Name != "gurtcli" {
+		if filepath.Base(hdr.Name) != "gurtcli" {
 			continue
 		}
 

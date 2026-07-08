@@ -158,7 +158,11 @@ async function main() {
     console.log("Extracting...");
     fs.mkdirSync(binDir, { recursive: true });
     if (goos === "windows") {
-      execSync(`powershell Expand-Archive -Path "${archivePath}" -DestinationPath "${binDir}" -Force`, { stdio: "pipe" });
+      try {
+        execSync(`powershell Expand-Archive -Path "${archivePath}" -DestinationPath "${binDir}" -Force`, { stdio: "pipe" });
+      } catch {
+        execSync(`tar -xf "${archivePath}" -C "${binDir}"`, { stdio: "pipe" });
+      }
     } else {
       execSync(`tar -xzf "${archivePath}" -C "${binDir}"`, { stdio: "pipe" });
     }

@@ -142,7 +142,11 @@ async function ensureBinary() {
 
     console.error("Extracting...");
     if (goos === "windows") {
-      execSync(`powershell Expand-Archive -Path "${archivePath}" -DestinationPath "${tmpDir}" -Force`, { stdio: "pipe" });
+      try {
+        execSync(`powershell Expand-Archive -Path "${archivePath}" -DestinationPath "${tmpDir}" -Force`, { stdio: "pipe" });
+      } catch {
+        execSync(`tar -xf "${archivePath}" -C "${tmpDir}"`, { stdio: "pipe" });
+      }
     } else {
       execSync(`tar -xzf "${archivePath}" -C "${tmpDir}"`, { stdio: "pipe" });
     }
