@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/tools"
@@ -490,9 +491,77 @@ func (m model) allowManageView() string {
 	return b.String()
 }
 
+// renderChatInput renders the chat input with inline @file and /command highlighting.
+// For multi-line input it falls back to the textarea's default rendering.
+func (m model) renderChatInput() string {
+	val := m.chatInput.Value()
+
+	// Multi-line: fall back to textarea's default rendering
+	if strings.Contains(val, "\n") {
+		return m.chatInput.View()
+	}
+
+	// Empty: show placeholder
+	if val == "" {
+		ph := m.chatInput.Placeholder
+		if ph != "" {
+			return m.theme.Dim.Render("  " + ph)
+		}
+		return ""
+	}
+
+	inputWidth := m.width - 4
+	if inputWidth < 10 {
+		inputWidth = 40
+	}
+
+	cmdNames := commandNames()
+	baseStyle := m.theme.UserContent
+	cursorCol := m.chatInput.Column()
+
+	// Wrap at input width; ansi.Hardwrap preserves character alignment
+	wrapped := ansi.Hardwrap(val, inputWidth, true)
+	wrappedLines := strings.Split(wrapped, "\n")
+
+	visualLine := cursorCol / inputWidth
+	if visualLine >= len(wrappedLines) {
+		visualLine = len(wrappedLines) - 1
+	}
+	visualCol := cursorCol - (visualLine * inputWidth)
+
+	var b strings.Builder
+	for i, line := range wrappedLines {
+		if i > 0 {
+			b.WriteRune('\n')
+		}
+
+		if i == visualLine {
+			before, atChar, after := line, " ", ""
+			if visualCol < len(line) {
+				before = line[:visualCol]
+				atChar = string(line[visualCol])
+				after = line[visualCol+1:]
+			}
+
+			b.WriteString(ui.HighlightInline(before, baseStyle, m.theme.FileRef, m.theme.CmdRef, cmdNames))
+
+			cursorStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(m.theme.Base)).
+				Background(lipgloss.Color(m.theme.Text))
+			b.WriteString(cursorStyle.Render(atChar))
+
+			b.WriteString(ui.HighlightInline(after, baseStyle, m.theme.FileRef, m.theme.CmdRef, cmdNames))
+		} else {
+			b.WriteString(ui.HighlightInline(line, baseStyle, m.theme.FileRef, m.theme.CmdRef, cmdNames))
+		}
+	}
+	return b.String()
+}
+
 func (m model) chatView() string {
 	var b strings.Builder
 	b.WriteString("\x1b[2 q") // DECSCUSR: non-blinking block cursor
+	b.WriteString("\x1b[?25l") // hide hardware cursor
 
 	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
 	b.WriteString("\n")
@@ -636,8 +705,15 @@ func (m model) chatView() string {
 			b.WriteString("\n")
 		}
 
-		b.WriteString(m.theme.InputPrompt.Render("  ❯ "))
-		b.WriteString(m.chatInput.View())
+		promptStyle := m.theme.InputPrompt
+		if strings.Contains(m.chatInput.Value(), "@") {
+			promptStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(m.theme.Blue)).
+				Bold(true).
+				Background(lipgloss.Color(m.theme.Base))
+		}
+		b.WriteString(promptStyle.Render("  ❯ "))
+		b.WriteString(m.renderChatInput())
 		b.WriteString("\n")
 		b.WriteString(m.helpWithStatus(help))
 	}

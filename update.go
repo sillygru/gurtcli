@@ -958,7 +958,13 @@ func saveConfig(m model) error {
 	cfg.ReasoningVisible = m.reasoning.defaultVisible
 	cfg.ThinkingType = m.thinkingType
 	cfg.EffortLevel = m.effortLevel
-	cfg.AlwaysAllowTools = m.alwaysAllowTools
+	savedTools := make([]string, 0, len(m.alwaysAllowTools))
+	for _, t := range m.alwaysAllowTools {
+		if t != "read_file" {
+			savedTools = append(savedTools, t)
+		}
+	}
+	cfg.AlwaysAllowTools = savedTools
 	cfg.AlwaysAllowCommandPrefixes = m.alwaysAllowCommandPrefixes
 	cfg.AlwaysAllowExternal = m.alwaysAllowExternal
 	cfg.TelemetryEnabled = &m.telemetryEnabled
@@ -1380,7 +1386,7 @@ func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		m.allowManageAdding = true
 		m.allowManageAddType = "tool"
-		m.allowToolCheckItems = []string{"read_file", "write_file", "edit_file", "delete_file"}
+		m.allowToolCheckItems = []string{"write_file", "edit_file", "delete_file"}
 		m.allowToolCheckCursor = 0
 		return m, nil
 	case "c":
@@ -2978,7 +2984,7 @@ func buildChatContent(m model) string {
 		}
 		switch msg.Role {
 		case "user":
-			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content))
+			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content, m.chatViewport.Width(), commandNames()))
 			b.WriteString("\n\n")
 		case "assistant":
 			if msg.Internal {
@@ -2997,7 +3003,7 @@ func buildChatContent(m model) string {
 				}
 			}
 			if msg.Content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width()))
+				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width(), commandNames()))
 				b.WriteString("\n")
 			}
 			if len(msg.ToolCalls) > 0 {
@@ -3043,13 +3049,13 @@ func buildChatContent(m model) string {
 		if lastIsCurrent {
 			content := m.messages[len(m.messages)-1].Content
 			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width()))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width(), commandNames()))
 				b.WriteString("\n")
 			}
 		} else if streamingLen > 0 && m.streamingContent != nil {
 			content := m.streamingContent.String()
 			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width()))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width(), commandNames()))
 				b.WriteString("\n")
 			}
 		}

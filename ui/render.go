@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sillygru/gurtcli/llm"
 )
 
@@ -135,14 +137,104 @@ func RenderToolResult(t Theme, toolName, content string, width int, isError bool
 	return wrapToolCard(t, accent, body.String(), cardWidth(width))
 }
 
-// RenderUserMessage renders a user message block.
-func RenderUserMessage(t Theme, content string) string {
+// highlightInline finds @file and /command references in a single line of text
+// and returns the line with those references styled using the provided styles.
+func HighlightInline(line string, base, fileRef, cmdRef lipgloss.Style, commands []string) string {
+	cmdSet := make(map[string]bool, len(commands))
+	for _, c := range commands {
+		cmdSet[c] = true
+	}
+
+	type span struct {
+		start, end int
+		style      lipgloss.Style
+	}
+	var spans []span
+
+	// Find @file references
+	for i := 0; i < len(line); i++ {
+		if line[i] == '@' {
+			j := i + 1
+			for j < len(line) && line[j] != ' ' {
+				j++
+			}
+			if j > i+1 {
+				spans = append(spans, span{i, j, fileRef})
+				i = j - 1
+			}
+		}
+	}
+
+	// Find /command references
+	for i := 0; i < len(line); i++ {
+		if line[i] == '/' {
+			for cmd := range cmdSet {
+				if i+1+len(cmd) <= len(line) && line[i+1:i+1+len(cmd)] == cmd {
+					end := i + 1 + len(cmd)
+					if end == len(line) || line[end] == ' ' {
+						spans = append(spans, span{i, end, cmdRef})
+						i = end - 1
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if len(spans) == 0 {
+		return base.Render(line)
+	}
+
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+
+	// Merge overlapping spans
+	merged := []span{spans[0]}
+	for i := 1; i < len(spans); i++ {
+		last := &merged[len(merged)-1]
+		if spans[i].start <= last.end && spans[i].end > last.end {
+			last.end = spans[i].end
+		} else if spans[i].start > last.end {
+			merged = append(merged, spans[i])
+		}
+	}
+
+	var b strings.Builder
+	pos := 0
+	for _, s := range merged {
+		if s.start > pos {
+			b.WriteString(base.Render(line[pos:s.start]))
+		}
+		b.WriteString(s.style.Render(line[s.start:s.end]))
+		pos = s.end
+	}
+	if pos < len(line) {
+		b.WriteString(base.Render(line[pos:]))
+	}
+	return b.String()
+}
+
+// RenderUserMessage renders a user message block with inline highlighting
+// for @file and /command references when commands is non-nil.
+func RenderUserMessage(t Theme, content string, width int, commands []string) string {
 	var b strings.Builder
 	b.WriteString(t.UserLabel.Render("  you"))
 	b.WriteString("\n")
+	doHL := len(commands) > 0
+	wrapWidth := width - 2
+	if wrapWidth < 10 {
+		wrapWidth = 10
+	}
 	for _, line := range strings.Split(content, "\n") {
-		b.WriteString(t.UserContent.Render("  " + line))
-		b.WriteString("\n")
+		wrapped := ansi.Hardwrap(line, wrapWidth, true)
+		for _, subLine := range strings.Split(wrapped, "\n") {
+			if doHL {
+				b.WriteString(t.UserContent.Render("  "))
+				b.WriteString(HighlightInline(subLine, t.UserContent, t.FileRef, t.CmdRef, commands))
+			} else {
+				b.WriteString(t.UserContent.Render("  " + subLine))
+			}
+			b.WriteString("\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -154,12 +246,18 @@ func RenderAssistantLabel(t Theme, name string) string {
 
 // RenderAssistantContent renders assistant text.
 // Table blocks (pipe-delimited) are detected and rendered as box-drawing grids.
-func RenderAssistantContent(t Theme, content string, width int) string {
+// Inline @file and /command references are highlighted when commands is non-nil.
+func RenderAssistantContent(t Theme, content string, width int, commands []string) string {
 	if content == "" {
 		return ""
 	}
 	lines := strings.Split(content, "\n")
 	var b strings.Builder
+	doHL := len(commands) > 0
+	wrapWidth := width - 2
+	if wrapWidth < 10 {
+		wrapWidth = 10
+	}
 	i := 0
 	for i < len(lines) {
 		if isTableCandidate(lines, i) {
@@ -171,8 +269,16 @@ func RenderAssistantContent(t Theme, content string, width int) string {
 			b.WriteString("\n")
 			i = j
 		} else {
-			b.WriteString(t.AssistantContent.Render("  " + lines[i]))
-			b.WriteString("\n")
+			wrapped := ansi.Hardwrap(lines[i], wrapWidth, true)
+			for _, subLine := range strings.Split(wrapped, "\n") {
+				if doHL {
+					b.WriteString(t.AssistantContent.Render("  "))
+					b.WriteString(HighlightInline(subLine, t.AssistantContent, t.FileRef, t.CmdRef, commands))
+				} else {
+					b.WriteString(t.AssistantContent.Render("  " + subLine))
+				}
+				b.WriteString("\n")
+			}
 			i++
 		}
 	}

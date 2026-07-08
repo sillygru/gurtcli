@@ -46,11 +46,12 @@ Type `/exit` or press `ctrl+c` to quit.
 
 ```
 --model <name>                  skip model picker
---provider <name>               skip provider picker (openai, anthropic, gemini)
+--provider <name>               skip provider picker (openai, anthropic, gemini, custom)
 --yolo                          skip all permission prompts
 --dangerously-skip-permissions  skip all permission prompts
 --reconfigure                   force provider and model setup
 --force-local                   use embedded model details instead of fetching from GitHub
+--debug                         enable debug logging and resource monitor
 --version                       print version and exit
 ```
 
@@ -69,19 +70,22 @@ Type `/exit` or press `ctrl+c` to quit.
 | `/effort` | Set effort level (low/medium/high/xhigh/max) |
 | `/allow` | Manage always-allowed tools and commands |
 | `/update` | Update to the latest version |
+| `/theme` | Change the color theme |
+| `/telemetry` | Toggle anonymous usage telemetry |
+| `/version` | Show current version and check for updates |
 | `/exit` | Quit the application |
 
 Type `/` in chat to see autocomplete suggestions for all commands.
 
 ## Sessions
 
-Every chat session is automatically saved to `.gurtcli/sessions/` in your workspace. Sessions persist your message history, provider, model, and reasoning configuration across restarts.
+Every chat session is automatically saved to `~/.config/gurtcli/sessions.db` (SQLite). Sessions persist your message history, provider, model, and reasoning configuration across restarts.
 
 - **Resume a session** — launch `gurtcli` in the same directory and it picks up where you left off.
 - **Switch sessions** — `/session` shows a list of saved sessions.
 - **New session** — `/new` saves the current session and starts fresh.
 
-Session data is stored as JSON files and is portable across machines.
+Session data is stored in SQLite and is portable across machines.
 
 ## Provider & model setup
 
@@ -122,28 +126,24 @@ Toggle reasoning visibility inline with `/show-reasoning` or click the `[▼]` /
 
 ## Permissions
 
-Destructive operations (write, edit, delete, run) prompt for confirmation:
+Destructive operations (write, edit, delete, run) prompt for confirmation. Navigate with `↑`/`↓`, confirm with `enter`:
 
-```
-❯ y
-(y)es / (n)o / (p)refix / allow for (a)ll
-```
+- **Yes** — allow once
+- **Allow every edit for this session** / **Allow deletion of files for this session** — session-level permission
+- **Allow everything for this session** — allow all destructive tools for the session
+- **No** — deny once
 
-- `y` — allow once
-- `n` — deny once
-- `p` — allow this command prefix (e.g. "npm") for the rest of the session and save it to config
-- `a` — allow for the rest of this session
+For `run_bash`, additional options appear:
+- **Allow `<prefix>` for this session** — allow a command prefix (e.g. `npm`) for the session
+- **Always allow `<prefix>`** — allow the prefix permanently (saved to config)
+
+For paths outside the workspace, options include allowing the directory for the session or permanently.
 
 Use `--yolo` or `--dangerously-skip-permissions` to skip all prompts.
 
 ### Always-allowed tools and commands
 
-By default, these tools are always allowed without prompting:
-- `read_file`
-- `write_file`
-- `edit_file`
-
-And these command prefixes are always allowed:
+By default, only `read_file` is always allowed without prompting. And these command prefixes are always allowed:
 - `cat`, `ls`, `grep`, `find`, `head`, `tail`, `echo`, `pwd`, etc.
 
 Manage them with `/allow`.

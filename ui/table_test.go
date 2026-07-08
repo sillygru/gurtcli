@@ -278,7 +278,7 @@ func TestTableInAssistantContent(t *testing.T) {
 | Foo  | 42    |
 
 And some text after.`
-	out := RenderAssistantContent(theme, content, 80)
+	out := RenderAssistantContent(theme, content, 80, nil)
 	// Guide prefix should exist on all lines
 	lines := strings.Split(out, "\n")
 	for i, line := range lines {
@@ -302,7 +302,7 @@ func TestTableWithoutSeparatorInAssistantContent(t *testing.T) {
 	// Two lines with pipes but no separator — still detected as table
 	content := `| A | B |
 | 1 | 2 |`
-	out := RenderAssistantContent(theme, content, 60)
+	out := RenderAssistantContent(theme, content, 60, nil)
 	if !strings.Contains(out, "┌") {
 		t.Fatalf("expected table borders, got: \n%s", out)
 	}
@@ -313,7 +313,7 @@ func TestSinglePipeLineNotATable(t *testing.T) {
 	theme := DefaultTheme()
 	// A single pipe line should not trigger table rendering
 	content := `this is | not a table`
-	out := RenderAssistantContent(theme, content, 60)
+	out := RenderAssistantContent(theme, content, 60, nil)
 	if strings.Contains(out, "┌") {
 		t.Fatal("single pipe line should not render as table")
 	}

@@ -77,6 +77,8 @@ type Theme struct {
 	TableBorder      lipgloss.Style
 	TableHeader      lipgloss.Style
 	TableCell        lipgloss.Style
+	FileRef          lipgloss.Style
+	CmdRef           lipgloss.Style
 
 	// Legacy aliases used across views
 	Header    lipgloss.Style
@@ -210,6 +212,8 @@ func CatppuccinMochaTheme() Theme {
 		TableBorder: fg(lipgloss.Color(ColorSurface2)),
 		TableHeader: fg(lipgloss.Color(ColorSubtext1)).Bold(true),
 		TableCell:   fg(lipgloss.Color(ColorText)),
+		FileRef:     fg(lipgloss.Color(ColorMauve)).Bold(true),
+		CmdRef:      fg(lipgloss.Color(ColorMauve)).Bold(true),
 
 		Base:      ColorBase,
 		Crust:     ColorCrust,
@@ -325,6 +329,8 @@ func TokyoNightTheme() Theme {
 		TableBorder: fg(lipgloss.Color(surf2)),
 		TableHeader: fg(lipgloss.Color(subtext)).Bold(true),
 		TableCell:   fg(lipgloss.Color(text)),
+		FileRef:     fg(lipgloss.Color(mauve)).Bold(true),
+		CmdRef:      fg(lipgloss.Color(mauve)).Bold(true),
 
 		Base:      base,
 		Crust:     crust,
@@ -440,6 +446,8 @@ func GruvboxTheme() Theme {
 		TableBorder: fg(lipgloss.Color(surf2)),
 		TableHeader: fg(lipgloss.Color(subtext)).Bold(true),
 		TableCell:   fg(lipgloss.Color(text)),
+		FileRef:     fg(lipgloss.Color(mauve)).Bold(true),
+		CmdRef:      fg(lipgloss.Color(mauve)).Bold(true),
 
 		Base:      base,
 		Crust:     crust,
@@ -555,6 +563,8 @@ func OneDarkTheme() Theme {
 		TableBorder: fg(lipgloss.Color(surf2)),
 		TableHeader: fg(lipgloss.Color(subtext)).Bold(true),
 		TableCell:   fg(lipgloss.Color(text)),
+		FileRef:     fg(lipgloss.Color(mauve)).Bold(true),
+		CmdRef:      fg(lipgloss.Color(mauve)).Bold(true),
 
 		Base:      base,
 		Crust:     crust,

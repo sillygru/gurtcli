@@ -571,6 +571,15 @@ var slashCommands = []slashCommand{
 	{name: "version",      description: "Show current version and check for updates"},
 }
 
+// commandNames returns the names of all registered slash commands for highlighting.
+func commandNames() []string {
+	names := make([]string, len(slashCommands))
+	for i, sc := range slashCommands {
+		names[i] = sc.name
+	}
+	return names
+}
+
 func (m model) modelDisplayName() string {
 	info := m.currentModelInfo()
 	if info.DisplayName != "" {
@@ -824,11 +833,13 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	alwaysAllowTools := []string{}
 	alwaysAllowCommandPrefixes := []string{}
 	if cfg == nil {
-		// Fresh install: populate defaults so users can see and remove them.
-		alwaysAllowTools = []string{"read_file"}
 		alwaysAllowCommandPrefixes = tools.DefaultSafeBashPrefixes()
 	} else {
-		alwaysAllowTools = append(alwaysAllowTools, cfg.AlwaysAllowTools...)
+		for _, t := range cfg.AlwaysAllowTools {
+			if t != "read_file" {
+				alwaysAllowTools = append(alwaysAllowTools, t)
+			}
+		}
 		alwaysAllowCommandPrefixes = append(alwaysAllowCommandPrefixes, cfg.AlwaysAllowCommandPrefixes...)
 	}
 
