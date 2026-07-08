@@ -9,9 +9,17 @@ import (
 	"time"
 )
 
+const (
+	DefaultTimeout = 30000
+	MaxTimeout     = 300000 // 5 minutes
+)
+
 func RunBash(ctx context.Context, command string, timeout int) (string, error) {
 	if timeout <= 0 {
-		timeout = 30000
+		timeout = DefaultTimeout
+	}
+	if timeout > MaxTimeout {
+		timeout = MaxTimeout
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)

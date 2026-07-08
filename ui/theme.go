@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 // Catppuccin Mocha palette
 const (
@@ -68,6 +72,7 @@ type Theme struct {
 	EmptyState       lipgloss.Style
 	UpdateBanner     lipgloss.Style
 	WorkingStatus    lipgloss.Style
+	QueuedMessage    lipgloss.Style
 	Toast            lipgloss.Style
 	TableBorder      lipgloss.Style
 	TableHeader      lipgloss.Style
@@ -140,7 +145,7 @@ func DefaultTheme() Theme {
 func CatppuccinMochaTheme() Theme {
 	base := lipgloss.Color(ColorBase)
 	bg := func() lipgloss.Style { return lipgloss.NewStyle().Background(base) }
-	fg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Background(base).Foreground(c) }
+	fg := func(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Background(base).Foreground(c) }
 
 	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorMauve)).Background(base)
 	return Theme{
@@ -196,6 +201,7 @@ func CatppuccinMochaTheme() Theme {
 		EmptyState:     fg(lipgloss.Color(ColorOverlay0)).Italic(true).PaddingLeft(2),
 		UpdateBanner:   fg(lipgloss.Color(ColorPeach)).PaddingLeft(1),
 		WorkingStatus:  fg(lipgloss.Color(ColorTeal)),
+		QueuedMessage:  fg(lipgloss.Color(ColorYellow)).Italic(true),
 		Toast: lipgloss.NewStyle().
 			Background(lipgloss.Color(ColorGreen)).
 			Foreground(lipgloss.Color(ColorCrust)).
@@ -254,7 +260,7 @@ func TokyoNightTheme() Theme {
 
 	bc := lipgloss.Color(base)
 	bg := func() lipgloss.Style { return lipgloss.NewStyle().Background(bc) }
-	fg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Background(bc).Foreground(c) }
+	fg := func(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Background(bc).Foreground(c) }
 
 	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(mauve)).Background(bc)
 	return Theme{
@@ -310,6 +316,7 @@ func TokyoNightTheme() Theme {
 		EmptyState:     fg(lipgloss.Color(ov0)).Italic(true).PaddingLeft(2),
 		UpdateBanner:   fg(lipgloss.Color(peach)).PaddingLeft(1),
 		WorkingStatus:  fg(lipgloss.Color(teal)),
+		QueuedMessage:  fg(lipgloss.Color(yellow)).Italic(true),
 		Toast: lipgloss.NewStyle().
 			Background(lipgloss.Color(green)).
 			Foreground(lipgloss.Color(crust)).
@@ -368,7 +375,7 @@ func GruvboxTheme() Theme {
 
 	bc := lipgloss.Color(base)
 	bg := func() lipgloss.Style { return lipgloss.NewStyle().Background(bc) }
-	fg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Background(bc).Foreground(c) }
+	fg := func(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Background(bc).Foreground(c) }
 
 	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(yellow)).Background(bc)
 	return Theme{
@@ -424,6 +431,7 @@ func GruvboxTheme() Theme {
 		EmptyState:     fg(lipgloss.Color(ov0)).Italic(true).PaddingLeft(2),
 		UpdateBanner:   fg(lipgloss.Color(peach)).PaddingLeft(1),
 		WorkingStatus:  fg(lipgloss.Color(teal)),
+		QueuedMessage:  fg(lipgloss.Color(yellow)).Italic(true),
 		Toast: lipgloss.NewStyle().
 			Background(lipgloss.Color(green)).
 			Foreground(lipgloss.Color(crust)).
@@ -482,7 +490,7 @@ func OneDarkTheme() Theme {
 
 	bc := lipgloss.Color(base)
 	bg := func() lipgloss.Style { return lipgloss.NewStyle().Background(bc) }
-	fg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Background(bc).Foreground(c) }
+	fg := func(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Background(bc).Foreground(c) }
 
 	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(mauve)).Background(bc)
 	return Theme{
@@ -538,6 +546,7 @@ func OneDarkTheme() Theme {
 		EmptyState:     fg(lipgloss.Color(ov0)).Italic(true).PaddingLeft(2),
 		UpdateBanner:   fg(lipgloss.Color(peach)).PaddingLeft(1),
 		WorkingStatus:  fg(lipgloss.Color(teal)),
+		QueuedMessage:  fg(lipgloss.Color(yellow)).Italic(true),
 		Toast: lipgloss.NewStyle().
 			Background(lipgloss.Color(green)).
 			Foreground(lipgloss.Color(crust)).

@@ -8,13 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/sillygru/gurtcli/config"
+	"github.com/sillygru/gurtcli/history"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/telemetry"
@@ -162,6 +165,10 @@ type resourceStatsMsg struct {
 
 type workingTickMsg struct{}
 
+type walkFilesDoneMsg struct {
+	files []string
+}
+
 type versionCheckResult struct {
 	latestVersion string
 	needsUpdate   bool
@@ -195,6 +202,13 @@ type streamState struct {
 	cancel context.CancelFunc
 }
 
+type toolExecState struct {
+	cancel   context.CancelFunc
+	active   bool
+	toolName string
+	title    string
+}
+
 type textSelection struct {
 	anchorY int  // Content line where drag started
 	anchorX int  // Column in that line
@@ -204,10 +218,16 @@ type textSelection struct {
 	exists  bool // Selection finalized (mouse released)
 }
 
+type suggestionItem struct {
+	name        string
+	description string
+}
+
 type suggestionState struct {
-	items    []slashCommand
+	items    []suggestionItem
 	selected int
 	active   bool
+	isFiles  bool
 }
 
 type resourceStats struct {
@@ -285,18 +305,28 @@ type model struct {
 	spinner        spinner.Model
 
 	messages         []llm.Message
-	chatInput        textinput.Model
+	chatInput        textarea.Model
 	chatViewport     viewport.Model
 	isStreaming      bool
+	stickToBottom    bool
 	streamingContent *strings.Builder
 	reasoning        reasoningState
 	streamState      *streamState
+	toolExec         *toolExecState
+	toolQueue        []llm.ToolCall
 	cancelRequested  bool
 	queuedMessage    string
 	selection        textSelection
 	toast            *toastMsg
 	toastSeq         int
 	suggestions           suggestionState
+	fileList              []string
+	filesCached           bool
+	history               []string
+	historyIndex          int
+	historyDraft          string
+	historyLoadedValue    string
+	windowTitle           string
 	showThemePicker       bool
 	themePickerCursor     int
 	themePickerOrigTheme  ui.Theme
@@ -660,38 +690,48 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 
 	urlIn := textinput.New()
 	urlIn.Placeholder = "https://api.example.com/v1"
-	urlIn.Width = 60
+	urlIn.SetWidth(60)
 	urlIn.CharLimit = 200
 
 	ki := textinput.New()
 	ki.Placeholder = "sk-..."
-	ki.Width = 60
+	ki.SetWidth(60)
 	ki.CharLimit = 200
 	ki.EchoMode = textinput.EchoPassword
 	ki.EchoCharacter = '•'
 
 	ni := textinput.New()
 	ni.Placeholder = "e.g. My Groq API"
-	ni.Width = 60
+	ni.SetWidth(60)
 	ni.CharLimit = 100
 
 	mi := textinput.New()
 	mi.Placeholder = "model-name"
-	mi.Width = 60
+	mi.SetWidth(60)
 	mi.CharLimit = 100
 
 	di := textinput.New()
 	di.Placeholder = "GURT_API_KEY"
-	di.Width = 60
+	di.SetWidth(60)
 	di.CharLimit = 200
 
-	ci := textinput.New()
+	ci := textarea.New()
 	ci.Placeholder = "Ask something..."
-	ci.Width = 60
+	ci.SetWidth(60)
 	ci.CharLimit = 4096
+	ci.ShowLineNumbers = false
+	ci.Prompt = ""
+	ci.DynamicHeight = true
+	ci.MinHeight = 1
+	ci.MaxHeight = 0
+	ci.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter"))
+	taStyles := textarea.DefaultStyles(true)
+	taStyles.Focused.CursorLine = lipgloss.NewStyle()
+	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
+	ci.SetStyles(taStyles)
 
-	cv := viewport.New(0, 0)
-	cv.Style = lipgloss.NewStyle().Background(lipgloss.Color(s.Base))
+	cv := viewport.New()
+	cv.FillHeight = true
 
 	sp := spinner.New()
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(s.Mauve)).Background(lipgloss.Color(s.Base))
@@ -784,7 +824,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 
 	allowIn := textinput.New()
 	allowIn.Placeholder = "command prefix (e.g. npm, git push)"
-	allowIn.Width = 60
+	allowIn.SetWidth(60)
 	allowIn.CharLimit = 200
 
 	m := model{
@@ -827,7 +867,12 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		chatInput:            ci,
 		chatViewport:         cv,
 		streamState:          &streamState{},
+		toolExec:             &toolExecState{},
 	}
+
+	h, _ := history.Load()
+	m.history = h
+	m.historyIndex = -1
 
 	if cfg != nil && !reconfigure {
 		m.reasoning.defaultVisible = cfg.ReasoningVisible
@@ -918,6 +963,8 @@ func (m model) resetToNewSession() model {
 	m.inputTokens = 0
 	m.contextInputTokens = 0
 	m.outputTokens = 0
+	m.fileList = nil
+	m.filesCached = false
 	return m.initNewSession()
 }
 
@@ -946,7 +993,7 @@ func (m *model) applyThemeToLists() {
 	styleDelegate(m.modelDel)
 	styleDelegate(m.sessionDel)
 
-	m.chatViewport.Style = lipgloss.NewStyle().Background(lipgloss.Color(s.Base))
+	m.chatViewport.FillHeight = true
 	m.spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(s.Mauve)).Background(lipgloss.Color(s.Base))
 }
 
@@ -965,7 +1012,8 @@ func (m model) persistSessionCmd() tea.Cmd {
 
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal), tea.SetWindowTitle("gurt"))
+	m.windowTitle = "gurt"
+	cmds = append(cmds, prefetchLLMDetailsCmd(m.forceLocal))
 	if m.telemetryEnabled {
 		cmds = append(cmds, sendTelemetryCmd("startup"))
 	}

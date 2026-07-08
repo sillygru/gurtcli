@@ -141,7 +141,7 @@ func Definitions() []llm.Tool {
 					"type": "object",
 					"properties": {
 						"command": { "type": "string", "description": "Shell command to execute" },
-						"timeout":  { "type": "integer", "description": "Timeout in milliseconds (default 30000)" },
+						"timeout":  { "type": "integer", "description": "Timeout in milliseconds (default 30000, max 300000)" },
 						"title":   { "type": "string", "description": "Brief human-readable description of what this command does (e.g. 'Install dependencies', 'Run tests')" }
 					},
 					"required": ["command", "title"]
@@ -189,7 +189,10 @@ func Execute(ctx context.Context, name string, args json.RawMessage, opts Option
 		}
 		timeout := a.Timeout
 		if timeout <= 0 {
-			timeout = 30000
+			timeout = DefaultTimeout
+		}
+		if timeout > MaxTimeout {
+			timeout = MaxTimeout
 		}
 		return RunBash(ctx, a.Command, timeout)
 
@@ -236,6 +239,15 @@ func ExtractBashCommand(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid run_bash arguments: %w", err)
 	}
 	return a.Command, nil
+}
+
+// ExtractBashTitle parses a run_bash tool call arguments and returns the title.
+func ExtractBashTitle(args json.RawMessage) (string, error) {
+	var a runBashArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("invalid run_bash arguments: %w", err)
+	}
+	return a.Title, nil
 }
 
 

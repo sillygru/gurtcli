@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/sillygru/gurtcli/stats"
 )
 
@@ -38,7 +38,7 @@ func main() {
 	skipPerms := *yolo || *dangerous
 
 	m := initialModel(skipPerms, *providerFlag, *modelFlag, *reconfigure, *forceLocal, *debugFlag)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m)
 	globalProgram = p
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

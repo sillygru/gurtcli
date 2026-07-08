@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/tools"
 	"github.com/sillygru/gurtcli/ui"
 )
 
-func (m model) View() string {
+func (m model) View() tea.View {
 	var content string
 	switch m.state {
 	case stateWelcome:
@@ -53,9 +54,14 @@ func (m model) View() string {
 		content = m.dotenvKeyExistsView()
 	}
 	if content == "" {
-		return ""
+		return tea.NewView("")
 	}
-	return ui.WrapScreen(content, m.width, m.height, m.theme.Base)
+	v := tea.NewView(ui.WrapScreen(content, m.width, m.height, m.theme.Base))
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = m.windowTitle
+	v.KeyboardEnhancements.ReportAlternateKeys = true
+	return v
 }
 
 func (m model) welcomeView() string {
@@ -513,7 +519,7 @@ func (m model) chatView() string {
 		toastText := ""
 		if m.toast != nil {
 			style := m.theme.Toast
-			if m.yolo && m.toast.text == "YOLO mode" {
+			if (m.yolo || m.alwaysAllowPerms) && m.toast.text == "YOLO mode" {
 				style = lipgloss.NewStyle().
 					Background(lipgloss.Color(m.theme.Peach)).
 					Foreground(lipgloss.Color(m.theme.Crust)).
@@ -591,22 +597,35 @@ func (m model) chatView() string {
 
 		b.WriteString(popup.Render(pc.String()))
 	} else {
-		help := "enter send • ↑↓ scroll • ctrl+c quit"
+		help := "enter send • shift+enter newline • ↑↓ pgup pgdn scroll • ctrl+c quit"
 		if m.isStreaming {
 			help = "esc cancel • ctrl+c quit"
 		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
 			help = "↑↓ navigate • tab select • esc dismiss"
-			for i, item := range m.suggestions.items {
-				prefix := "  "
-				style := m.theme.Dim
-				if i == m.suggestions.selected {
-					prefix = "> "
-					style = m.theme.Header
-				}
+		for i, item := range m.suggestions.items {
+			prefix := "  "
+			style := m.theme.Dim
+			if i == m.suggestions.selected {
+				prefix = "> "
+				style = m.theme.Header
+			}
+			if m.suggestions.isFiles {
+				b.WriteString(style.Render(prefix + "@" + item.name))
+			} else {
 				b.WriteString(style.Render(prefix + "/" + item.name))
 				b.WriteString(m.theme.Dim.Render("  " + item.description))
-				b.WriteString("\n")
 			}
+			b.WriteString("\n")
+		}
+		}
+
+		if m.queuedMessage != "" {
+			preview := m.queuedMessage
+			if len(preview) > 60 {
+				preview = preview[:60] + "..."
+			}
+			b.WriteString(m.theme.QueuedMessage.Render("  ⏎ \"" + preview + "\" queued — will send after next tool call"))
+			b.WriteString("\n")
 		}
 
 		b.WriteString(m.theme.InputPrompt.Render("  ❯ "))
@@ -646,7 +665,15 @@ func (m model) renderSpacerLine() string {
 	debugBar := m.renderDebugBar()
 
 	var left string
-	if m.isStreaming && m.workingMsg != "" {
+	if m.toolExec.active {
+		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
+		spinner := workingSpinnerFrames[idx]
+		label := m.toolExec.title
+		if label == "" {
+			label = m.toolExec.toolName
+		}
+		left = m.theme.WorkingStatus.Render(spinner + " " + label)
+	} else if m.isStreaming && m.workingMsg != "" {
 		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
 		spinner := workingSpinnerFrames[idx]
 		left = m.theme.WorkingStatus.Render(spinner + " " + m.workingMsg)

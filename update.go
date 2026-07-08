@@ -15,12 +15,14 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/debug"
+	"github.com/sillygru/gurtcli/files"
+	"github.com/sillygru/gurtcli/history"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/tools"
@@ -37,11 +39,17 @@ type sessionTitleGeneratedMsg struct {
 	title string
 }
 
+type toolResultMsg struct {
+	toolCallID string
+	content    string
+}
+
 var dateSuffixRegex = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
 
 // partialMouseEventRe matches the tail of a split SGR mouse sequence
 // (e.g. "<64;117;26M") that the input reader parsed as key runes.
 var partialMouseEventRe = regexp.MustCompile(`^<\d+;\d+;\d+[Mm]?$`)
+var atFileRefRe = regexp.MustCompile(`@(\S+)`)
 
 func hasDateSuffix(name string) bool {
 	return dateSuffixRegex.MatchString(name)
@@ -64,12 +72,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if chatViewHeight < 4 {
 			chatViewHeight = 4
 		}
-		m.chatViewport.Width = msg.Width - 4
-		m.chatViewport.Height = chatViewHeight
-		m.chatInput.Width = msg.Width - 4
+		m.chatViewport.SetWidth(msg.Width - 4)
+		m.chatViewport.SetHeight(chatViewHeight)
+		m.chatInput.SetWidth(msg.Width - 4)
 		return m.adjustViewportHeight(), nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
 			if m.state == stateChat && m.isStreaming {
 				if m.streamState.cancel != nil {
@@ -77,6 +85,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cancelRequested = true
 				}
 				return m, nil
+			}
+			if m.state == stateChat && m.toolExec != nil && m.toolExec.cancel != nil {
+				m.toolExec.cancel()
+				m.toolExec.cancel = nil
+				m.toolExec.active = false
+				m.toolExec.title = ""
+				m.toolQueue = nil
+				m.messages = append(m.messages, llm.Message{
+					Role:    "assistant",
+					Content: "_Interrupted_",
+				})
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
+				m.chatViewport.GotoBottom()
+				m.chatInput.Focus()
+				m.toolCallCycle = 0
+				return m, m.persistSessionCmd()
 			}
 			return m, tea.Quit
 		}
@@ -194,7 +218,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateModelPick
 		return m, nil
 
-	case tea.MouseMsg:
+	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseWheelMsg, tea.MouseMotionMsg:
 		if m.state != stateChat {
 			return m, nil
 		}
@@ -206,7 +230,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.streamingContent.WriteString(msg.content)
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		return m, nil
 
 	case chatStreamReasoning:
@@ -220,7 +246,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.startTime = time.Now()
 		}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		return m, nil
 
 	case chatStreamDone:
@@ -230,6 +258,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isStreaming = false
 			m.workingMsg = ""
 			m.workingSpinnerIdx = 0
+			m.toolExec.active = false
+			m.toolExec.title = ""
 			m.streamState.cancel = nil
 			m.reasoning = reasoningState{}
 			m.messages = append(m.messages, llm.Message{
@@ -237,13 +267,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Content: "_Interrupted_",
 			})
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-			m.chatViewport.GotoBottom()
-			m.chatInput.Focus()
-			if m.queuedMessage != "" {
-				return m.replayQueuedMessage()
-			}
-			return m, m.persistSessionCmd()
+		m.chatViewport.GotoBottom()
+		m.stickToBottom = true
+		m.chatInput.Focus()
+		if m.queuedMessage != "" {
+			return m.replayQueuedMessage()
 		}
+		return m, m.persistSessionCmd()
+	}
 
 		contentStr := ""
 		if m.streamingContent != nil {
@@ -257,6 +288,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isStreaming = false
 		m.workingMsg = ""
 		m.workingSpinnerIdx = 0
+		m.toolExec.active = false
+		m.toolExec.title = ""
 		m.streamState.cancel = nil
 		if m.reasoning.active {
 			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
@@ -324,8 +357,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case toolResultMsg:
+		if m.cancelRequested {
+			m.cancelRequested = false
+			return m, nil
+		}
+		m.toolExec.active = false
+		m.toolExec.title = ""
+		m.messages = append(m.messages, llm.Message{
+			Role:       "tool",
+			ToolCallID: msg.toolCallID,
+			Content:    msg.content,
+		})
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		m.chatViewport.GotoBottom()
+		return m.executeNextTool()
+
 	case workingTickMsg:
-		if !m.isStreaming {
+		if !m.isStreaming && !m.toolExec.active {
 			return m, nil
 		}
 		m.workingSpinnerIdx++
@@ -336,7 +385,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toastTimeoutMsg:
 		if m.toast != nil && m.toast.id == msg.id {
-			if m.yolo {
+			if m.yolo || m.alwaysAllowPerms {
 				m.toastSeq++
 				m.toast = &toastMsg{text: "YOLO mode", id: m.toastSeq}
 			} else {
@@ -350,6 +399,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isStreaming = false
 		m.workingMsg = ""
 		m.workingSpinnerIdx = 0
+		m.toolExec.active = false
+		m.toolExec.title = ""
 		m.streamState.cancel = nil
 		if m.cancelRequested {
 			m.cancelRequested = false
@@ -372,7 +423,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionTitleGeneratedMsg:
 		if msg.title != "" && m.sessionName == "" {
 			m.sessionName = msg.title
-			return m, tea.Batch(m.persistSessionCmd(), tea.SetWindowTitle("gurt | "+m.sessionName))
+			m.windowTitle = "gurt | " + m.sessionName
+		return m, tea.Batch(m.persistSessionCmd())
 		}
 		return m, nil
 
@@ -465,7 +517,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateWelcome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() != "enter" {
 		return m, nil
 	}
@@ -517,7 +569,7 @@ func (m model) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m2, cmd
 }
 
-func (m model) updateProviderPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateProviderPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Delete confirmation mode
 	if m.confirmDeleteEndpoint != "" {
 		switch msg.String() {
@@ -641,7 +693,7 @@ func (m model) currentModelInfo() llm.ModelInfo {
 	return llm.ModelInfo{ID: m.modelName}
 }
 
-func (m model) updateCustomModePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateCustomModePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
 		m.customModeCursor--
@@ -693,7 +745,7 @@ func (m model) continueProviderPick() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateCustomURL(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.urlInput, cmd = m.urlInput.Update(msg)
 
@@ -741,7 +793,7 @@ func (m model) updateCustomURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateAPIKeyInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.keyInput, cmd = m.keyInput.Update(msg)
 
@@ -777,7 +829,7 @@ func (m model) updateAPIKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.continueAfterAPIKey()
 }
 
-func (m model) updateDotenvPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateDotenvPrompt(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "down":
 		m.dotenvCursor = (m.dotenvCursor + 1) % 2
@@ -795,7 +847,7 @@ func (m model) updateDotenvPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateDotenvPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateDotenvPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	total := len(m.dotenvKeys) + 1
 	switch msg.String() {
 	case "up":
@@ -830,7 +882,7 @@ func (m model) updateDotenvPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateDotenvKeyName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateDotenvKeyName(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.dotenvInput, cmd = m.dotenvInput.Update(msg)
 
@@ -868,7 +920,7 @@ func (m model) updateDotenvKeyName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.continueAfterAPIKey()
 }
 
-func (m model) updateDotenvKeyExists(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateDotenvKeyExists(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
 		m.dotenvKeyExistsCursor = (m.dotenvKeyExistsCursor + 2) % 3
@@ -897,7 +949,7 @@ func (m model) updateDotenvKeyExists(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateCustomName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateCustomName(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.nameInput, cmd = m.nameInput.Update(msg)
 
@@ -941,7 +993,7 @@ func saveConfig(m model) error {
 	return config.Save(cfg)
 }
 
-func (m model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateModelPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.modelList, cmd = m.modelList.Update(msg)
 
@@ -1045,7 +1097,7 @@ func (m model) showReasoningConfig() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateReasoningConfig(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "down":
 		if len(m.thinkingOptions) > 0 {
@@ -1109,7 +1161,7 @@ func (m model) updateReasoningConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateError(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	acts := m.errorActions()
 	switch msg.String() {
 	case "up":
@@ -1172,7 +1224,7 @@ func (m model) updateError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateManualModel(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.manualInput, cmd = m.manualInput.Update(msg)
 
@@ -1201,7 +1253,7 @@ func (m model) updateManualModel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m2, cmd
 }
 
-func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateSessionPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.sessionList, cmd = m.sessionList.Update(msg)
 
@@ -1242,11 +1294,11 @@ func (m model) updateSessionPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m = m.applySession(loaded)
 	var checkCmd tea.Cmd
 	m, checkCmd = m.enterChatState()
-	title := "gurt"
+	m.windowTitle = "gurt"
 	if m.sessionName != "" {
-		title = "gurt | " + m.sessionName
+		m.windowTitle = "gurt | " + m.sessionName
 	}
-	cmds := []tea.Cmd{tea.SetWindowTitle(title)}
+	cmds := []tea.Cmd{}
 	if checkCmd != nil {
 		cmds = append(cmds, checkCmd)
 	}
@@ -1265,7 +1317,7 @@ func toggleInList(list []string, item string) []string {
 	return append(list, item)
 }
 
-func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Tool check/uncheck mode
 	if m.allowManageAdding && m.allowManageAddType == "tool" {
 		switch msg.String() {
@@ -1409,11 +1461,11 @@ func (m model) updateAllowManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleChatMessage(msg)
 }
 
-func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.selection.exists || m.selection.active {
 		m.selection = textSelection{}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -1459,7 +1511,7 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			switch cursor {
 			case 0: // Yes
-				m = m.executeTool(tc)
+				m.toolQueue = append(m.toolQueue, tc)
 				return m.processToolCalls(remaining)
 			case 1:
 				switch name {
@@ -1470,29 +1522,32 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							m.allowedBashPrefixesSession[prefix] = true
 						}
 					}
-					m = m.executeTool(tc)
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case "edit_file", "write_file":
 					m.allowEdits = true
-					m = m.executeTool(tc)
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case "delete_file":
 					m.allowDeletions = true
-					m = m.executeTool(tc)
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				default:
 					m.alwaysAllowPerms = true
-					m = m.executeTool(tc)
+					m.toastSeq++
+					m.toast = &toastMsg{text: "YOLO mode", id: m.toastSeq}
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				}
 			case 2:
 				switch name {
 				case "run_bash":
-					m = m.allowBashPrefix(tc)
-					return m.processToolCalls(remaining)
+					return m.allowBashPrefix(tc, remaining)
 				case "edit_file", "write_file", "delete_file":
 					m.alwaysAllowPerms = true
-					m = m.executeTool(tc)
+					m.toastSeq++
+					m.toast = &toastMsg{text: "YOLO mode", id: m.toastSeq}
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				}
 				return deny()
@@ -1500,13 +1555,15 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				switch name {
 				case "run_bash":
 					m.alwaysAllowPerms = true
-					m = m.executeTool(tc)
+					m.toastSeq++
+					m.toast = &toastMsg{text: "YOLO mode", id: m.toastSeq}
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case "edit_file", "write_file":
 					m.alwaysAllowTools = toggleInList(m.alwaysAllowTools, "edit_file")
 					m.alwaysAllowTools = toggleInList(m.alwaysAllowTools, "write_file")
 					saveConfig(m)
-					m = m.executeTool(tc)
+					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				}
 				return deny()
@@ -1522,6 +1579,23 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.streamState.cancel()
 		m.cancelRequested = true
 		return m, nil
+	}
+
+	if msg.String() == "esc" && !m.isStreaming && m.toolExec != nil && m.toolExec.cancel != nil {
+		m.toolExec.cancel()
+		m.toolExec.cancel = nil
+		m.toolExec.active = false
+		m.toolExec.title = ""
+		m.toolQueue = nil
+		m.messages = append(m.messages, llm.Message{
+			Role:    "assistant",
+			Content: "_Interrupted_",
+		})
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		m.chatViewport.GotoBottom()
+		m.chatInput.Focus()
+		m.toolCallCycle = 0
+		return m, m.persistSessionCmd()
 	}
 
 	if m.showThemePicker {
@@ -1591,8 +1665,13 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tab", "enter":
 			sel := m.suggestions.selected
 			if sel >= 0 && sel < len(m.suggestions.items) {
-				m.chatInput.SetValue("/" + m.suggestions.items[sel].name + " ")
-				m.chatInput.SetCursor(len("/" + m.suggestions.items[sel].name + " "))
+				if m.suggestions.isFiles {
+					val := m.chatInput.Value()
+					atIdx := strings.LastIndex(val, "@")
+					m.chatInput.SetValue(val[:atIdx] + "@" + m.suggestions.items[sel].name + " ")
+				} else {
+					m.chatInput.SetValue("/" + m.suggestions.items[sel].name + " ")
+				}
 			}
 			m.suggestions = suggestionState{}
 			return m.adjustViewportHeight(), nil
@@ -1613,21 +1692,74 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// History navigation (up/down) — when input is empty or unchanged from
+	// the last history entry. Once the user modifies the text (making it
+	// "dirty"), arrows only move the cursor within the textarea.
+	val := m.chatInput.Value()
+	clean := val == "" || val == m.historyLoadedValue
+	if clean && !m.suggestions.active && !m.showThemePicker && m.pendingPerm == nil {
+		switch msg.String() {
+		case "up":
+			if len(m.history) > 0 && m.historyIndex < len(m.history)-1 {
+				if m.historyIndex == -1 {
+					m.historyDraft = val
+				}
+				m.historyIndex++
+				m.chatInput.SetValue(m.history[len(m.history)-1-m.historyIndex])
+				m.historyLoadedValue = m.chatInput.Value()
+			}
+			return m, nil
+		case "down":
+			if m.historyIndex >= 0 {
+				m.historyIndex--
+				if m.historyIndex >= 0 {
+					m.chatInput.SetValue(m.history[len(m.history)-1-m.historyIndex])
+					m.historyLoadedValue = m.chatInput.Value()
+				} else {
+					m.chatInput.SetValue(m.historyDraft)
+					m.historyLoadedValue = m.historyDraft
+				}
+			}
+			return m, nil
+		}
+	}
+
 	if msg.String() == "enter" {
 		input := strings.TrimSpace(m.chatInput.Value())
 		if input == "" {
 			return m, nil
 		}
-		if m.isStreaming {
+		isCommand := strings.HasPrefix(input, "/")
+
+		if m.isStreaming || (m.toolExec != nil && m.toolExec.cancel != nil) {
+			if isCommand {
+				cmd := strings.TrimPrefix(strings.Fields(input)[0], "/")
+				switch cmd {
+				case "show-reasoning", "theme", "version", "help", "telemetry", "reasoning", "effort":
+					return m.handleSlashCommand(input)
+				}
+			} else {
+				m.history = history.Add(m.history, input)
+				m.historyIndex = -1
+				m.historyDraft = ""
+				history.Save(m.history)
+			}
 			m.queuedMessage = input
 			m.chatInput.Reset()
+			m.historyLoadedValue = ""
 			return m, nil
 		}
 		m.chatInput.Reset()
+		m.historyLoadedValue = ""
 
-		if strings.HasPrefix(input, "/") {
+		if isCommand {
 			return m.handleSlashCommand(input)
 		}
+
+		m.history = history.Add(m.history, input)
+		m.historyIndex = -1
+		m.historyDraft = ""
+		history.Save(m.history)
 
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
 		m.isStreaming = true
@@ -1647,17 +1779,18 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Filter partial SGR mouse events that the input reader
 	// couldn't decode — they arrive as Alt+[ or <digits>;… runes.
-	if msg.Alt && len(msg.Runes) == 1 && msg.Runes[0] == '[' {
+	if msg.Mod.Contains(tea.ModAlt) && len(msg.Text) == 1 && msg.Text[0] == '[' {
 		return m, nil
 	}
-	if msg.Type == tea.KeyRunes && partialMouseEventRe.MatchString(string(msg.Runes)) {
+	if len(msg.Text) > 0 && partialMouseEventRe.MatchString(msg.Text) {
 		return m, nil
 	}
 
 	var cmd tea.Cmd
 	switch msg.String() {
-	case "up", "down", "pgup", "pgdown", "home", "end":
+	case "pgup", "pgdown", "home", "end":
 		m.chatViewport, _ = m.chatViewport.Update(msg)
+		m.stickToBottom = m.chatViewport.AtBottom()
 	}
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	m = m.updateSuggestions()
@@ -1665,32 +1798,57 @@ func (m model) handleChatMessage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m model) executeTool(tc llm.ToolCall) model {
-	args := json.RawMessage(tc.Function.Arguments)
-	result, err := tools.Execute(context.Background(), tc.Function.Name, args, tools.Options{
-		WorkspaceRoot: m.workspaceRoot,
-	})
-	content := result
-	if err != nil {
-		content = fmt.Sprintf("Error: %v", err)
+func (m model) executeNextTool() (tea.Model, tea.Cmd) {
+	if len(m.toolQueue) == 0 {
+		m.toolCallCycle = 0
+		m.isStreaming = true
+		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+		m.workingSpinnerIdx = 0
+		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 	}
-	m.messages = append(m.messages, llm.Message{
-		Role:       "tool",
-		ToolCallID: tc.ID,
-		Content:    content,
-	})
-	return m
+
+	tc := m.toolQueue[0]
+	m.toolQueue = m.toolQueue[1:]
+
+	m.toolExec.active = true
+	m.toolExec.toolName = tc.Function.Name
+	m.toolExec.title = ""
+	if tc.Function.Name == "run_bash" {
+		if title, err := tools.ExtractBashTitle(json.RawMessage(tc.Function.Arguments)); err == nil {
+			m.toolExec.title = title
+		}
+	}
+	m.workingSpinnerIdx = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.toolExec.cancel = cancel
+
+	args := json.RawMessage(tc.Function.Arguments)
+	opts := tools.Options{WorkspaceRoot: m.workspaceRoot}
+
+	return m, tea.Batch(func() tea.Msg {
+		defer cancel()
+		result, err := tools.Execute(ctx, tc.Function.Name, args, opts)
+		if ctx.Err() != nil {
+			return nil
+		}
+		content := result
+		if err != nil {
+			content = fmt.Sprintf("Error: %v", err)
+		}
+		return toolResultMsg{toolCallID: tc.ID, content: content}
+	}, workingTickCmd())
 }
 
 // allowBashPrefix adds the command prefix from a run_bash tool call to the
-// always-allowed list, persists it to config, and executes the tool.
-func (m model) allowBashPrefix(tc llm.ToolCall) model {
+// always-allowed list, persists it to config, queues the tool, and processes
+// remaining tool calls.
+func (m model) allowBashPrefix(tc llm.ToolCall, remaining []llm.ToolCall) (tea.Model, tea.Cmd) {
 	cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
 	if err == nil {
 		prefix := tools.BashCommandPrefix(cmd)
 		if prefix != "" {
 			m.allowedBashPrefixes[prefix] = true
-			// Persist to config
 			if cfg, err := config.Load(); err == nil && cfg != nil {
 				already := false
 				for _, p := range cfg.AllowedBashPrefixes {
@@ -1710,13 +1868,12 @@ func (m model) allowBashPrefix(tc llm.ToolCall) model {
 			}
 		}
 	}
-	return m.executeTool(tc)
+	m.toolQueue = append(m.toolQueue, tc)
+	return m.processToolCalls(remaining)
 }
 
 func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 	for i, tc := range tcs {
-		// Check if tool name matches the always-allow tools list (exact match).
-		// Tools in this list are auto-allowed unconditionally.
 		if len(m.alwaysAllowTools) > 0 {
 			matched := false
 			for _, name := range m.alwaysAllowTools {
@@ -1726,24 +1883,21 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 				}
 			}
 			if matched {
-				m = m.executeTool(tc)
+				m.toolQueue = append(m.toolQueue, tc)
 				continue
 			}
 		}
 
-		// Check if bash command matches session-allowed or config-allowed prefixes.
 		if !m.yolo && !m.alwaysAllowPerms && tc.Function.Name == "run_bash" {
 			cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
 			if err == nil {
 				matched := false
-				// Check session-level prefixes first
 				for prefix := range m.allowedBashPrefixesSession {
 					if strings.HasPrefix(cmd, prefix) {
 						matched = true
 						break
 					}
 				}
-				// Then check config-level prefixes
 				if !matched {
 					for _, prefix := range m.alwaysAllowCommandPrefixes {
 						if strings.HasPrefix(cmd, prefix) {
@@ -1753,21 +1907,19 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 					}
 				}
 				if matched {
-					m = m.executeTool(tc)
+					m.toolQueue = append(m.toolQueue, tc)
 					continue
 				}
 			}
 		}
 
-		// Check session-level edit/write allow
 		if m.allowEdits && (tc.Function.Name == "edit_file" || tc.Function.Name == "write_file") {
-			m = m.executeTool(tc)
+			m.toolQueue = append(m.toolQueue, tc)
 			continue
 		}
 
-		// Check session-level delete allow
 		if m.allowDeletions && tc.Function.Name == "delete_file" {
-			m = m.executeTool(tc)
+			m.toolQueue = append(m.toolQueue, tc)
 			continue
 		}
 
@@ -1782,17 +1934,14 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			m = m.adjustViewportHeight()
 			return m, m.persistSessionCmd()
 		}
-		m = m.executeTool(tc)
+		m.toolQueue = append(m.toolQueue, tc)
 	}
-	m.isStreaming = true
-	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-	m.workingSpinnerIdx = 0
-	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
+	return m.executeNextTool()
 }
 
-func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// 1. Scroll wheel → viewport
-	if msg.Action == tea.MouseActionPress && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
+func (m model) updateMouse(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch mouse := msg.(type) {
+	case tea.MouseWheelMsg:
 		if m.selection.exists {
 			m.selection = textSelection{}
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -1801,31 +1950,30 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Don't forward wheel events past boundaries to avoid the
 		// bubbletea input reader splitting SGR mouse events across
 		// a read boundary, which leaks raw escape bytes as keypresses.
-		if (msg.Button == tea.MouseButtonWheelUp && m.chatViewport.AtTop()) ||
-			(msg.Button == tea.MouseButtonWheelDown && m.chatViewport.AtBottom()) {
+		if (mouse.Button == tea.MouseWheelUp && m.chatViewport.AtTop()) ||
+			(mouse.Button == tea.MouseWheelDown && m.chatViewport.AtBottom()) {
 			return m, nil
 		}
 
 		var cmd tea.Cmd
-		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		m.chatViewport, cmd = m.chatViewport.Update(mouse)
+		m.stickToBottom = m.chatViewport.AtBottom()
 		return m, cmd
-	}
 
-	// 2. Motion during drag → update selection focus
-	if msg.Action == tea.MouseActionMotion && m.selection.active {
-		line, col, ok := computeContentPosition(m, msg)
-		if ok {
-			m.selection.focusY = line
-			m.selection.focusX = col
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+	case tea.MouseMotionMsg:
+		if m.selection.active {
+			line, col, ok := computeContentPosition(m, mouse.Mouse())
+			if ok {
+				m.selection.focusY = line
+				m.selection.focusX = col
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			}
 		}
 		return m, nil
-	}
 
-	// 3. Button press
-	if msg.Action == tea.MouseActionPress {
+	case tea.MouseClickMsg:
 		// Non-left click: clear selection
-		if msg.Button != tea.MouseButtonLeft {
+		if mouse.Button != tea.MouseLeft {
 			if m.selection.exists {
 				m.selection = textSelection{}
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -1834,7 +1982,7 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Left click: check reasoning markers first, then start selection
-		line, col, ok := computeContentPosition(m, msg)
+		line, col, ok := computeContentPosition(m, mouse.Mouse())
 		if !ok {
 			return m, nil
 		}
@@ -1881,13 +2029,13 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					}
 					if found == count {
 						m.messages[msgIdx].ReasoningVisible = !m.messages[msgIdx].ReasoningVisible
-						yOff := m.chatViewport.YOffset
+						yOff := m.chatViewport.YOffset()
 						m.selection = textSelection{}
 						m.chatViewport.SetContent(buildChatContentHighlighted(m))
-						if yOff > m.chatViewport.YOffset {
+						if yOff > m.chatViewport.YOffset() {
 							m.chatViewport.GotoBottom()
 						} else {
-							m.chatViewport.YOffset = yOff
+							m.chatViewport.SetYOffset(yOff)
 						}
 						return m, m.persistSessionCmd()
 					}
@@ -1909,10 +2057,8 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		return m, nil
-	}
 
-	// 4. Button release → auto-copy and clear
-	if msg.Action == tea.MouseActionRelease {
+	case tea.MouseReleaseMsg:
 		if m.selection.active {
 			m.selection.active = false
 			m.selection.exists = true
@@ -1959,11 +2105,29 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(input)
 	cmd := strings.TrimPrefix(parts[0], "/")
 
+	streamingSafe := map[string]bool{
+		"show-reasoning": true,
+		"theme":          true,
+		"version":        true,
+		"help":           true,
+		"telemetry":      true,
+		"reasoning":      true,
+		"effort":         true,
+	}
+
+	if m.isStreaming && !streamingSafe[cmd] {
+		m.messages = append(m.messages, llm.Message{
+			Role:     "assistant",
+			Internal: true,
+			Content:  fmt.Sprintf("_Cannot run /%s while LLM is streaming. Cancel the current response first._", cmd),
+		})
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		m.chatViewport.GotoBottom()
+		return m, nil
+	}
+
 	switch cmd {
 	case "model":
-		if m.isStreaming {
-			return m, nil
-		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
 			m.spinner.Tick,
@@ -1971,9 +2135,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		)
 
 	case "provider":
-		if m.isStreaming {
-			return m, nil
-		}
 		m.modelName = ""
 		m.customURL = ""
 		m.savedEndpointName = ""
@@ -1981,9 +2142,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "auth":
-		if m.isStreaming {
-			return m, nil
-		}
 		m.state = stateAPIKeyInput
 		m.keyInput.Reset()
 		m.keyInput.Focus()
@@ -2277,9 +2435,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, sendTelemetryCmd("telemetry_toggle")
 
 	case "session":
-		if m.isStreaming {
-			return m, nil
-		}
 		metas, err := sessions.List(m.workspaceRoot)
 		if err != nil {
 			m.messages = append(m.messages, llm.Message{
@@ -2300,9 +2455,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "new":
-		if m.isStreaming {
-			return m, nil
-		}
 		var saveCmd tea.Cmd
 		if len(m.messages) > 0 {
 			saveCmd = m.persistSessionCmd()
@@ -2310,7 +2462,8 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m = m.resetToNewSession()
 		var checkCmd tea.Cmd
 		m, checkCmd = m.enterChatState()
-		cmds := []tea.Cmd{tea.SetWindowTitle("gurt")}
+		m.windowTitle = "gurt"
+		cmds := []tea.Cmd{}
 		if checkCmd != nil {
 			cmds = append(cmds, checkCmd)
 		}
@@ -2320,9 +2473,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case "allow":
-		if m.isStreaming {
-			return m, nil
-		}
 		m.state = stateAllowManage
 		m.allowManageCursor = 0
 		m.allowManageScroll = 0
@@ -2331,9 +2481,6 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "update":
-		if m.isStreaming {
-			return m, nil
-		}
 		if m.latestVersion == "" {
 			return m, checkAndUpdateCmd()
 		}
@@ -2356,35 +2503,76 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 func (m model) updateSuggestions() model {
 	val := m.chatInput.Value()
-	if !strings.HasPrefix(val, "/") || m.isStreaming || m.pendingPerm != nil {
+	if m.isStreaming || m.pendingPerm != nil {
 		m.suggestions = suggestionState{}
 		return m
 	}
 
-	input := strings.TrimPrefix(val, "/")
+	// File suggestions (@ references) — only after at least one char
+	if strings.Contains(val, "@") && !files.IsHomeDir(m.workspaceRoot) {
+		atIdx := strings.LastIndex(val, "@")
+		afterAt := val[atIdx+1:]
 
-	var matches []slashCommand
-	for _, sc := range slashCommands {
-		if strings.HasPrefix(sc.name, input) {
-			matches = append(matches, sc)
+		if afterAt != "" && !strings.ContainsAny(afterAt, " \t") {
+			if !m.filesCached {
+				fileList, err := files.WalkWorkspace(m.workspaceRoot, files.MaxWalkFiles)
+				if err == nil && len(fileList) > 0 {
+					m.fileList = fileList
+					m.filesCached = true
+				}
+			}
+
+			if m.filesCached && len(m.fileList) > 0 {
+				var matches []suggestionItem
+				for _, f := range m.fileList {
+					if strings.HasPrefix(f, afterAt) {
+						matches = append(matches, suggestionItem{name: f})
+					}
+				}
+				if len(matches) > 0 {
+					selected := m.suggestions.selected
+					if selected < 0 || selected >= len(matches) {
+						selected = 0
+					}
+					m.suggestions = suggestionState{
+						items:    matches,
+						selected: selected,
+						active:   true,
+						isFiles:  true,
+					}
+					return m
+				}
+			}
 		}
 	}
 
-	if len(matches) == 0 {
-		m.suggestions = suggestionState{}
-		return m
+	// Slash command suggestions (/ references)
+	if strings.HasPrefix(val, "/") {
+		input := strings.TrimPrefix(val, "/")
+
+		var matches []suggestionItem
+		for _, sc := range slashCommands {
+			if strings.HasPrefix(sc.name, input) {
+				matches = append(matches, suggestionItem{name: sc.name, description: sc.description})
+			}
+		}
+
+		if len(matches) > 0 {
+			selected := m.suggestions.selected
+			if selected < 0 || selected >= len(matches) {
+				selected = 0
+			}
+
+			m.suggestions = suggestionState{
+				items:    matches,
+				selected: selected,
+				active:   true,
+			}
+			return m
+		}
 	}
 
-	selected := m.suggestions.selected
-	if selected < 0 || selected >= len(matches) {
-		selected = 0
-	}
-
-	m.suggestions = suggestionState{
-		items:    matches,
-		selected: selected,
-		active:   true,
-	}
+	m.suggestions = suggestionState{}
 	return m
 }
 
@@ -2408,14 +2596,18 @@ func (m model) adjustViewportHeight() model {
 	case m.showThemePicker:
 		fixed += m.themePickerOverlayHeight()
 	default:
-		fixed += 2 // input line + help line
+		inputLines := strings.Count(m.chatInput.Value(), "\n") + 1
+		if inputLines > 6 {
+			inputLines = 6
+		}
+		fixed += inputLines + 1 // input area + help line
 		if m.suggestions.active && len(m.suggestions.items) > 0 {
 			fixed += len(m.suggestions.items)
 		}
 	}
-	m.chatViewport.Height = m.height - fixed
-	if m.chatViewport.Height < 1 {
-		m.chatViewport.Height = 1
+	m.chatViewport.SetHeight(m.height - fixed)
+	if m.chatViewport.Height() < 1 {
+		m.chatViewport.SetHeight(1)
 	}
 	return m
 }
@@ -2516,7 +2708,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		req := llm.ChatRequest{
 			Model:           m.modelName,
-			Messages:        filterInternal(m.messages),
+			Messages:        injectFileAttachments(m, filterInternal(m.messages)),
 			SystemPrompt:    systemPrompt,
 			Tools:           tools.Definitions(),
 			Thinking:        thinkingCfg,
@@ -2598,6 +2790,11 @@ func startChatStreamCmd(m model) tea.Cmd {
 func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	qmsg := m.queuedMessage
 	m.queuedMessage = ""
+
+	if strings.HasPrefix(qmsg, "/") {
+		return m.handleSlashCommand(qmsg)
+	}
+
 	m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
 	m.isStreaming = true
 	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
@@ -2726,7 +2923,7 @@ func buildChatContent(m model) string {
 			}
 			if msg.Reasoning != "" {
 				if msg.ReasoningVisible {
-					b.WriteString(ui.RenderReasoning(m.theme, false, true, msg.ReasoningDuration, msg.Reasoning, m.chatViewport.Width))
+					b.WriteString(ui.RenderReasoning(m.theme, false, true, msg.ReasoningDuration, msg.Reasoning, m.chatViewport.Width()))
 					b.WriteString("\n")
 				} else {
 					b.WriteString(ui.RenderReasoningStored(m.theme, msg.ReasoningDuration))
@@ -2734,19 +2931,19 @@ func buildChatContent(m model) string {
 				}
 			}
 			if msg.Content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width))
+				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width()))
 				b.WriteString("\n")
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width))
+					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
 					b.WriteString("\n")
 				}
 			}
 			b.WriteString("\n")
 		case "tool":
 			toolName := toolNames[msg.ToolCallID]
-			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.chatViewport.Width))
+			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.chatViewport.Width()))
 			b.WriteString("\n\n")
 		}
 	}
@@ -2764,20 +2961,20 @@ func buildChatContent(m model) string {
 			if m.reasoning.content != nil {
 				content = m.reasoning.content.String()
 			}
-			b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.chatViewport.Width))
+			b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.chatViewport.Width()))
 			b.WriteString("\n")
 		}
 
 		if lastIsCurrent {
 			content := m.messages[len(m.messages)-1].Content
 			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width()))
 				b.WriteString("\n")
 			}
 		} else if streamingLen > 0 && m.streamingContent != nil {
 			content := m.streamingContent.String()
 			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width))
+				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width()))
 				b.WriteString("\n")
 			}
 		}
@@ -2810,6 +3007,45 @@ func filterInternal(msgs []llm.Message) []llm.Message {
 		}
 	}
 	return out
+}
+
+func injectFileAttachments(m model, msgs []llm.Message) []llm.Message {
+	if len(msgs) == 0 || m.workspaceRoot == "" || files.IsHomeDir(m.workspaceRoot) {
+		return msgs
+	}
+
+	lastIdx := len(msgs) - 1
+	lastMsg := msgs[lastIdx]
+	if lastMsg.Role != "user" {
+		return msgs
+	}
+
+	matches := atFileRefRe.FindAllStringSubmatch(lastMsg.Content, -1)
+	if len(matches) == 0 {
+		return msgs
+	}
+
+	var attachments strings.Builder
+	for _, match := range matches {
+		relPath := match[1]
+		content, err := files.ReadFileContents(m.workspaceRoot, relPath)
+		if err != nil || content == "" {
+			continue
+		}
+		ext := filepath.Ext(relPath)
+		lang := strings.TrimPrefix(ext, ".")
+		attachments.WriteString(fmt.Sprintf("Contents of %s:\n```%s\n%s\n```\n\n", relPath, lang, content))
+	}
+
+	if attachments.Len() == 0 {
+		return msgs
+	}
+
+	msgs[lastIdx] = llm.Message{
+		Role:    "user",
+		Content: attachments.String() + lastMsg.Content,
+	}
+	return msgs
 }
 
 func eventTypeName(t llm.StreamEventType) string {

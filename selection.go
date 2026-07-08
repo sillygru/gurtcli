@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // computeViewportStartRow returns the terminal row where the viewport
@@ -35,9 +37,9 @@ func computeViewportStartRow(m model) int {
 
 // computeContentPosition converts a terminal mouse position to viewport
 // content coordinates. Returns ok=false if the position is outside content.
-func computeContentPosition(m model, msg tea.MouseMsg) (line, col int, ok bool) {
-	contentLine := m.chatViewport.YOffset + msg.Y - computeViewportStartRow(m)
-	contentCol := msg.X - 1
+func computeContentPosition(m model, mouse tea.Mouse) (line, col int, ok bool) {
+	contentLine := m.chatViewport.YOffset() + mouse.Y - computeViewportStartRow(m)
+	contentCol := mouse.X - 1
 	if contentCol < 0 {
 		contentCol = 0
 	}
@@ -263,17 +265,25 @@ func copyToClipboard(text string) {
 	if text == "" {
 		return
 	}
-	var cmd *exec.Cmd
+	var (
+		cmd    *exec.Cmd
+		bin    string
+		params []string
+	)
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("pbcopy")
+		bin = "pbcopy"
 	case "linux":
-		cmd = exec.Command("xclip", "-selection", "clipboard")
+		bin = "xclip"
+		params = []string{"-selection", "clipboard"}
 	case "windows":
-		cmd = exec.Command("clip")
+		bin = "clip"
 	default:
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, bin, params...)
 	cmd.Stdin = strings.NewReader(text)
 	_ = cmd.Run()
 }

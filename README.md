@@ -1,7 +1,5 @@
 # gurtcli
 
-> **Test edit** — this line was added by the edit_file tool to confirm it works.
-
 A coding agent in your terminal. Type what you want. It does the rest.
 
 ```bash

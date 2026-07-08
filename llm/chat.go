@@ -343,6 +343,9 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 
 	client := &http.Client{
 		Timeout: 0,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {

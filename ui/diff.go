@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // ansiBackground returns the ANSI escape sequence to set the background
@@ -27,6 +27,7 @@ func WrapScreen(content string, width, height int, baseColor string) string {
 	}
 	bgSeq := ansiBackground(baseColor)
 	reset := "\033[0m"
+	reset2 := "\033[m" // short form used by charm v2 libs
 
 	lines := strings.Split(content, "\n")
 	var b strings.Builder
@@ -34,6 +35,7 @@ func WrapScreen(content string, width, height int, baseColor string) string {
 		rawWidth := lipgloss.Width(line)
 		// After every ANSI reset inside the line, re-set the background
 		// so styled text always has the base background behind it.
+		line = strings.ReplaceAll(line, reset2, reset2+bgSeq)
 		line = strings.ReplaceAll(line, reset, reset+bgSeq)
 
 		b.WriteString(bgSeq)
@@ -66,7 +68,7 @@ func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, conte
 		return header
 	}
 
-	boxW := cardWidth(width) - 2
+	boxW := width
 	if boxW < 28 {
 		boxW = 28
 	}
