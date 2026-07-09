@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sillygru/gurtcli/llm"
@@ -21,6 +22,26 @@ var (
 	dbDir       string
 	dirOverride string
 )
+
+func lockDB(cfgDir string, readOnly bool) (func(), error) {
+	path := filepath.Join(cfgDir, "sessions.db.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock file: %w", err)
+	}
+	kind := syscall.LOCK_EX
+	if readOnly {
+		kind = syscall.LOCK_SH
+	}
+	if err := syscall.Flock(int(f.Fd()), kind); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("flock: %w", err)
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
+}
 
 func SetDirForTesting(dir string) {
 	mu.Lock()
@@ -49,15 +70,7 @@ func configDir() (string, error) {
 	return filepath.Join(home, ".config", "gurtcli"), nil
 }
 
-func EnsureDB() (*sql.DB, error) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	cfgDir, err := configDir()
-	if err != nil {
-		return nil, fmt.Errorf("config dir: %w", err)
-	}
-
+func openDB(cfgDir string) (*sql.DB, error) {
 	if dbConn != nil && dbDir == cfgDir {
 		return dbConn, nil
 	}
@@ -71,6 +84,7 @@ func EnsureDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("creating config dir: %w", err)
 	}
 	path := filepath.Join(cfgDir, "sessions.db")
+	var err error
 	dbConn, err = sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
@@ -178,10 +192,41 @@ func GenerateID() string {
 	return fmt.Sprintf("%x_%d", b, time.Now().UnixNano())
 }
 
-func Save(s *Session) error {
-	db, err := EnsureDB()
+func Query(fn func(*sql.DB) error) error {
+	mu.Lock()
+	defer mu.Unlock()
+	cfgDir, err := configDir()
 	if err != nil {
 		return fmt.Errorf("session db: %w", err)
+	}
+	unlock, err := lockDB(cfgDir, true)
+	if err != nil {
+		return fmt.Errorf("session db: %w", err)
+	}
+	defer unlock()
+	db, err := openDB(cfgDir)
+	if err != nil {
+		return err
+	}
+	return fn(db)
+}
+
+func Save(s *Session) error {
+	mu.Lock()
+	defer mu.Unlock()
+	cfgDir, err := configDir()
+	if err != nil {
+		return fmt.Errorf("session db: %w", err)
+	}
+	unlock, err := lockDB(cfgDir, false)
+	if err != nil {
+		return fmt.Errorf("session db: %w", err)
+	}
+	defer unlock()
+
+	db, err := openDB(cfgDir)
+	if err != nil {
+		return err
 	}
 
 	s.UpdatedAt = time.Now()
@@ -217,9 +262,21 @@ func Save(s *Session) error {
 }
 
 func Load(workspace, id string) (*Session, error) {
-	db, err := EnsureDB()
+	mu.Lock()
+	defer mu.Unlock()
+	cfgDir, err := configDir()
 	if err != nil {
 		return nil, fmt.Errorf("session db: %w", err)
+	}
+	unlock, err := lockDB(cfgDir, true)
+	if err != nil {
+		return nil, fmt.Errorf("session db: %w", err)
+	}
+	defer unlock()
+
+	db, err := openDB(cfgDir)
+	if err != nil {
+		return nil, err
 	}
 
 	row := db.QueryRow(`
@@ -266,9 +323,21 @@ func Load(workspace, id string) (*Session, error) {
 }
 
 func List(workspace string) ([]Metadata, error) {
-	db, err := EnsureDB()
+	mu.Lock()
+	defer mu.Unlock()
+	cfgDir, err := configDir()
 	if err != nil {
 		return nil, fmt.Errorf("session db: %w", err)
+	}
+	unlock, err := lockDB(cfgDir, true)
+	if err != nil {
+		return nil, fmt.Errorf("session db: %w", err)
+	}
+	defer unlock()
+
+	db, err := openDB(cfgDir)
+	if err != nil {
+		return nil, err
 	}
 
 	rows, err := db.Query(`
@@ -301,9 +370,21 @@ func List(workspace string) ([]Metadata, error) {
 }
 
 func Delete(workspace, id string) error {
-	db, err := EnsureDB()
+	mu.Lock()
+	defer mu.Unlock()
+	cfgDir, err := configDir()
 	if err != nil {
 		return fmt.Errorf("session db: %w", err)
+	}
+	unlock, err := lockDB(cfgDir, false)
+	if err != nil {
+		return fmt.Errorf("session db: %w", err)
+	}
+	defer unlock()
+
+	db, err := openDB(cfgDir)
+	if err != nil {
+		return err
 	}
 
 	_, err = db.Exec("DELETE FROM sessions WHERE id = ? AND workspace_root = ?", id, workspace)
@@ -311,6 +392,21 @@ func Delete(workspace, id string) error {
 		return fmt.Errorf("deleting session: %w", err)
 	}
 	return nil
+}
+
+func EnsureDB() (*sql.DB, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	cfgDir, err := configDir()
+	if err != nil {
+		return nil, fmt.Errorf("config dir: %w", err)
+	}
+	unlock, err := lockDB(cfgDir, false)
+	if err != nil {
+		return nil, fmt.Errorf("session db: %w", err)
+	}
+	defer unlock()
+	return openDB(cfgDir)
 }
 
 func NameForMessages(msgs []llm.Message) string {

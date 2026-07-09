@@ -25,28 +25,37 @@ type Stats struct {
 }
 
 func Compute() (*Stats, error) {
-	db, err := sessions.EnsureDB()
+	var (
+		totalSessions int
+		totalDays     int
+		userMsgs      int
+		apiCalls      int
+		toolCounts    map[string]int
+	)
+
+	err := sessions.Query(func(db *sql.DB) error {
+		if err := db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&totalSessions); err != nil {
+			return fmt.Errorf("counting sessions: %w", err)
+		}
+
+		if totalSessions > 1000 {
+			fmt.Fprintf(os.Stderr, "Large dataset detected (%d sessions). This may take a while...\n", totalSessions)
+		}
+
+		if err := db.QueryRow("SELECT COUNT(DISTINCT DATE(created_at)) FROM sessions").Scan(&totalDays); err != nil {
+			return fmt.Errorf("counting days: %w", err)
+		}
+
+		var err error
+		userMsgs, apiCalls, toolCounts, err = countMessagesAndTools(db)
+		if err != nil {
+			return fmt.Errorf("counting messages: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("opening session db: %w", err)
-	}
-
-	var totalSessions int
-	if err := db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&totalSessions); err != nil {
-		return nil, fmt.Errorf("counting sessions: %w", err)
-	}
-
-	if totalSessions > 1000 {
-		fmt.Fprintf(os.Stderr, "Large dataset detected (%d sessions). This may take a while...\n", totalSessions)
-	}
-
-	var totalDays int
-	if err := db.QueryRow("SELECT COUNT(DISTINCT DATE(created_at)) FROM sessions").Scan(&totalDays); err != nil {
-		return nil, fmt.Errorf("counting days: %w", err)
-	}
-
-	userMsgs, apiCalls, toolCounts, err := countMessagesAndTools(db)
-	if err != nil {
-		return nil, fmt.Errorf("counting messages: %w", err)
+		return nil, err
 	}
 
 	tools := make([]ToolStat, 0, len(toolCounts))

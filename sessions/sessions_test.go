@@ -1,6 +1,9 @@
 package sessions
 
 import (
+	"database/sql"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,5 +166,188 @@ func TestGenerateName(t *testing.T) {
 	})
 	if name != "Fix the bug" {
 		t.Fatalf("name: got %q want %q", name, "Fix the bug")
+	}
+}
+
+func TestConcurrentSaveLoad(t *testing.T) {
+	dir := t.TempDir()
+	SetDirForTesting(dir)
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
+
+	workspace := "/tmp/concurrent-test"
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			id := fmt.Sprintf("concurrent-%d", n)
+			s := &Session{
+				ID:            id,
+				Name:          fmt.Sprintf("Session %d", n),
+				CreatedAt:     time.Now(),
+				UpdatedAt:     time.Now(),
+				Provider:      "test",
+				Model:         "test-model",
+				WorkspaceRoot: workspace,
+				Messages:      []llm.Message{{Role: "user", Content: fmt.Sprintf("hello %d", n)}},
+			}
+			if err := Save(s); err != nil {
+				t.Errorf("Save(%d): %v", n, err)
+				return
+			}
+			loaded, err := Load(workspace, id)
+			if err != nil {
+				t.Errorf("Load(%d): %v", n, err)
+				return
+			}
+			if loaded.Name != s.Name {
+				t.Errorf("Load(%d): got name %q want %q", n, loaded.Name, s.Name)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	metas, err := List(workspace)
+	if err != nil {
+		t.Fatalf("List after concurrent: %v", err)
+	}
+	if len(metas) != 10 {
+		t.Fatalf("expected 10 sessions, got %d", len(metas))
+	}
+}
+
+func TestConcurrentSaveList(t *testing.T) {
+	dir := t.TempDir()
+	SetDirForTesting(dir)
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
+
+	workspace := "/tmp/stress-test"
+
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			s := &Session{
+				ID:            fmt.Sprintf("stress-%d", n),
+				Name:          fmt.Sprintf("Stress %d", n),
+				CreatedAt:     time.Now(),
+				UpdatedAt:     time.Now(),
+				Provider:      "test",
+				Model:         "test-model",
+				WorkspaceRoot: workspace,
+				Messages:      []llm.Message{{Role: "user", Content: fmt.Sprintf("msg %d", n)}},
+			}
+			if err := Save(s); err != nil {
+				t.Errorf("Save(%d): %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	metas, err := List(workspace)
+	if err != nil {
+		t.Fatalf("List after batch: %v", err)
+	}
+	if len(metas) != 20 {
+		t.Fatalf("expected 20 sessions, got %d", len(metas))
+	}
+}
+
+func TestConcurrentReadWriteMix(t *testing.T) {
+	dir := t.TempDir()
+	SetDirForTesting(dir)
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
+
+	workspace := "/tmp/mix-test"
+
+	// Seed with 5 sessions
+	for i := range 5 {
+		s := &Session{
+			ID:            fmt.Sprintf("mix-%d", i),
+			Name:          fmt.Sprintf("Base %d", i),
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+			Provider:      "test",
+			Model:         "test-model",
+			WorkspaceRoot: workspace,
+			Messages:      []llm.Message{{Role: "user", Content: fmt.Sprintf("base %d", i)}},
+		}
+		if err := Save(s); err != nil {
+			t.Fatalf("seed Save(%d): %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	// 5 concurrent writers
+	for i := range 5 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			s := &Session{
+				ID:            fmt.Sprintf("writer-%d", n),
+				Name:          fmt.Sprintf("Writer %d", n),
+				CreatedAt:     time.Now(),
+				UpdatedAt:     time.Now(),
+				Provider:      "test",
+				Model:         "test-model",
+				WorkspaceRoot: workspace,
+				Messages:      []llm.Message{{Role: "user", Content: fmt.Sprintf("write %d", n)}},
+			}
+			if err := Save(s); err != nil {
+				t.Errorf("writer Save(%d): %v", n, err)
+			}
+		}(i)
+	}
+
+	// 5 concurrent readers
+	for i := range 5 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			metas, err := List(workspace)
+			if err != nil {
+				t.Errorf("reader List(%d): %v", n, err)
+				return
+			}
+			if len(metas) < 5 {
+				t.Errorf("reader List(%d): got %d metas, expected at least 5", n, len(metas))
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestQuery(t *testing.T) {
+	dir := t.TempDir()
+	SetDirForTesting(dir)
+	t.Cleanup(func() { Close(); SetDirForTesting("") })
+
+	workspace := "/tmp/query-test"
+	s := &Session{
+		ID:            "query-session",
+		Name:          "Query test",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		Provider:      "openai",
+		Model:         "gpt-5",
+		WorkspaceRoot: workspace,
+		Messages:      []llm.Message{{Role: "user", Content: "test query"}},
+	}
+	if err := Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var count int
+	err := Query(func(db *sql.DB) error {
+		return db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count)
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 session, got %d", count)
 	}
 }
