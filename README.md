@@ -9,6 +9,8 @@ gurtcli
 
 Done. That's the install and setup.
 
+> **Windows users — [read below](#platform-support).**
+
 ## Why
 
 Most coding AI tools are bloated. Slow to start. Drowning in config files. Too many buttons.
@@ -191,6 +193,12 @@ Your model choice is saved to `~/.config/gurtcli/config.json` after first run.
 ## Why npm as the install path
 
 Because `npm install -g` is the least friction for developers. The npm package is a thin wrapper that downloads the right Go binary for your OS. You never touch Go.
+
+## Platform support
+
+- **macOS** — tested and working (arm64 & x64).
+- **Linux** — tested and working (arm64 & x64).
+- **Windows** — `npm install -g gurtcli` has issues on Windows. Please download the latest release from the [releases page](https://github.com/sillygru/gurtcli/releases) instead.
 
 ## Philosophy
 

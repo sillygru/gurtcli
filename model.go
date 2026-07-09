@@ -741,7 +741,8 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	ci.Prompt = ""
 	ci.DynamicHeight = true
 	ci.MinHeight = 1
-	ci.MaxHeight = 0
+	ci.MaxHeight = 6
+	ci.MaxContentHeight = 1000
 	ci.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter"))
 	taStyles := textarea.DefaultStyles(true)
 	taStyles.Focused.CursorLine = lipgloss.NewStyle()

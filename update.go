@@ -19,6 +19,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	"github.com/sillygru/gurtcli/config"
 	"github.com/sillygru/gurtcli/debug"
 	"github.com/sillygru/gurtcli/files"
@@ -83,10 +84,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.pendingPerm != nil || m.showThemePicker {
 				return m, nil
 			}
-			m.chatInput, _ = m.chatInput.Update(msg)
+			var cmd tea.Cmd
+			m.chatInput, cmd = m.chatInput.Update(msg)
 			m = m.updateSuggestions()
 			m = m.adjustViewportHeight()
-			return m, nil
+			return m, cmd
 		}
 		switch m.state {
 		case stateCustomURL:
@@ -124,6 +126,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
 				return m, m.persistSessionCmd()
+			}
+			if m.pendingPerm != nil {
+				m.pendingPerm = nil
+				m.permCursor = 0
+				m.chatInput.Focus()
+				m = m.adjustViewportHeight()
+				return m, nil
 			}
 			return m, tea.Quit
 		}
@@ -1495,12 +1504,19 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.permCursor = 0
 			}
 			return m, nil
+		case "esc":
+			m.pendingPerm = nil
+			m.permCursor = 0
+			m.chatInput.Focus()
+			m = m.adjustViewportHeight()
+			return m, nil
 		case "enter":
 			remaining := m.pendingPerm.remaining
 			externalPath := m.pendingPerm.externalPath
 			cursor := m.permCursor
 			m.pendingPerm = nil
 			m.permCursor = 0
+			m.chatInput.Focus()
 			m = m.adjustViewportHeight()
 
 			name := tc.Function.Name
@@ -1513,7 +1529,6 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.toolCallCycle = 0
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
 				m.chatViewport.GotoBottom()
-				m.chatInput.Focus()
 				return m, m.persistSessionCmd()
 			}
 
@@ -1784,10 +1799,12 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.queuedMessage = input
 			m.chatInput.Reset()
 			m.historyLoadedValue = ""
+			m = m.adjustViewportHeight()
 			return m, nil
 		}
 		m.chatInput.Reset()
 		m.historyLoadedValue = ""
+		m = m.adjustViewportHeight()
 
 		if isCommand {
 			return m.handleSlashCommand(input)
@@ -1812,6 +1829,19 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, generateTitleCmd(m))
 		}
 		return m, tea.Batch(cmds...)
+	}
+
+	// Ctrl+V: paste from clipboard directly (bubbles' internal Paste command
+	// returns an unexported pasteMsg that the program-level type switch can't
+	// route, so we handle it here instead).
+	if msg.String() == "ctrl+v" {
+		text, err := clipboard.ReadAll()
+		if err == nil && text != "" {
+			m.chatInput.InsertString(text)
+			m = m.updateSuggestions()
+			m = m.adjustViewportHeight()
+		}
+		return m, nil
 	}
 
 	// Filter partial SGR mouse events that the input reader
@@ -2684,11 +2714,7 @@ func (m model) adjustViewportHeight() model {
 	case m.showThemePicker:
 		fixed += m.themePickerOverlayHeight()
 	default:
-		inputLines := strings.Count(m.chatInput.Value(), "\n") + 1
-		if inputLines > 6 {
-			inputLines = 6
-		}
-		fixed += inputLines + 1 // input area + help line
+		fixed += m.chatInput.Height() + 1 // input area + help line
 		if m.suggestions.active && len(m.suggestions.items) > 0 {
 			fixed += len(m.suggestions.items)
 		}
