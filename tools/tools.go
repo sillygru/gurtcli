@@ -13,6 +13,8 @@ import (
 type Options struct {
 	WorkspaceRoot       string
 	AllowedExternalDirs []string
+	SessionID           string
+	SessionOutputsDir   string
 }
 
 // safePath resolves path relative to workspace root and verifies it stays within.
@@ -275,7 +277,7 @@ func Execute(ctx context.Context, name string, args json.RawMessage, opts Option
 		if timeout > MaxTimeout {
 			timeout = MaxTimeout
 		}
-		return RunBash(ctx, a.Command, timeout)
+		return RunBash(ctx, a.Command, timeout, opts.SessionID, opts.SessionOutputsDir)
 
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)

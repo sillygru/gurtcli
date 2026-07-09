@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -355,6 +356,8 @@ type model struct {
 	updateAvailable    bool
 	latestVersion      string
 	updateCheckStarted bool
+
+	sessionOutputsDir string
 
 	llmDetails      map[string]llm.ModelInfo
 	llmDetailsReady bool
@@ -853,6 +856,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	allowIn.SetWidth(60)
 	allowIn.CharLimit = 200
 
+	outputsDir := filepath.Join(wd, ".config", "gurtcli", "session-outputs")
+	if hd, err := os.UserHomeDir(); err == nil {
+		outputsDir = filepath.Join(hd, ".config", "gurtcli", "session-outputs")
+	}
+
 	m := model{
 		state:                startState,
 		telemetryEnabled:     telemetryEnabled,
@@ -877,6 +885,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		alwaysAllowCommandPrefixes: alwaysAllowCommandPrefixes,
 		allowedExternalPathsSession: make(map[string]bool),
 		alwaysAllowExternal:         alwaysAllowExternal,
+		sessionOutputsDir:       outputsDir,
 		allowManageCursor:    0,
 		allowManageScroll:    0,
 		allowManageInput:     allowIn,

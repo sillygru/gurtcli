@@ -13,15 +13,18 @@ import (
 )
 
 const (
-	defaultCardWidth = 68
-	maxPreviewLines  = 8
-	maxResultLines   = 6
+	defaultCardWidth  = 68
+	maxBashResultLines = 10
 )
 
 // RenderUnifiedToolCard renders a tool call and its result together in one bordered card.
 func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width int, isError bool) string {
 	accent := t.ToolAccentFor(tc.Function.Name)
 	args := parseToolArgs(tc.Function.Arguments)
+
+	if tc.Function.Name == "read_file" {
+		return renderReadFileLine(t, args, resultContent, isError)
+	}
 
 	var body strings.Builder
 	switch tc.Function.Name {
@@ -31,35 +34,23 @@ func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width
 		renderEditArgs(&body, t, args, width)
 	case "write_file":
 		renderWriteArgs(&body, t, args)
-	case "read_file":
-		renderReadArgs(&body, t, args)
 	case "delete_file":
 		renderDeleteArgs(&body, t, args)
 	default:
 		renderGenericArgs(&body, t, args)
 	}
 
-	icon := "✓"
-	resultStyle := t.ToolResultOK
-	if isError {
-		icon = "✕"
-		resultStyle = t.ToolResultErr
-	}
-
-	summary := summarizeToolResult(tc.Function.Name, resultContent, isError)
-
-	if body.Len() > 0 {
-		body.WriteString(t.Muted.Render(fmt.Sprintf("  %s", strings.Repeat("─", cardWidth(width)-4))))
-		body.WriteString("\n")
-	}
-
-	body.WriteString(resultStyle.Render(fmt.Sprintf("  %s %s", icon, summary)))
-	body.WriteString("\n")
-
 	preview := toolResultPreview(resultContent, tc.Function.Name)
 	if preview != "" {
+		if body.Len() > 0 {
+			body.WriteString("\n")
+		}
 		for _, line := range strings.Split(preview, "\n") {
-			body.WriteString(t.ToolCode.Render("    " + line))
+			style := t.ToolCode
+			if isError {
+				style = t.ToolResultErr
+			}
+			body.WriteString(style.Render("    " + line))
 			body.WriteString("\n")
 		}
 	}
@@ -73,10 +64,37 @@ func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width
 	return wrapToolCard(t, accent, content, cardWidth(width))
 }
 
+func renderReadFileLine(t Theme, args map[string]interface{}, resultContent string, isError bool) string {
+	path, _ := args["filePath"].(string)
+	if path == "" {
+		path = "(unknown)"
+	}
+
+	icon := "◈"
+	label := "Read"
+	accentColor := t.Blue
+
+	iconStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(accentColor)).Bold(true).Render(icon + " " + label)
+	pathStyled := t.ToolPath.Render(" " + shortenPath(path))
+
+	line := "  " + iconStyled + pathStyled
+
+	if isError {
+		errMsg := firstLineTrimmed(resultContent, 60)
+		line += " " + t.ToolResultErr.Render("✕ "+errMsg)
+	}
+
+	return line
+}
+
 // RenderToolCall renders a tool invocation as a bordered card.
 func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 	accent := t.ToolAccentFor(tc.Function.Name)
 	args := parseToolArgs(tc.Function.Arguments)
+
+	if tc.Function.Name == "read_file" {
+		return renderReadFileLine(t, args, "", false)
+	}
 
 	var body strings.Builder
 	switch tc.Function.Name {
@@ -86,8 +104,6 @@ func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 		renderEditArgs(&body, t, args, width)
 	case "write_file":
 		renderWriteArgs(&body, t, args)
-	case "read_file":
-		renderReadArgs(&body, t, args)
 	case "delete_file":
 		renderDeleteArgs(&body, t, args)
 	default:
@@ -109,27 +125,24 @@ func RenderToolResult(t Theme, toolName, content string, width int, isError bool
 		return ""
 	}
 
-	accent := t.ToolAccentFor(toolName)
-
-	icon := "✓"
-	resultStyle := t.ToolResultOK
-	if isError {
-		icon = "✕"
-		resultStyle = t.ToolResultErr
+	if toolName == "read_file" {
+		return ""
 	}
 
-	summary := summarizeToolResult(toolName, content, isError)
+	accent := t.ToolAccentFor(toolName)
 
 	var body strings.Builder
 	body.WriteString(renderToolHeader(t, accent))
-	body.WriteString("\n")
-	body.WriteString(resultStyle.Render(fmt.Sprintf("  %s %s", icon, summary)))
 
 	preview := toolResultPreview(content, toolName)
 	if preview != "" {
 		body.WriteString("\n")
 		for _, line := range strings.Split(preview, "\n") {
-			body.WriteString(t.ToolCode.Render("    " + line))
+			style := t.ToolCode
+			if isError {
+				style = t.ToolResultErr
+			}
+			body.WriteString(style.Render("    " + line))
 			body.WriteString("\n")
 		}
 	}
@@ -440,11 +453,6 @@ func renderEditArgs(b *strings.Builder, t Theme, args map[string]interface{}, wi
 		b.WriteString(t.DiffContext.Render("    removed"))
 		b.WriteString("\n")
 		for i, line := range oldLines {
-			if i >= maxPreviewLines {
-				b.WriteString(t.Muted.Render(fmt.Sprintf("    … %d more lines", len(oldLines)-maxPreviewLines)))
-				b.WriteString("\n")
-				break
-			}
 			counterpart := ""
 			if i < len(newLines) {
 				counterpart = newLines[i]
@@ -458,11 +466,6 @@ func renderEditArgs(b *strings.Builder, t Theme, args map[string]interface{}, wi
 		b.WriteString(t.DiffContext.Render("    added"))
 		b.WriteString("\n")
 		for i, line := range newLines {
-			if i >= maxPreviewLines {
-				b.WriteString(t.Muted.Render(fmt.Sprintf("    … %d more lines", len(newLines)-maxPreviewLines)))
-				b.WriteString("\n")
-				break
-			}
 			counterpart := ""
 			if i < len(oldLines) {
 				counterpart = oldLines[i]
@@ -493,16 +496,8 @@ func renderWriteArgs(b *strings.Builder, t Theme, args map[string]interface{}) {
 	b.WriteString(t.ToolMeta.Render(fmt.Sprintf("    %d lines · %s", lineCount, formatBytes(byteCount))))
 	b.WriteString("\n")
 
-	previewCount := maxPreviewLines
-	if previewCount > lineCount {
-		previewCount = lineCount
-	}
-	for i := 0; i < previewCount; i++ {
-		b.WriteString(t.ToolCode.Render("    " + truncateLine(lines[i], 60)))
-		b.WriteString("\n")
-	}
-	if lineCount > maxPreviewLines {
-		b.WriteString(t.Muted.Render(fmt.Sprintf("    … %d more lines", lineCount-maxPreviewLines)))
+	for _, line := range lines {
+		b.WriteString(t.ToolCode.Render("    " + line))
 		b.WriteString("\n")
 	}
 }
@@ -540,52 +535,6 @@ func renderGenericArgs(b *strings.Builder, t Theme, args map[string]interface{})
 	}
 }
 
-func summarizeToolResult(toolName, content string, isError bool) string {
-	switch toolName {
-	case "read_file":
-		if isError {
-			return firstLineTrimmed(content, 72)
-		}
-		if idx := strings.Index(content, "("); idx > 0 {
-			return strings.TrimSpace(content[:idx])
-		}
-		return "Read complete"
-	case "write_file":
-		if strings.HasPrefix(content, "Successfully wrote") {
-			return content
-		}
-		if isError {
-			return firstLineTrimmed(content, 72)
-		}
-		return "Write complete"
-	case "edit_file":
-		if isError {
-			return firstLineTrimmed(content, 72)
-		}
-		return "Edit applied"
-	case "delete_file":
-		if isError {
-			return firstLineTrimmed(content, 72)
-		}
-		return "File deleted"
-	case "run_bash":
-		lines := strings.Split(strings.TrimSpace(content), "\n")
-		if len(lines) == 0 {
-			return "Command finished"
-		}
-		if len(lines) == 1 {
-			line := lines[0]
-			if len(line) > 60 {
-				line = line[:57] + "…"
-			}
-			return line
-		}
-		return fmt.Sprintf("%d lines of output", len(lines))
-	default:
-		return firstLineTrimmed(content, 72)
-	}
-}
-
 func firstLineTrimmed(content string, maxLen int) string {
 	first := strings.SplitN(strings.TrimSpace(content), "\n", 2)[0]
 	if len(first) > maxLen {
@@ -602,16 +551,11 @@ func toolResultPreview(content, toolName string) string {
 
 	switch toolName {
 	case "read_file":
-		// Skip the "File: ..." header line
-		start := 0
-		if strings.HasPrefix(lines[0], "File:") {
-			start = 1
-		}
-		return joinPreviewLines(lines[start:], maxResultLines)
+		return ""
 	case "run_bash":
-		return joinPreviewLines(lines, maxResultLines)
+		return joinPreviewLines(lines, maxBashResultLines)
 	default:
-		return joinPreviewLines(lines, maxResultLines)
+		return joinPreviewLines(lines, maxBashResultLines)
 	}
 }
 

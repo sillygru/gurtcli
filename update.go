@@ -1842,9 +1842,14 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 	if m.alwaysAllowExternal || m.allowAllExternal {
 		allowedDirs = append(allowedDirs, "/")
 	}
+	if m.sessionOutputsDir != "" {
+		allowedDirs = append(allowedDirs, m.sessionOutputsDir)
+	}
 	opts := tools.Options{
 		WorkspaceRoot:       m.workspaceRoot,
 		AllowedExternalDirs: allowedDirs,
+		SessionID:           m.sessionID,
+		SessionOutputsDir:   m.sessionOutputsDir,
 	}
 
 	return m, tea.Batch(func() tea.Msg {
@@ -2990,8 +2995,11 @@ func buildChatContent(m model) string {
 			if msg.Internal {
 				// no label for slash command output
 			} else {
-				b.WriteString(ui.RenderAssistantLabel(m.theme, m.displayNameForModel(msg.Model)))
-				b.WriteString("\n")
+				// Only show model label when previous message is from user
+				if i == 0 || m.messages[i-1].Role == "user" {
+					b.WriteString(ui.RenderAssistantLabel(m.theme, m.displayNameForModel(msg.Model)))
+					b.WriteString("\n")
+				}
 			}
 			if msg.Reasoning != "" {
 				if msg.ReasoningVisible {
@@ -3006,26 +3014,25 @@ func buildChatContent(m model) string {
 				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width(), commandNames()))
 				b.WriteString("\n")
 			}
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					if i+1 < len(m.messages) && m.messages[i+1].Role == "tool" && m.messages[i+1].ToolCallID == tc.ID {
-						b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[i+1].Content, m.chatViewport.Width(), m.messages[i+1].IsError))
-						b.WriteString("\n")
-						skipResultIDs[tc.ID] = true
-					} else {
-						b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
-						b.WriteString("\n")
-					}
+if len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				if i+1 < len(m.messages) && m.messages[i+1].Role == "tool" && m.messages[i+1].ToolCallID == tc.ID {
+					b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[i+1].Content, m.chatViewport.Width(), m.messages[i+1].IsError))
+					b.WriteString("\n")
+					skipResultIDs[tc.ID] = true
+				} else {
+					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
+					b.WriteString("\n")
 				}
 			}
-			b.WriteString("\n")
+		}
 		case "tool":
 			if skipResultIDs[msg.ToolCallID] {
 				continue
 			}
 			toolName := toolNames[msg.ToolCallID]
 			b.WriteString(ui.RenderToolResult(m.theme, toolName, msg.Content, m.chatViewport.Width(), msg.IsError))
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 		}
 	}
 

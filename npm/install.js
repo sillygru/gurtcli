@@ -123,9 +123,10 @@ function verifyPlatform(binaryPath) {
   const expected = platformMagics[process.platform];
   if (!expected) return;
 
+  const len = expected.length;
   const fd = fs.openSync(binaryPath, "r");
-  const buf = Buffer.alloc(4);
-  fs.readSync(fd, buf, 0, 4, 0);
+  const buf = Buffer.alloc(len);
+  fs.readSync(fd, buf, 0, len, 0);
   fs.closeSync(fd);
 
   if (process.platform === "darwin") {
