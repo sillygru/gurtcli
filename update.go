@@ -1844,6 +1844,22 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Ctrl+A / Cmd+A: select all text in the input field and copy to clipboard.
+	// On macOS in most terminals Cmd+A sends the same control code as Ctrl+A
+	// (ASCII 0x01), so msg.String() == "ctrl+a" works. On terminals with
+	// enhanced keyboard reporting, it's reported as "super+a" with the
+	// ModSuper modifier.
+	if msg.String() == "ctrl+a" || msg.String() == "super+a" || (msg.Code == 'a' && msg.Mod.Contains(tea.ModSuper)) {
+		text := m.chatInput.Value()
+		if text != "" {
+			copyToClipboard(text)
+			m.toastSeq++
+			m.toast = &toastMsg{text: "Copied input field to clipboard", id: m.toastSeq}
+			return m, toastTimeoutCmd(m.toastSeq)
+		}
+		return m, nil
+	}
+
 	// Filter partial SGR mouse events that the input reader
 	// couldn't decode — they arrive as Alt+[ or <digits>;… runes.
 	if msg.Mod.Contains(tea.ModAlt) && len(msg.Text) == 1 && msg.Text[0] == '[' {
