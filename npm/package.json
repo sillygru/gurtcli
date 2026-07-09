@@ -3,8 +3,9 @@
   "version": "1.1.4",
   "description": "A coding agent in your terminal. Type what you want. It does the rest.",
   "bin": {
-    "gurtcli": "cli.js"
+    "gurtcli": "./cli.js"
   },
+  "main": "./cli.js",
   "scripts": {
     "postinstall": "node install.js"
   },
