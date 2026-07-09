@@ -78,6 +78,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatInput.SetWidth(msg.Width - 4)
 		return m.adjustViewportHeight(), nil
 
+	case tea.PasteMsg:
+		if m.state == stateChat {
+			if m.pendingPerm != nil || m.showThemePicker {
+				return m, nil
+			}
+			m.chatInput, _ = m.chatInput.Update(msg)
+			m = m.updateSuggestions()
+			m = m.adjustViewportHeight()
+			return m, nil
+		}
+		switch m.state {
+		case stateCustomURL:
+			m.urlInput, _ = m.urlInput.Update(msg)
+		case stateAPIKeyInput:
+			m.keyInput, _ = m.keyInput.Update(msg)
+		case stateCustomName:
+			m.nameInput, _ = m.nameInput.Update(msg)
+		case stateManualModel:
+			m.manualInput, _ = m.manualInput.Update(msg)
+		case stateDotenvKeyName:
+			m.dotenvInput, _ = m.dotenvInput.Update(msg)
+		case stateAllowManage:
+			if m.allowManageAdding && m.allowManageAddType == "command" {
+				m.allowManageInput, _ = m.allowManageInput.Update(msg)
+			}
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
 			if m.state == stateChat && (m.isStreaming || (m.toolExec != nil && m.toolExec.active)) {
