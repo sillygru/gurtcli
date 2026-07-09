@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sillygru/gurtcli/llm"
@@ -22,26 +21,6 @@ var (
 	dbDir       string
 	dirOverride string
 )
-
-func lockDB(cfgDir string, readOnly bool) (func(), error) {
-	path := filepath.Join(cfgDir, "sessions.db.lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("opening lock file: %w", err)
-	}
-	kind := syscall.LOCK_EX
-	if readOnly {
-		kind = syscall.LOCK_SH
-	}
-	if err := syscall.Flock(int(f.Fd()), kind); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("flock: %w", err)
-	}
-	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
-	}, nil
-}
 
 func SetDirForTesting(dir string) {
 	mu.Lock()
