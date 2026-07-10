@@ -13,12 +13,12 @@ func TestBashCommandPrefix(t *testing.T) {
 		{
 			name:  "simple command",
 			input: "npm run build",
-			want:  "npm run build",
+			want:  "npm",
 		},
 		{
 			name:  "chained with &&",
 			input: "cd path && git add .",
-			want:  "cd path",
+			want:  "cd",
 		},
 		{
 			name:  "chained with ||",
@@ -28,27 +28,27 @@ func TestBashCommandPrefix(t *testing.T) {
 		{
 			name:  "chained with pipe",
 			input: "ls -la | grep foo",
-			want:  "ls -la",
+			want:  "ls",
 		},
 		{
 			name:  "chained with semicolon",
 			input: "cd path ; git add .",
-			want:  "cd path",
+			want:  "cd",
 		},
 		{
 			name:  "double-quoted string with operator",
 			input: `echo "a && b"`,
-			want:  `echo "a && b"`,
+			want:  "echo",
 		},
 		{
 			name:  "single-quoted string with operator",
 			input: `echo 'a && b'`,
-			want:  `echo 'a && b'`,
+			want:  "echo",
 		},
 		{
 			name:  "command with flags",
 			input: "ls -la",
-			want:  "ls -la",
+			want:  "ls",
 		},
 		{
 			name:  "empty string",
@@ -68,12 +68,12 @@ func TestBashCommandPrefix(t *testing.T) {
 		{
 			name:  "no leading space before operator",
 			input: "cd path&&echo hi",
-			want:  "cd path",
+			want:  "cd",
 		},
 		{
 			name:  "single and double quote nesting",
 			input: `echo "'hello' && world"`,
-			want:  `echo "'hello' && world"`,
+			want:  "echo",
 		},
 		{
 			name:  "single command no args",
@@ -84,6 +84,16 @@ func TestBashCommandPrefix(t *testing.T) {
 			name:  "pipe without operator spacing",
 			input: "cmd1|cmd2",
 			want:  "cmd1",
+		},
+		{
+			name:  "curl with url",
+			input: `curl "http://example.com"`,
+			want:  "curl",
+		},
+		{
+			name:  "curl with single-quoted url",
+			input: "curl 'http://example.com'",
+			want:  "curl",
 		},
 	}
 

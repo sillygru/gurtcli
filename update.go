@@ -376,6 +376,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.toolExec.active = false
 		m.toolExec.title = ""
+		m.toolExec.label = ""
 		m.messages = append(m.messages, llm.Message{
 			Role:       "tool",
 			ToolCallID: msg.toolCallID,
@@ -1887,6 +1888,7 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
+		m = m.adjustViewportHeight()
 		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
 	}
 
@@ -1896,12 +1898,14 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 	m.toolExec.active = true
 	m.toolExec.toolName = tc.Function.Name
 	m.toolExec.title = ""
+	m.toolExec.label = tools.ToolFriendlyLabel(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 	if tc.Function.Name == "run_bash" {
 		if title, err := tools.ExtractBashTitle(json.RawMessage(tc.Function.Arguments)); err == nil {
 			m.toolExec.title = title
 		}
 	}
 	m.workingSpinnerIdx = 0
+	m = m.adjustViewportHeight()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.toolExec.cancel = cancel
@@ -2717,8 +2721,8 @@ func (m model) adjustViewportHeight() model {
 		fixed++ // update banner
 	}
 	fixed++ // top divider
-	// spacer line — 0 when idle, 1 when streaming or showing context bar
-	if (m.isStreaming && m.workingMsg != "") || m.maxInputTokens > 0 || m.contextInputTokens > 0 || m.inputTokens > 0 {
+	// spacer line — 0 when idle, 1 when streaming, executing tool, or showing context bar
+	if m.toolExec.active || (m.isStreaming && m.workingMsg != "") || m.maxInputTokens > 0 || m.contextInputTokens > 0 || m.inputTokens > 0 {
 		fixed++
 	}
 	fixed++ // toast line (always 1 — blank line when no toast)
@@ -2924,6 +2928,7 @@ func (m model) resetStreamingState() model {
 	m.workingSpinnerIdx = 0
 	m.toolExec.active = false
 	m.toolExec.title = ""
+	m.toolExec.label = ""
 	m.toolExec.cancel = nil
 	m.toolQueue = nil
 	m.toolCallCycle = 0

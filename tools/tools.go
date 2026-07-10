@@ -306,8 +306,9 @@ func DefaultSafeBashPrefixes() []string {
 	}
 }
 
-// BashCommandPrefix extracts the first shell segment from a command,
-// stopping before common shell operators (&&, ||, ;, |) while respecting quotes.
+// BashCommandPrefix extracts the first word from a command string,
+// stopping at the first space or shell operator (&&, ||, ;, |)
+// while respecting quotes.
 func BashCommandPrefix(command string) string {
 	command = strings.TrimSpace(command)
 	var buf strings.Builder
@@ -321,6 +322,9 @@ func BashCommandPrefix(command string) string {
 		case ch == '"' && !inSingle:
 			inDouble = !inDouble
 		case !inSingle && !inDouble:
+			if ch == ' ' || ch == '\t' {
+				goto done
+			}
 			if ch == ';' || ch == '|' {
 				goto done
 			}
@@ -350,6 +354,40 @@ func ExtractBashTitle(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid run_bash arguments: %w", err)
 	}
 	return a.Title, nil
+}
+
+// ToolFriendlyLabel returns a human-readable status label for a tool call.
+func ToolFriendlyLabel(name string, args json.RawMessage) string {
+	switch name {
+	case "read_file":
+		var a readFileArgs
+		if json.Unmarshal(args, &a) == nil && a.FilePath != "" {
+			return "Reading " + filepath.Base(a.FilePath)
+		}
+		return "Reading file"
+	case "write_file":
+		var a writeFileArgs
+		if json.Unmarshal(args, &a) == nil && a.FilePath != "" {
+			return "Writing " + filepath.Base(a.FilePath)
+		}
+		return "Writing file"
+	case "edit_file":
+		var a editFileArgs
+		if json.Unmarshal(args, &a) == nil && a.FilePath != "" {
+			return "Editing " + filepath.Base(a.FilePath)
+		}
+		return "Editing file"
+	case "delete_file":
+		var a deleteFileArgs
+		if json.Unmarshal(args, &a) == nil && a.FilePath != "" {
+			return "Deleting " + filepath.Base(a.FilePath)
+		}
+		return "Deleting file"
+	case "run_bash":
+		return "Running bash command"
+	default:
+		return name
+	}
 }
 
 

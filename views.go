@@ -752,7 +752,7 @@ func (m model) renderSpacerLine() string {
 	if m.toolExec.active {
 		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
 		spinner := workingSpinnerFrames[idx]
-		label := m.toolExec.title
+		label := m.toolExec.label
 		if label == "" {
 			label = m.toolExec.toolName
 		}

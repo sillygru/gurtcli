@@ -209,6 +209,7 @@ type toolExecState struct {
 	active   bool
 	toolName string
 	title    string
+	label    string
 }
 
 type textSelection struct {
