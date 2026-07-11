@@ -1,0 +1,23 @@
+name: Update User Progress
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch user count
+        id: telemetry
+        run: |
+          count=$(curl -s https://api.gru0.dev/telemetry/api/v1/stats/users/gurtcli | jq -r '.total_users')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Update progress bar
+        run: |
+          curl -s -X PATCH "https://api.gru0.dev/progress/v1/store/rd63x3" \
+            -H "Authorization: Bearer ${{ secrets.PROGRESS_WRITE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"value\": ${{ steps.telemetry.outputs.count }}}"

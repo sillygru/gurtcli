@@ -11,6 +11,8 @@ Done. That's the install and setup.
 
 > **Windows users — [read below](#platform-support).**
 
+![Users](https://api.gru0.dev/progress/v1/store/rd63x3?format=svg&color=%238b5cf6&bg=%231e1e2e&dark=true)
+
 ## Why
 
 Most coding AI tools are bloated. Slow to start. Drowning in config files. Too many buttons.
