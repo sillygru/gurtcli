@@ -561,12 +561,6 @@ func (m model) chatView() string {
 	b.WriteString("\x1b[?25l") // hide hardware cursor
 
 	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
-	sessionLabel := m.theme.Dim.Render(m.sessionDisplayName())
-	pad := m.width - lipgloss.Width(m.theme.Brand.Render("  "+m.modelDisplayName())) - lipgloss.Width(sessionLabel)
-	if pad > 1 {
-		b.WriteString(strings.Repeat(" ", pad))
-		b.WriteString(sessionLabel)
-	}
 	b.WriteString("\n")
 	b.WriteString(ui.RenderRule(m.theme, layout))
 	b.WriteString("\n")

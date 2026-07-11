@@ -75,12 +75,13 @@ const (
 )
 
 type StreamEvent struct {
-	Type         StreamEventType
-	Content      string
-	Err          error
-	ToolCalls    []ToolCall
-	InputTokens  int
-	OutputTokens int
+	Type            StreamEventType
+	Content         string
+	Err             error
+	ToolCalls       []ToolCall
+	InputTokens     int
+	OutputTokens    int
+	ReasoningTokens int
 }
 
 type openaiStreamOptions struct {
@@ -122,8 +123,13 @@ type anthropicContentBlock struct {
 }
 
 type openaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens           int                         `json:"prompt_tokens"`
+	CompletionTokens       int                         `json:"completion_tokens"`
+	CompletionTokensDetails *openaiCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+type openaiCompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // openaiChunk for SSE parsing
@@ -443,7 +449,11 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					continue
 				}
 				if chunk.Usage != nil {
-					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
+					rt := 0
+					if chunk.Usage.CompletionTokensDetails != nil {
+						rt = chunk.Usage.CompletionTokensDetails.ReasoningTokens
+					}
+					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt}
 				}
 				if len(chunk.Choices) == 0 {
 					continue

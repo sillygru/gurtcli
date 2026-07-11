@@ -122,7 +122,7 @@ func RenderToolResult(t Theme, toolName, content string, width int, isError bool
 		return ""
 	}
 
-	if toolName == "read_file" {
+	if toolName == "read_file" || toolName == "edit_file" {
 		return ""
 	}
 
@@ -175,17 +175,14 @@ func HighlightInline(line string, base, fileRef, cmdRef lipgloss.Style, commands
 		}
 	}
 
-	// Find /command references
-	for i := 0; i < len(line); i++ {
-		if line[i] == '/' {
-			for cmd := range cmdSet {
-				if i+1+len(cmd) <= len(line) && line[i+1:i+1+len(cmd)] == cmd {
-					end := i + 1 + len(cmd)
-					if end == len(line) || line[end] == ' ' {
-						spans = append(spans, span{i, end, cmdRef})
-						i = end - 1
-						break
-					}
+	// Find /command references — only match at start of line (position 0)
+	if len(line) > 0 && line[0] == '/' {
+		for cmd := range cmdSet {
+			if 1+len(cmd) <= len(line) && line[1:1+len(cmd)] == cmd {
+				end := 1 + len(cmd)
+				if end == len(line) || line[end] == ' ' {
+					spans = append(spans, span{0, end, cmdRef})
+					break
 				}
 			}
 		}
@@ -225,9 +222,7 @@ func HighlightInline(line string, base, fileRef, cmdRef lipgloss.Style, commands
 
 // RenderUserMessage renders a user message in a bordered card with inline highlighting.
 func RenderUserMessage(t Theme, content string, width int, commands []string) string {
-	layout := NewLayout(width+contentMargin, 0)
-	cardW := layout.CardWidth()
-	wrapWidth := cardW - 4
+	wrapWidth := width - 2
 	if wrapWidth < 10 {
 		wrapWidth = 10
 	}
@@ -248,7 +243,7 @@ func RenderUserMessage(t Theme, content string, width int, commands []string) st
 
 	label := t.UserBoxLabel.Render("You")
 	inner := label + "\n" + strings.TrimRight(body.String(), "\n")
-	return t.UserBox.Width(cardW).Render(inner)
+	return t.UserBox.Width(width).Render(inner)
 }
 
 // RenderAssistantLabel renders the assistant label with the model name.

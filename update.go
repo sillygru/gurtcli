@@ -398,6 +398,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.outputTokens > 0 {
 			m.outputTokens += msg.outputTokens
 		}
+		if msg.reasoningTokens > 0 {
+			m.reasoningOutputTokens += msg.reasoningTokens
+		}
 		return m, nil
 
 	case toolResultMsg:
@@ -2867,7 +2870,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		req := llm.ChatRequest{
 			Model:           m.modelName,
-			Messages:        injectFileAttachments(m, filterInternal(m.messages)),
+			Messages:        injectFileAttachments(m, stripReasoning(filterInternal(m.messages))),
 			SystemPrompt:    systemPrompt,
 			Tools:           tools.Definitions(),
 			Thinking:        thinkingCfg,
@@ -2926,7 +2929,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 					case llm.StreamReasoning:
 						globalProgram.Send(chatStreamReasoning{content: event.Content})
 					case llm.StreamUsage:
-						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens})
+						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens})
 					case llm.StreamToolCalls:
 						pendingToolCalls = event.ToolCalls
 					case llm.StreamDone:
@@ -3145,7 +3148,7 @@ func buildChatContent(m model) string {
 		}
 		switch msg.Role {
 		case "user":
-			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content, m.chatViewport.Width(), commandNames()))
+			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content, m.width, commandNames()))
 			b.WriteString("\n")
 		case "assistant":
 			if msg.Internal {
@@ -3249,6 +3252,17 @@ func filterInternal(msgs []llm.Message) []llm.Message {
 		if !m.Internal {
 			out = append(out, m)
 		}
+	}
+	return out
+}
+
+func stripReasoning(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, len(msgs))
+	for i, m := range msgs {
+		m.Reasoning = ""
+		m.ReasoningDuration = 0
+		m.ReasoningVisible = false
+		out[i] = m
 	}
 	return out
 }

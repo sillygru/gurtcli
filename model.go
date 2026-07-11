@@ -155,8 +155,9 @@ type chatStreamError struct {
 }
 
 type chatStreamUsage struct {
-	inputTokens  int
-	outputTokens int
+	inputTokens     int
+	outputTokens    int
+	reasoningTokens int
 }
 
 type resourceStatsMsg struct {
@@ -352,6 +353,7 @@ type model struct {
 	inputTokens         int
 	contextInputTokens  int
 	outputTokens        int
+	reasoningOutputTokens int
 	workingMsg        string
 	workingMsgIndex   int
 	workingSpinnerIdx int
@@ -365,6 +367,8 @@ type model struct {
 
 	llmDetails      map[string]llm.ModelInfo
 	llmDetailsReady bool
+
+	bufferedInitCmd tea.Cmd
 }
 
 func (m model) cmdGridDimensions() (numRows, numCols, colWidth int) {
@@ -932,7 +936,9 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		if m.maxInputTokens == 0 && m.modelName != "" {
 			m.maxInputTokens = llm.LookupModelMaxTokens(m.modelName)
 		}
-		m, _ = m.enterChatState()
+		var chatCmd tea.Cmd
+		m, chatCmd = m.enterChatState()
+		m.bufferedInitCmd = chatCmd
 	}
 
 	return m
@@ -968,6 +974,7 @@ func (m model) toSession() *sessions.Session {
 		Messages:          msgs,
 		InputTokens:       m.inputTokens,
 		OutputTokens:      m.outputTokens,
+		ReasoningTokens:   m.reasoningOutputTokens,
 	}
 }
 
@@ -996,6 +1003,7 @@ func (m model) applySession(s *sessions.Session) model {
 	m.inputTokens = s.InputTokens
 	m.contextInputTokens = s.InputTokens
 	m.outputTokens = s.OutputTokens
+	m.reasoningOutputTokens = s.ReasoningTokens
 	return m
 }
 
@@ -1010,6 +1018,7 @@ func (m model) resetToNewSession() model {
 	m.inputTokens = 0
 	m.contextInputTokens = 0
 	m.outputTokens = 0
+	m.reasoningOutputTokens = 0
 	m.fileList = nil
 	m.filesCached = false
 	return m.initNewSession()
@@ -1065,6 +1074,9 @@ func (m model) Init() tea.Cmd {
 	}
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
+	}
+	if m.bufferedInitCmd != nil {
+		cmds = append(cmds, m.bufferedInitCmd)
 	}
 	return tea.Batch(cmds...)
 }

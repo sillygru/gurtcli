@@ -50,6 +50,11 @@ func Render(w io.Writer, s *Stats) {
 
 	renderOverview(w, s, innerWidth)
 	fmt.Fprintln(w)
+	renderTokenUsage(w, s, innerWidth)
+	if s.ReasoningEstimated {
+		footnote(w, "* estimated from content length", innerWidth)
+	}
+	fmt.Fprintln(w)
 	renderTools(w, s, innerWidth)
 }
 
@@ -80,6 +85,78 @@ func renderOverview(w io.Writer, s *Stats, inner int) {
 			teal, val, reset,
 		)
 	}
+
+	bottom(w, inner)
+}
+
+func renderTokenUsage(w io.Writer, s *Stats, inner int) {
+	top(w, inner)
+	header(w, "TOKEN USAGE", inner)
+	sep(w, inner)
+
+	outputText := s.OutputTokens - s.ReasoningTokens
+	if outputText < 0 {
+		outputText = 0
+	}
+	total := s.InputTokens + s.OutputTokens
+
+	rows := []struct {
+		label string
+		value int
+		color string
+	}{
+		{"Input", s.InputTokens, green},
+		{"Reasoning", s.ReasoningTokens, mauve},
+		{"Output", outputText, blue},
+	}
+
+	// Append "*" to the Reasoning label if the count is estimated.
+	if s.ReasoningEstimated {
+		rows[1].label = "Reasoning*"
+	}
+
+	maxLabel := 0
+	for _, r := range rows {
+		n := runewidth.StringWidth(r.label)
+		if n > maxLabel {
+			maxLabel = n
+		}
+	}
+
+	for _, r := range rows {
+		label := r.label + strings.Repeat(" ", maxLabel-runewidth.StringWidth(r.label))
+		val := formatInt(r.value)
+		pctStr := fmt.Sprintf("(%5.1f%%)", pctOf(r.value, total))
+		content := fmt.Sprintf("%s  %s%s %s", label, r.color, val, pctStr)
+		fill := inner - runewidth.StringWidth(content)
+		if fill < 0 {
+			fill = 0
+		}
+		fmt.Fprintf(w, "%s│ %s%s%s │%s\n",
+			surface2,
+			content,
+			strings.Repeat(" ", fill),
+			surface2, reset,
+		)
+	}
+
+	sep(w, inner)
+
+	totalStr := formatInt(total)
+	content := fmt.Sprintf("Total%s  %s%s",
+		strings.Repeat(" ", maxLabel-5),
+		teal, totalStr,
+	)
+	fill := inner - runewidth.StringWidth(content)
+	if fill < 0 {
+		fill = 0
+	}
+	fmt.Fprintf(w, "%s│ %s%s%s │%s\n",
+		surface2,
+		content,
+		strings.Repeat(" ", fill),
+		surface2, reset,
+	)
 
 	bottom(w, inner)
 }
@@ -180,6 +257,10 @@ func bottom(w io.Writer, inner int) {
 	fmt.Fprintf(w, "%s└%s┘%s\n", surface2, strings.Repeat("─", inner+2), reset)
 }
 
+func footnote(w io.Writer, text string, inner int) {
+	fmt.Fprintf(w, "%s %s%s%s\n", overlay0, text, strings.Repeat(" ", inner-runewidth.StringWidth(text)), reset)
+}
+
 func formatInt(n int) string {
 	if n < 1000 {
 		return fmt.Sprintf("%d", n)
@@ -194,6 +275,13 @@ func formatInt(n int) string {
 		parts = append([]string{s[start:i]}, parts...)
 	}
 	return strings.Join(parts, ",")
+}
+
+func pctOf(val, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(val) / float64(total) * 100
 }
 
 func guessWidth() int {

@@ -193,7 +193,7 @@ func buildTheme(p Palette) Theme {
 			Foreground(lipgloss.Color(p.Surface2)).
 			Background(base),
 		UserLabel:   fg(lipgloss.Color(p.Lavender)).Bold(true),
-		UserContent: fg(lipgloss.Color(p.Text)),
+		UserContent: fgSurf(lipgloss.Color(p.Text)),
 		UserBox: lipgloss.NewStyle().
 			Background(surf0).
 			Padding(0, 1).

@@ -31,5 +31,14 @@ func EditFile(workspaceRoot, filePath, oldString, newString string, allowedExter
 		return "", fmt.Errorf("writing file: %w", err)
 	}
 
-	return fmt.Sprintf("Successfully edited %s (%d bytes written)", filePath, len(newContent)), nil
+	deletedLines := countLines(oldString)
+	addedLines := countLines(newString)
+	return fmt.Sprintf("Successfully edited %s (+%d lines -%d lines)", filePath, addedLines, deletedLines), nil
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
