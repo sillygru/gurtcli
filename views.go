@@ -66,10 +66,9 @@ func (m model) View() tea.View {
 }
 
 func (m model) welcomeView() string {
-	return m.theme.Brand.Render("  gurt") + "\n\n" +
-		m.theme.Dim.Render("  A coding agent in your terminal.") + "\n\n" +
+	return ui.RenderScreenHeader(m.theme, "gurt", "A coding agent in your terminal.") + "\n\n" +
 		m.theme.Dim.Render("  Press enter to start.") + "\n" +
-		m.theme.Dim.Render("  ctrl+c quit")
+		ui.RenderFooterHelp(m.theme, "  ctrl+c quit")
 }
 
 func (m model) providerPickView() string {
@@ -415,9 +414,9 @@ func (m model) allowManageView() string {
 					break
 				}
 			}
-			box := "[ ]"
+			box := m.theme.CheckboxOff.Render("☐")
 			if checked {
-				box = "[x]"
+				box = m.theme.CheckboxOn.Render("☑")
 			}
 			prefix := "  "
 			style := m.theme.Dim
@@ -510,10 +509,7 @@ func (m model) renderChatInput() string {
 		return ""
 	}
 
-	inputWidth := m.width - 4
-	if inputWidth < 10 {
-		inputWidth = 40
-	}
+	inputWidth := ui.NewLayout(m.width, m.height).InputWidth()
 
 	cmdNames := commandNames()
 	baseStyle := m.theme.UserContent
@@ -560,17 +556,19 @@ func (m model) renderChatInput() string {
 
 func (m model) chatView() string {
 	var b strings.Builder
+	layout := ui.NewLayout(m.width, m.height)
 	b.WriteString("\x1b[2 q") // DECSCUSR: non-blinking block cursor
 	b.WriteString("\x1b[?25l") // hide hardware cursor
 
 	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
-	b.WriteString("\n")
-
-	dividerLen := m.width
-	if dividerLen < 4 {
-		dividerLen = 40
+	sessionLabel := m.theme.Dim.Render(m.sessionDisplayName())
+	pad := m.width - lipgloss.Width(m.theme.Brand.Render("  "+m.modelDisplayName())) - lipgloss.Width(sessionLabel)
+	if pad > 1 {
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString(sessionLabel)
 	}
-	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", dividerLen)))
+	b.WriteString("\n")
+	b.WriteString(ui.RenderRule(m.theme, layout))
 	b.WriteString("\n")
 
 	b.WriteString(m.chatViewport.View())
@@ -600,7 +598,7 @@ func (m model) chatView() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", dividerLen)))
+	b.WriteString(ui.RenderRule(m.theme, layout))
 	b.WriteString("\n")
 
 	if m.pendingPerm != nil {
@@ -613,10 +611,7 @@ func (m model) chatView() string {
 			}
 		}
 
-		boxW := m.width - 2
-		if boxW < 30 {
-			boxW = 30
-		}
+		boxW := layout.PopupWidth()
 		permBox := lipgloss.NewStyle().
 			Background(lipgloss.Color(m.theme.Base)).
 			Border(lipgloss.RoundedBorder()).
@@ -629,13 +624,7 @@ func (m model) chatView() string {
 
 		b.WriteString(permBox.Render(content))
 	} else if m.showThemePicker {
-		boxW := m.width - 4
-		if boxW < 30 {
-			boxW = 30
-		}
-		if boxW > 50 {
-			boxW = 50
-		}
+		boxW := layout.PopupWidth()
 		popup := lipgloss.NewStyle().
 			Background(lipgloss.Color(m.theme.Base)).
 			Border(lipgloss.RoundedBorder()).
@@ -721,7 +710,7 @@ func (m model) chatView() string {
 	return b.String()
 }
 
-var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
+var workingSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 var workingMessages = []string{
 	"Fidgeting with files",
@@ -808,20 +797,27 @@ func (m model) renderContextBar() string {
 		return ""
 	}
 
+	barWidth := 20
+	if m.width < 60 {
+		barWidth = 12
+	}
+
 	if m.maxInputTokens <= 0 {
 		return m.theme.ContextBar.Render(formatTokens(tokens))
 	}
 
 	if tokens <= 0 {
-		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", strings.Repeat("░", 20), formatTokens(m.maxInputTokens)))
+		emptyBar := m.theme.Dim.Render(strings.Repeat("·", barWidth))
+		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", emptyBar, formatTokens(m.maxInputTokens)))
 	}
 	pct := float64(tokens) / float64(m.maxInputTokens)
-	barWidth := 20
 	filled := int(pct * float64(barWidth))
 	if filled > barWidth {
 		filled = barWidth
 	}
-	bar := strings.Repeat("▓", filled) + strings.Repeat("░", barWidth-filled)
+	filledPart := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Teal)).Render(strings.Repeat("━", filled))
+	emptyPart := m.theme.Dim.Render(strings.Repeat("─", barWidth-filled))
+	bar := filledPart + emptyPart
 	pctStr := fmt.Sprintf("%3.0f%%", pct*100)
 	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s / %s", bar, pctStr, formatTokens(tokens), formatTokens(m.maxInputTokens)))
 }

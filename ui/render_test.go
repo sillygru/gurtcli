@@ -23,9 +23,6 @@ func TestRenderToolCallReadFile(t *testing.T) {
 	if !strings.Contains(out, "main.go") {
 		t.Fatalf("expected path in output, got: %q", out)
 	}
-	if !strings.Contains(out, "from line 10") {
-		t.Fatalf("expected offset meta, got: %q", out)
-	}
 }
 
 func TestRenderToolCallRunBash(t *testing.T) {
@@ -62,7 +59,7 @@ func TestRenderToolCallEditFile(t *testing.T) {
 	if !strings.Contains(out, "Edit") {
 		t.Fatalf("expected Edit label, got: %q", out)
 	}
-	if !strings.Contains(out, "removed") || !strings.Contains(out, "added") {
+	if !strings.Contains(out, "Before") || !strings.Contains(out, "After") {
 		t.Fatalf("expected diff sections, got: %q", out)
 	}
 }
@@ -74,8 +71,8 @@ func TestRenderToolResultSuccess(t *testing.T) {
 	if !strings.Contains(out, "Write") {
 		t.Fatalf("expected tool label, got: %q", out)
 	}
-	if !strings.Contains(out, "✓") {
-		t.Fatalf("expected success icon, got: %q", out)
+	if !strings.Contains(out, "Successfully wrote") {
+		t.Fatalf("expected result body, got: %q", out)
 	}
 	if !strings.Contains(out, "╭") {
 		t.Fatalf("expected card border, got: %q", out)
@@ -91,8 +88,8 @@ func TestRenderToolResultError(t *testing.T) {
 	if !strings.Contains(out, "Shell") {
 		t.Fatalf("expected tool label for Shell, got: %q", out)
 	}
-	if !strings.Contains(out, "✕") {
-		t.Fatalf("expected error icon for run_bash with Error: prefix, got: %q", out)
+	if !strings.Contains(out, "Error: exit status 1") {
+		t.Fatalf("expected error body for run_bash, got: %q", out)
 	}
 	if !strings.Contains(out, "╭") {
 		t.Fatalf("expected card border, got: %q", out)
@@ -100,8 +97,23 @@ func TestRenderToolResultError(t *testing.T) {
 
 	// run_bash with regular content (no error)
 	out2 := RenderToolResult(theme, "run_bash", "command finished successfully", 80, false)
-	if !strings.Contains(out2, "✓") {
-		t.Fatalf("expected success icon for run_bash regular output, got: %q", out2)
+	if !strings.Contains(out2, "command finished successfully") {
+		t.Fatalf("expected bash output body, got: %q", out2)
+	}
+}
+
+func TestRenderUserMessageCard(t *testing.T) {
+	t.Parallel()
+	theme := DefaultTheme()
+	out := RenderUserMessage(theme, "hello world", 80, nil)
+	if !strings.Contains(out, "You") {
+		t.Fatalf("expected You label, got: %q", out)
+	}
+	if !strings.Contains(out, "hello world") {
+		t.Fatalf("expected message content, got: %q", out)
+	}
+	if !strings.Contains(out, "╭") {
+		t.Fatalf("expected card border, got: %q", out)
 	}
 }
 

@@ -77,7 +77,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetWidth(msg.Width - 4)
 		m.chatViewport.SetHeight(chatViewHeight)
 		m.chatInput.SetWidth(msg.Width - 4)
-		return m.adjustViewportHeight(), nil
+		m = m.adjustViewportHeight()
+		if m.state == stateChat {
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		}
+		return m, nil
 
 	case tea.PasteMsg:
 		if m.state == stateChat {
@@ -2756,10 +2760,7 @@ func (m model) permOverlayHeight() int {
 	}
 	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath) + "\n" +
 		m.theme.Dim.Render("  ↑/↓ navigate • enter select")
-	boxW := m.width - 2
-	if boxW < 30 {
-		boxW = 30
-	}
+	boxW := ui.NewLayout(m.width, m.height).PopupWidth()
 	box := lipgloss.NewStyle().
 		Background(lipgloss.Color(m.theme.Base)).
 		Border(lipgloss.RoundedBorder()).
@@ -2770,13 +2771,7 @@ func (m model) permOverlayHeight() int {
 }
 
 func (m model) themePickerOverlayHeight() int {
-	boxW := m.width - 4
-	if boxW < 30 {
-		boxW = 30
-	}
-	if boxW > 50 {
-		boxW = 50
-	}
+	boxW := ui.NewLayout(m.width, m.height).PopupWidth()
 	var pc strings.Builder
 	pc.WriteString(m.theme.Header.Render("Select Theme"))
 	pc.WriteString("\n\n")
@@ -3065,7 +3060,7 @@ func buildChatContent(m model) string {
 		switch msg.Role {
 		case "user":
 			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content, m.chatViewport.Width(), commandNames()))
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 		case "assistant":
 			if msg.Internal {
 				// no label for slash command output

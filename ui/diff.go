@@ -203,3 +203,167 @@ func commonSuffixLen(a, b string, max int) int {
 	}
 	return count
 }
+
+// diffRowKind describes how a line pair relates in an aligned diff.
+type diffRowKind int
+
+const (
+	diffEqual diffRowKind = iota
+	diffDelete
+	diffInsert
+	diffReplace
+)
+
+// diffRow is one aligned row in a line diff.
+type diffRow struct {
+	left  string
+	right string
+	kind  diffRowKind
+}
+
+// alignLines produces LCS-aligned rows from old and new line slices.
+func alignLines(oldLines, newLines []string) []diffRow {
+	if len(oldLines) == 0 && len(newLines) == 0 {
+		return nil
+	}
+	n, m := len(oldLines), len(newLines)
+	// LCS table
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				dp[i][j] = 1 + dp[i+1][j+1]
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+
+	var rows []diffRow
+	i, j := 0, 0
+	for i < n && j < m {
+		if oldLines[i] == newLines[j] {
+			rows = append(rows, diffRow{left: oldLines[i], right: newLines[j], kind: diffEqual})
+			i++
+			j++
+		} else if dp[i+1][j] >= dp[i][j+1] {
+			rows = append(rows, diffRow{left: oldLines[i], right: "", kind: diffDelete})
+			i++
+		} else {
+			rows = append(rows, diffRow{left: "", right: newLines[j], kind: diffInsert})
+			j++
+		}
+	}
+	for i < n {
+		rows = append(rows, diffRow{left: oldLines[i], right: "", kind: diffDelete})
+		i++
+	}
+	for j < m {
+		rows = append(rows, diffRow{left: "", right: newLines[j], kind: diffInsert})
+		j++
+	}
+
+	// Merge adjacent delete+insert into replace
+	var merged []diffRow
+	for k := 0; k < len(rows); k++ {
+		if k+1 < len(rows) && rows[k].kind == diffDelete && rows[k+1].kind == diffInsert {
+			merged = append(merged, diffRow{
+				left:  rows[k].left,
+				right: rows[k+1].right,
+				kind:  diffReplace,
+			})
+			k++
+			continue
+		}
+		merged = append(merged, rows[k])
+	}
+	return merged
+}
+
+// RenderEditDiff renders an aligned before/after diff for edit_file.
+func RenderEditDiff(t Theme, oldStr, newStr string, width int) string {
+	oldLines := splitLines(oldStr)
+	newLines := splitLines(newStr)
+	if len(oldLines) == 0 && len(newLines) == 0 {
+		return ""
+	}
+
+	layout := NewLayout(width+contentMargin, 0)
+	rows := alignLines(oldLines, newLines)
+
+	if layout.DiffMode() == DiffSideBySide {
+		return renderEditDiffSideBySide(t, rows, layout)
+	}
+	return renderEditDiffStacked(t, rows, layout)
+}
+
+func renderEditDiffSideBySide(t Theme, rows []diffRow, layout Layout) string {
+	panelW := layout.DiffPanelWidth()
+	var leftB, rightB strings.Builder
+
+	leftB.WriteString("\n")
+	rightB.WriteString("\n")
+
+	for _, row := range rows {
+		leftB.WriteString(renderDiffPanelLine(t, row.left, row.right, true, panelW, row.kind))
+		leftB.WriteString("\n")
+		rightB.WriteString(renderDiffPanelLine(t, row.right, row.left, false, panelW, row.kind))
+		rightB.WriteString("\n")
+	}
+
+	leftStyle := lipgloss.NewStyle().Width(panelW).Padding(0, 1)
+	rightStyle := lipgloss.NewStyle().Width(panelW).Padding(0, 1)
+	gutter := t.Muted.Render(" │ ")
+
+	leftPanel := leftStyle.Render(strings.TrimRight(leftB.String(), "\n"))
+	rightPanel := rightStyle.Render(strings.TrimRight(rightB.String(), "\n"))
+
+	return "    " + lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, gutter, rightPanel)
+}
+
+func renderEditDiffStacked(t Theme, rows []diffRow, layout Layout) string {
+	panelW := layout.CardWidth() - 8
+	if panelW < 20 {
+		panelW = 20
+	}
+	var b strings.Builder
+
+	b.WriteString("\n")
+	for _, row := range rows {
+		b.WriteString(renderDiffPanelLine(t, row.left, row.right, true, panelW, row.kind))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("\n")
+	for _, row := range rows {
+		b.WriteString(renderDiffPanelLine(t, row.right, row.left, false, panelW, row.kind))
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderDiffPanelLine(t Theme, line, counterpart string, isLeft bool, maxLen int, kind diffRowKind) string {
+	prefix := "    "
+	if line == "" {
+		return prefix + t.DiffEmptyLine.Render(" ")
+	}
+
+	line = truncateLine(line, maxLen)
+
+	switch {
+	case kind == diffEqual:
+		return prefix + t.DiffContext.Render(line)
+	case isLeft && (kind == diffDelete || kind == diffReplace):
+		return prefix + renderDiffRemovedLine(t, "", line, counterpart, maxLen)
+	case !isLeft && (kind == diffInsert || kind == diffReplace):
+		return prefix + renderDiffAddedLine(t, "", line, counterpart, maxLen)
+	default:
+		return prefix + t.DiffEmptyLine.Render(" ")
+	}
+}

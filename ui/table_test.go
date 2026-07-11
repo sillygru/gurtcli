@@ -138,10 +138,10 @@ func TestTableRenderBasic(t *testing.T) {
 		}
 	}
 	// Should contain box-drawing characters
-	if !strings.Contains(out, "┌") || !strings.Contains(out, "┐") {
+	if !strings.Contains(out, "╭") || !strings.Contains(out, "╮") {
 		t.Fatalf("missing top border: \n%s", out)
 	}
-	if !strings.Contains(out, "└") || !strings.Contains(out, "┘") {
+	if !strings.Contains(out, "╰") || !strings.Contains(out, "╯") {
 		t.Fatalf("missing bottom border: \n%s", out)
 	}
 	if !strings.Contains(out, "├") || !strings.Contains(out, "┤") {
@@ -287,7 +287,7 @@ And some text after.`
 		}
 	}
 	// Table border characters should appear
-	if !strings.Contains(out, "┌") || !strings.Contains(out, "┐") {
+	if !strings.Contains(out, "╭") || !strings.Contains(out, "╮") {
 		t.Fatalf("table borders missing: \n%s", out)
 	}
 	// Regular text should still render
@@ -303,7 +303,7 @@ func TestTableWithoutSeparatorInAssistantContent(t *testing.T) {
 	content := `| A | B |
 | 1 | 2 |`
 	out := RenderAssistantContent(theme, content, 60, nil)
-	if !strings.Contains(out, "┌") {
+	if !strings.Contains(out, "╭") {
 		t.Fatalf("expected table borders, got: \n%s", out)
 	}
 }
@@ -314,7 +314,7 @@ func TestSinglePipeLineNotATable(t *testing.T) {
 	// A single pipe line should not trigger table rendering
 	content := `this is | not a table`
 	out := RenderAssistantContent(theme, content, 60, nil)
-	if strings.Contains(out, "┌") {
+	if strings.Contains(out, "╭") {
 		t.Fatal("single pipe line should not render as table")
 	}
 	if !strings.Contains(out, "not a table") {
@@ -325,7 +325,7 @@ func TestSinglePipeLineNotATable(t *testing.T) {
 func TestBuildTopBorder(t *testing.T) {
 	t.Parallel()
 	got := buildTopBorder([]int{4, 3, 5})
-	if got != "┌──────┬─────┬───────┐" {
+	if got != "╭──────┬─────┬───────╮" {
 		t.Fatalf("unexpected top border: %q", got)
 	}
 }
@@ -341,7 +341,7 @@ func TestBuildSepBorder(t *testing.T) {
 func TestBuildBottomBorder(t *testing.T) {
 	t.Parallel()
 	got := buildBottomBorder([]int{4, 3, 5})
-	if got != "└──────┴─────┴───────┘" {
+	if got != "╰──────┴─────┴───────╯" {
 		t.Fatalf("unexpected bottom border: %q", got)
 	}
 }

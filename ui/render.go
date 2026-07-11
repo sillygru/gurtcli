@@ -12,10 +12,7 @@ import (
 	"github.com/sillygru/gurtcli/llm"
 )
 
-const (
-	defaultCardWidth  = 68
-	maxBashResultLines = 10
-)
+const maxBashResultLines = 10
 
 // RenderUnifiedToolCard renders a tool call and its result together in one bordered card.
 func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width int, isError bool) string {
@@ -61,7 +58,7 @@ func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width
 		content += "\n" + body.String()
 	}
 
-	return wrapToolCard(t, accent, content, cardWidth(width))
+	return wrapToolCard(t, accent, content, NewLayout(width, 0).CardWidth())
 }
 
 func renderReadFileLine(t Theme, args map[string]interface{}, resultContent string, isError bool) string {
@@ -116,7 +113,7 @@ func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 		content += "\n" + body.String()
 	}
 
-	return wrapToolCard(t, accent, content, cardWidth(width))
+	return wrapToolCard(t, accent, content, NewLayout(width, 0).CardWidth())
 }
 
 // RenderToolResult renders the output of a completed tool call in a bordered card.
@@ -147,7 +144,7 @@ func RenderToolResult(t Theme, toolName, content string, width int, isError bool
 		}
 	}
 
-	return wrapToolCard(t, accent, body.String(), cardWidth(width))
+	return wrapToolCard(t, accent, body.String(), NewLayout(width, 0).CardWidth())
 }
 
 // highlightInline finds @file and /command references in a single line of text
@@ -226,30 +223,32 @@ func HighlightInline(line string, base, fileRef, cmdRef lipgloss.Style, commands
 	return b.String()
 }
 
-// RenderUserMessage renders a user message block with inline highlighting
-// for @file and /command references when commands is non-nil.
+// RenderUserMessage renders a user message in a bordered card with inline highlighting.
 func RenderUserMessage(t Theme, content string, width int, commands []string) string {
-	var b strings.Builder
-	b.WriteString(t.UserLabel.Render("  you"))
-	b.WriteString("\n")
-	doHL := len(commands) > 0
-	wrapWidth := width - 2
+	layout := NewLayout(width+contentMargin, 0)
+	cardW := layout.CardWidth()
+	wrapWidth := cardW - 4
 	if wrapWidth < 10 {
 		wrapWidth = 10
 	}
+
+	var body strings.Builder
+	doHL := len(commands) > 0
 	for _, line := range strings.Split(content, "\n") {
 		wrapped := ansi.Hardwrap(line, wrapWidth, true)
 		for _, subLine := range strings.Split(wrapped, "\n") {
 			if doHL {
-				b.WriteString(t.UserContent.Render("  "))
-				b.WriteString(HighlightInline(subLine, t.UserContent, t.FileRef, t.CmdRef, commands))
+				body.WriteString(HighlightInline(subLine, t.UserContent, t.FileRef, t.CmdRef, commands))
 			} else {
-				b.WriteString(t.UserContent.Render("  " + subLine))
+				body.WriteString(t.UserContent.Render(subLine))
 			}
-			b.WriteString("\n")
+			body.WriteString("\n")
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+
+	label := t.UserBoxLabel.Render("You")
+	inner := label + "\n" + strings.TrimRight(body.String(), "\n")
+	return t.UserBox.Width(cardW).Render(inner)
 }
 
 // RenderAssistantLabel renders the assistant label with the model name.
@@ -257,45 +256,11 @@ func RenderAssistantLabel(t Theme, name string) string {
 	return t.AssistantLabel.Render("  " + name)
 }
 
-// RenderAssistantContent renders assistant text.
+// RenderAssistantContent renders assistant text with markdown styling.
 // Table blocks (pipe-delimited) are detected and rendered as box-drawing grids.
 // Inline @file and /command references are highlighted when commands is non-nil.
 func RenderAssistantContent(t Theme, content string, width int, commands []string) string {
-	if content == "" {
-		return ""
-	}
-	lines := strings.Split(content, "\n")
-	var b strings.Builder
-	doHL := len(commands) > 0
-	wrapWidth := width - 2
-	if wrapWidth < 10 {
-		wrapWidth = 10
-	}
-	i := 0
-	for i < len(lines) {
-		if isTableCandidate(lines, i) {
-			j := i + 1
-			for j < len(lines) && strings.Contains(lines[j], "|") {
-				j++
-			}
-			b.WriteString(renderTable(t, lines[i:j], width))
-			b.WriteString("\n")
-			i = j
-		} else {
-			wrapped := ansi.Hardwrap(lines[i], wrapWidth, true)
-			for _, subLine := range strings.Split(wrapped, "\n") {
-				if doHL {
-					b.WriteString(t.AssistantContent.Render("  "))
-					b.WriteString(HighlightInline(subLine, t.AssistantContent, t.FileRef, t.CmdRef, commands))
-				} else {
-					b.WriteString(t.AssistantContent.Render("  " + subLine))
-				}
-				b.WriteString("\n")
-			}
-			i++
-		}
-	}
-	return strings.TrimRight(b.String(), "\n")
+	return renderMarkdownContent(t, content, width, commands)
 }
 
 // PermissionOptions returns the permission option labels for a tool.
@@ -398,20 +363,6 @@ func wrapToolCard(t Theme, accent ToolAccent, content string, width int) string 
 	return card.Render(content)
 }
 
-func cardWidth(terminalWidth int) int {
-	if terminalWidth <= 0 {
-		return defaultCardWidth
-	}
-	w := terminalWidth - 6
-	if w < 36 {
-		w = 36
-	}
-	if w > defaultCardWidth {
-		w = defaultCardWidth
-	}
-	return w
-}
-
 func parseToolArgs(raw string) map[string]interface{} {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
@@ -422,7 +373,7 @@ func parseToolArgs(raw string) map[string]interface{} {
 
 func renderBashArgs(b *strings.Builder, t Theme, args map[string]interface{}) {
 	if title, ok := args["title"].(string); ok && title != "" {
-		b.WriteString(t.ToolMeta.Render("    " + title))
+		b.WriteString(t.ToolTitle.Render("    " + title))
 		b.WriteString("\n")
 	}
 	if cmd, ok := args["command"].(string); ok && cmd != "" {
@@ -446,33 +397,10 @@ func renderEditArgs(b *strings.Builder, t Theme, args map[string]interface{}, wi
 		return
 	}
 
-	oldLines := splitLines(oldStr)
-	newLines := splitLines(newStr)
-
-	if len(oldLines) > 0 {
-		b.WriteString(t.DiffContext.Render("    removed"))
+	diff := RenderEditDiff(t, oldStr, newStr, width)
+	if diff != "" {
+		b.WriteString(diff)
 		b.WriteString("\n")
-		for i, line := range oldLines {
-			counterpart := ""
-			if i < len(newLines) {
-				counterpart = newLines[i]
-			}
-			b.WriteString(renderDiffRemovedLine(t, "    − ", line, counterpart, width-8))
-			b.WriteString("\n")
-		}
-	}
-
-	if len(newLines) > 0 {
-		b.WriteString(t.DiffContext.Render("    added"))
-		b.WriteString("\n")
-		for i, line := range newLines {
-			counterpart := ""
-			if i < len(oldLines) {
-				counterpart = oldLines[i]
-			}
-			b.WriteString(renderDiffAddedLine(t, "    + ", line, counterpart, width-8))
-			b.WriteString("\n")
-		}
 	}
 }
 

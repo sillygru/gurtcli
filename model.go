@@ -370,7 +370,8 @@ func (m model) cmdGridDimensions() (numRows, numCols, colWidth int) {
 		return 0, 0, 0
 	}
 
-	availableWidth := m.width - 6
+	layout := ui.NewLayout(m.width, m.height)
+	availableWidth := layout.ContentWidth() - 2
 	if availableWidth < 8 {
 		availableWidth = 8
 	}

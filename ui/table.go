@@ -229,14 +229,14 @@ func renderTable(t Theme, block []string, width int) string {
 
 func buildTopBorder(cols []int) string {
 	var b strings.Builder
-	b.WriteString("┌")
+	b.WriteString("╭")
 	for i, w := range cols {
 		b.WriteString(strings.Repeat("─", w+2))
 		if i < len(cols)-1 {
 			b.WriteString("┬")
 		}
 	}
-	b.WriteString("┐")
+	b.WriteString("╮")
 	return b.String()
 }
 
@@ -255,14 +255,14 @@ func buildSepBorder(cols []int) string {
 
 func buildBottomBorder(cols []int) string {
 	var b strings.Builder
-	b.WriteString("└")
+	b.WriteString("╰")
 	for i, w := range cols {
 		b.WriteString(strings.Repeat("─", w+2))
 		if i < len(cols)-1 {
 			b.WriteString("┴")
 		}
 	}
-	b.WriteString("┘")
+	b.WriteString("╯")
 	return b.String()
 }
 
