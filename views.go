@@ -710,7 +710,7 @@ func (m model) chatView() string {
 	return b.String()
 }
 
-var workingSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
 
 var workingMessages = []string{
 	"Fidgeting with files",

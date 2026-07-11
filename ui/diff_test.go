@@ -77,11 +77,14 @@ func TestRenderEditDiffWide(t *testing.T) {
 	t.Parallel()
 	theme := DefaultTheme()
 	out := RenderEditDiff(theme, "a\nb\nc\nd", "a\nc\nd\ne", 120)
-	if !strings.Contains(out, "Before") || !strings.Contains(out, "After") {
-		t.Fatalf("expected panel labels, got: %q", out)
-	}
 	if !strings.Contains(stripANSI(out), "│") {
 		t.Fatalf("expected side-by-side gutter, got: %q", out)
+	}
+	if !strings.Contains(out, "a") || !strings.Contains(out, "c") || !strings.Contains(out, "d") {
+		t.Fatalf("expected context lines, got: %q", out)
+	}
+	if strings.Contains(out, "Before") || strings.Contains(out, "After") {
+		t.Fatalf("unexpected panel labels in output: %q", out)
 	}
 }
 
@@ -89,7 +92,10 @@ func TestRenderEditDiffNarrow(t *testing.T) {
 	t.Parallel()
 	theme := DefaultTheme()
 	out := RenderEditDiff(theme, "old\nline", "new\nline", 50)
-	if !strings.Contains(out, "Before") || !strings.Contains(out, "After") {
-		t.Fatalf("expected stacked sections, got: %q", out)
+	if !strings.Contains(out, "old") || !strings.Contains(out, "new") {
+		t.Fatalf("expected deleted and added content, got: %q", out)
+	}
+	if strings.Contains(out, "Before") || strings.Contains(out, "After") {
+		t.Fatalf("unexpected panel labels in output: %q", out)
 	}
 }

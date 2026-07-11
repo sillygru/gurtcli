@@ -314,6 +314,9 @@ type model struct {
 	messages         []llm.Message
 	chatInput        textarea.Model
 	chatViewport     viewport.Model
+	stableContent    string
+	stableMsgCount   int
+	msgRenders       []*string
 	isStreaming      bool
 	stickToBottom    bool
 	streamingContent *strings.Builder
@@ -431,7 +434,9 @@ func (m model) enterChatState() (model, tea.Cmd) {
 			}
 		}
 	}
-	m.chatViewport.SetContent(buildChatContentHighlighted(m))
+	m.stableContent = buildChatContent(m)
+	m.stableMsgCount = len(m.messages)
+	m.chatViewport.SetContent(m.stableContent)
 	m.chatViewport.GotoBottom()
 	m.state = stateChat
 	var cmds []tea.Cmd

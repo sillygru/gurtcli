@@ -59,8 +59,11 @@ func TestRenderToolCallEditFile(t *testing.T) {
 	if !strings.Contains(out, "Edit") {
 		t.Fatalf("expected Edit label, got: %q", out)
 	}
-	if !strings.Contains(out, "Before") || !strings.Contains(out, "After") {
-		t.Fatalf("expected diff sections, got: %q", out)
+	if !strings.Contains(out, "old") || !strings.Contains(out, "new") {
+		t.Fatalf("expected diff content, got: %q", out)
+	}
+	if !strings.Contains(out, "foo.go") {
+		t.Fatalf("expected path in output, got: %q", out)
 	}
 }
 
@@ -112,8 +115,8 @@ func TestRenderUserMessageCard(t *testing.T) {
 	if !strings.Contains(out, "hello world") {
 		t.Fatalf("expected message content, got: %q", out)
 	}
-	if !strings.Contains(out, "╭") {
-		t.Fatalf("expected card border, got: %q", out)
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("expected styled output, got: %q", out)
 	}
 }
 

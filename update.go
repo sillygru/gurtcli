@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -48,6 +49,8 @@ type toolResultMsg struct {
 
 var dateSuffixRegex = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
 
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
 // partialMouseEventRe matches the tail of a split SGR mouse sequence
 // (e.g. "<64;117;26M") that the input reader parsed as key runes.
 var partialMouseEventRe = regexp.MustCompile(`^<\d+;\d+;\d+[Mm]?$`)
@@ -79,7 +82,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatInput.SetWidth(msg.Width - 4)
 		m = m.adjustViewportHeight()
 		if m.state == stateChat {
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			m.stableContent = buildChatContent(m)
+			m.stableMsgCount = len(m.messages)
+			m.chatViewport.SetContent(m.stableContent)
 		}
 		return m, nil
 
@@ -267,7 +272,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamingContent.WriteString(msg.content)
 		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
 			m.lastStreamRender = time.Now()
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			if len(m.messages) != m.stableMsgCount || m.stableContent == "" {
+				m.stableContent = buildChatContent(m)
+				m.stableMsgCount = len(m.messages)
+			}
+			content := m.stableContent + renderStreamingPart(m)
+			if m.selection.active || m.selection.exists {
+				content = applySelectionHighlight(content, m.selection)
+			}
+			m.chatViewport.SetContent(content)
 			if m.stickToBottom {
 				m.chatViewport.GotoBottom()
 			}
@@ -286,7 +299,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
 			m.lastStreamRender = time.Now()
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			if len(m.messages) != m.stableMsgCount || m.stableContent == "" {
+				m.stableContent = buildChatContent(m)
+				m.stableMsgCount = len(m.messages)
+			}
+			content := m.stableContent + renderStreamingPart(m)
+			if m.selection.active || m.selection.exists {
+				content = applySelectionHighlight(content, m.selection)
+			}
+			m.chatViewport.SetContent(content)
 			if m.stickToBottom {
 				m.chatViewport.GotoBottom()
 			}
@@ -322,7 +343,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			asm.ToolCalls = msg.toolCalls
 			m.messages = append(m.messages, asm)
-			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			m.stableContent = buildChatContent(m)
+			m.stableMsgCount = len(m.messages)
+			m.chatViewport.SetContent(m.stableContent)
 			m.chatViewport.GotoBottom()
 			m.toolCallCycle++
 			if m.toolCallCycle > maxToolCallCycles {
@@ -332,7 +355,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Model:   m.modelName,
 				})
 				m.toolCallCycle = 0
-				m.chatViewport.SetContent(buildChatContentHighlighted(m))
+				m.stableContent = buildChatContent(m)
+				m.stableMsgCount = len(m.messages)
+				m.chatViewport.SetContent(m.stableContent)
 				m.chatViewport.GotoBottom()
 				m.chatInput.Focus()
 				if m.queuedMessage != "" {
@@ -351,7 +376,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.messages = append(m.messages, msg)
 		}
-		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		m.stableContent = buildChatContent(m)
+		m.stableMsgCount = len(m.messages)
+		m.chatViewport.SetContent(m.stableContent)
 		m.chatViewport.GotoBottom()
 		m.chatInput.Focus()
 		if m.queuedMessage != "" {
@@ -387,7 +414,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Content:    msg.content,
 			IsError:    msg.isError,
 		})
-		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		m.stableContent = buildChatContent(m)
+		m.stableMsgCount = len(m.messages)
+		m.chatViewport.SetContent(m.stableContent)
 		m.chatViewport.GotoBottom()
 		return m.executeNextTool()
 
@@ -397,8 +426,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.workingSpinnerIdx%40 == 0 {
 				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 			}
+			return m, workingTickCmd()
 		}
-		return m, workingTickCmd()
+		return m, nil
 
 	case toastTimeoutMsg:
 		if m.toast != nil && m.toast.id == msg.id {
@@ -1828,7 +1858,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 
-		cmds := []tea.Cmd{m.persistSessionCmd(), startChatStreamCmd(m)}
+		cmds := []tea.Cmd{m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd()}
 		if m.needsTitle {
 			m.needsTitle = false
 			cmds = append(cmds, generateTitleCmd(m))
@@ -1893,7 +1923,7 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
 		m = m.adjustViewportHeight()
-		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 	}
 
 	tc := m.toolQueue[0]
@@ -2621,15 +2651,15 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.workingMsg = "Downloading update..."
 		m.workingSpinnerIdx = 0
 		if m.latestVersion == "" {
-			return m, checkAndUpdateCmd()
+			return m, tea.Batch(checkAndUpdateCmd(), workingTickCmd())
 		}
-		return m, performUpdateCmd(m.latestVersion)
+		return m, tea.Batch(performUpdateCmd(m.latestVersion), workingTickCmd())
 
 	case "version":
 		m.isStreaming = true
 		m.workingMsg = "Checking for updates..."
 		m.workingSpinnerIdx = 0
-		return m, checkVersionCmd()
+		return m, tea.Batch(checkVersionCmd(), workingTickCmd())
 
 	default:
 		m.messages = append(m.messages, llm.Message{
@@ -2856,58 +2886,69 @@ func startChatStreamCmd(m model) tea.Cmd {
 			var pendingToolCalls []llm.ToolCall
 			doneSent := false
 			var debugEvents []debug.StreamEvent
-			for event := range events {
-				if m.debug {
-					e := debug.StreamEvent{Type: eventTypeName(event.Type)}
+			for {
+				select {
+				case <-ctx.Done():
+					if !doneSent {
+						globalProgram.Send(chatStreamDone{})
+					}
+					return
+				case event, ok := <-events:
+					if !ok {
+						if !doneSent {
+							globalProgram.Send(chatStreamDone{})
+							if m.debug {
+								debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
+							}
+						}
+						return
+					}
+					if m.debug {
+						e := debug.StreamEvent{Type: eventTypeName(event.Type)}
+						switch event.Type {
+						case llm.StreamDelta:
+							e.Content = event.Content
+						case llm.StreamReasoning:
+							e.Content = event.Content
+						case llm.StreamUsage:
+							e.InputTokens = event.InputTokens
+							e.OutputTokens = event.OutputTokens
+						case llm.StreamToolCalls:
+							e.ToolCalls = len(event.ToolCalls)
+						case llm.StreamError:
+							e.Error = event.Err.Error()
+						}
+						debugEvents = append(debugEvents, e)
+					}
 					switch event.Type {
 					case llm.StreamDelta:
-						e.Content = event.Content
+						globalProgram.Send(chatStreamChunk{content: event.Content})
 					case llm.StreamReasoning:
-						e.Content = event.Content
+						globalProgram.Send(chatStreamReasoning{content: event.Content})
 					case llm.StreamUsage:
-						e.InputTokens = event.InputTokens
-						e.OutputTokens = event.OutputTokens
+						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens})
 					case llm.StreamToolCalls:
-						e.ToolCalls = len(event.ToolCalls)
-					case llm.StreamError:
-						e.Error = event.Err.Error()
-					}
-					debugEvents = append(debugEvents, e)
-				}
-				switch event.Type {
-				case llm.StreamDelta:
-					globalProgram.Send(chatStreamChunk{content: event.Content})
-				case llm.StreamReasoning:
-					globalProgram.Send(chatStreamReasoning{content: event.Content})
-				case llm.StreamUsage:
-					globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens})
-				case llm.StreamToolCalls:
-					pendingToolCalls = event.ToolCalls
-				case llm.StreamDone:
-					if !doneSent {
-						calls := event.ToolCalls
-						if len(calls) == 0 && len(pendingToolCalls) > 0 {
-							calls = pendingToolCalls
+						pendingToolCalls = event.ToolCalls
+					case llm.StreamDone:
+						if !doneSent {
+							calls := event.ToolCalls
+							if len(calls) == 0 && len(pendingToolCalls) > 0 {
+								calls = pendingToolCalls
+							}
+							globalProgram.Send(chatStreamDone{toolCalls: calls})
+							doneSent = true
 						}
-						globalProgram.Send(chatStreamDone{toolCalls: calls})
-						doneSent = true
+						if m.debug {
+							debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
+						}
+						return
+					case llm.StreamError:
+						globalProgram.Send(chatStreamError{err: event.Err})
+						if m.debug {
+							debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
+						}
+						return
 					}
-					if m.debug {
-						debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
-					}
-					return
-				case llm.StreamError:
-					globalProgram.Send(chatStreamError{err: event.Err})
-					if m.debug {
-						debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
-					}
-					return
-				}
-			}
-			if !doneSent {
-				globalProgram.Send(chatStreamDone{})
-				if m.debug {
-					debug.SaveRecord(m.sessionID, m.modelName, req, debugEvents)
 				}
 			}
 		}()
@@ -2948,7 +2989,7 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
-	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m))
+	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 }
 
 func resourceMonitorTickCmd() tea.Cmd {
@@ -2958,7 +2999,7 @@ func resourceMonitorTickCmd() tea.Cmd {
 }
 
 func workingTickCmd() tea.Cmd {
-	delay := time.Duration(150+rand.Intn(150)) * time.Millisecond
+	delay := time.Duration(300+rand.Intn(300)) * time.Millisecond
 	return tea.Tick(delay, func(t time.Time) tea.Msg {
 		return workingTickMsg{}
 	})
@@ -3025,8 +3066,53 @@ func renderSystemPrompt(m model) (string, error) {
 	return buf.String(), nil
 }
 
+// renderStreamingPart builds only the currently-streaming assistant message
+// (label + reasoning + content). This avoids rebuilding all finalized messages
+// on every streaming chunk.
+func renderStreamingPart(m model) string {
+	streamingLen := 0
+	if m.streamingContent != nil {
+		streamingLen = m.streamingContent.Len()
+	}
+	reasoningLen := 0
+	if m.reasoning.content != nil {
+		reasoningLen = m.reasoning.content.Len()
+	}
+	if streamingLen == 0 && reasoningLen == 0 {
+		return ""
+	}
+	b := builderPool.Get().(*strings.Builder)
+	defer builderPool.Put(b)
+	b.Reset()
+	b.WriteString(ui.RenderAssistantLabel(m.theme, m.modelDisplayName()))
+	b.WriteString("\n")
+	if reasoningLen > 0 {
+		elapsed := m.reasoning.duration
+		if m.reasoning.active {
+			elapsed = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
+		}
+		content := ""
+		if m.reasoning.content != nil {
+			content = m.reasoning.content.String()
+		}
+		b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.chatViewport.Width()))
+		b.WriteString("\n")
+	}
+	if streamingLen > 0 && m.streamingContent != nil {
+		content := m.streamingContent.String()
+		if content != "" {
+			b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width(), commandNames()))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 func buildChatContent(m model) string {
-	var b strings.Builder
+	b := builderPool.Get().(*strings.Builder)
+	defer builderPool.Put(b)
+	b.Reset()
 	streamingLen := 0
 	if m.streamingContent != nil {
 		streamingLen = m.streamingContent.Len()
