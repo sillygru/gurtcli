@@ -598,25 +598,45 @@ func (m model) chatView() string {
 	if m.pendingPerm != nil {
 		tc := m.pendingPerm.toolCall
 
-		bashPrefix := ""
-		if tc.Function.Name == "run_bash" {
-			if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-				bashPrefix = tools.BashCommandPrefix(cmd)
+		// Sudo password input phase.
+		if m.pendingPerm.confirmSudo {
+			boxW := layout.PopupWidth()
+			pwBox := lipgloss.NewStyle().
+				Background(lipgloss.Color(m.theme.Base)).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color(m.theme.Mauve)).
+				Width(boxW).
+				Padding(1, 1)
+
+			var pwContent strings.Builder
+			pwContent.WriteString(m.theme.PermPrompt.Render("  Enter sudo password"))
+			pwContent.WriteString("\n\n")
+			pwContent.WriteString("  " + m.sudoPasswordInput.View())
+			pwContent.WriteString("\n\n")
+			pwContent.WriteString(m.theme.Dim.Render("  enter confirm • esc cancel"))
+
+			b.WriteString(pwBox.Render(pwContent.String()))
+		} else {
+			bashPrefix := ""
+			if tc.Function.Name == "run_bash" {
+				if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+					bashPrefix = tools.BashCommandPrefix(cmd)
+				}
 			}
+
+			boxW := layout.PopupWidth()
+			permBox := lipgloss.NewStyle().
+				Background(lipgloss.Color(m.theme.Base)).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color(m.theme.Mauve)).
+				Width(boxW).
+				Padding(1, 1)
+
+			content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath, m.pendingPerm.sudo) + "\n" +
+				m.theme.Dim.Render("  ↑/↓ navigate • enter select")
+
+			b.WriteString(permBox.Render(content))
 		}
-
-		boxW := layout.PopupWidth()
-		permBox := lipgloss.NewStyle().
-			Background(lipgloss.Color(m.theme.Base)).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.theme.Mauve)).
-			Width(boxW).
-			Padding(1, 1)
-
-		content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath) + "\n" +
-			m.theme.Dim.Render("  ↑/↓ navigate • enter select")
-
-		b.WriteString(permBox.Render(content))
 	} else if m.showThemePicker {
 		boxW := layout.PopupWidth()
 		popup := lipgloss.NewStyle().

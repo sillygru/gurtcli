@@ -106,3 +106,51 @@ func TestBashCommandPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSudoCommand(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "sudo with command", input: "sudo apt update", want: true},
+		{name: "sudo with flags", input: "sudo -E env", want: true},
+		{name: "sudo alone", input: "sudo", want: true},
+		{name: "sudo with leading space", input: "  sudo rm -rf /", want: true},
+		{name: "not sudo", input: "ls -la", want: false},
+		{name: "empty", input: "", want: false},
+		{name: "sudosomething", input: "sudosomething", want: false},
+		{name: "sudo as substring", input: "notsudo", want: false},
+		{name: "sudo in quotes", input: `echo "sudo"`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsSudoCommand(tt.input)
+			if got != tt.want {
+				t.Errorf("IsSudoCommand(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEscapeShellArg(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "simple", input: "hello", want: "'hello'"},
+		{name: "with single quote", input: "it's", want: `'it'\''s'`},
+		{name: "with spaces", input: "my password", want: "'my password'"},
+		{name: "empty", input: "", want: "''"},
+		{name: "multiple quotes", input: `a'b'c`, want: `'a'\''b'\''c'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EscapeShellArg(tt.input)
+			if got != tt.want {
+				t.Errorf("EscapeShellArg(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

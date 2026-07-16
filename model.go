@@ -196,9 +196,12 @@ type reasoningState struct {
 }
 
 type pendingPerm struct {
-	toolCall     llm.ToolCall
-	remaining    []llm.ToolCall
-	externalPath string // set when the prompt is about an external path
+	toolCall      llm.ToolCall
+	remaining     []llm.ToolCall
+	externalPath  string // set when the prompt is about an external path
+	sudo          bool   // true when the command starts with sudo and needs password
+	sudoPassword  string // populated after user enters password; cleared after use
+	confirmSudo   bool   // true after user has confirmed the sudo prompt (entering password phase)
 }
 
 type streamState struct {
@@ -272,6 +275,7 @@ type model struct {
 	toolCallCycle        int
 	pendingPerm          *pendingPerm
 	permCursor           int
+	sudoPasswordInput    textinput.Model
 
 	provider  string
 	modelName string
@@ -868,6 +872,13 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	allowIn.SetWidth(60)
 	allowIn.CharLimit = 200
 
+	sudoIn := textinput.New()
+	sudoIn.Placeholder = "enter sudo password"
+	sudoIn.EchoMode = textinput.EchoPassword
+	sudoIn.EchoCharacter = '•'
+	sudoIn.SetWidth(60)
+	sudoIn.CharLimit = 200
+
 	outputsDir := filepath.Join(wd, ".config", "gurtcli", "session-outputs")
 	if hd, err := os.UserHomeDir(); err == nil {
 		outputsDir = filepath.Join(hd, ".config", "gurtcli", "session-outputs")
@@ -901,6 +912,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		allowManageCursor:    0,
 		allowManageScroll:    0,
 		allowManageInput:     allowIn,
+		sudoPasswordInput:    sudoIn,
 		providerList:         pl,
 		providerDel:          &pd,
 		modelList:            ml,

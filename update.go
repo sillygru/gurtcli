@@ -90,7 +90,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		if m.state == stateChat {
-			if m.pendingPerm != nil || m.showThemePicker {
+			if m.pendingPerm != nil {
+				if m.pendingPerm.confirmSudo {
+					var cmd tea.Cmd
+					m.sudoPasswordInput, cmd = m.sudoPasswordInput.Update(msg)
+					return m, cmd
+				}
+				return m, nil
+			}
+			if m.showThemePicker {
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -1528,8 +1536,61 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.pendingPerm != nil {
+		// Sudo password input phase — capture keystrokes into the password field.
+		if m.pendingPerm.confirmSudo {
+			if msg.String() == "enter" {
+				pw := m.sudoPasswordInput.Value()
+				if pw == "" {
+					return m, nil
+				}
+				tc := m.pendingPerm.toolCall
+				remaining := m.pendingPerm.remaining
+
+				// Modify the command to pipe the password to sudo -S.
+				cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
+				if err == nil {
+					// Strip leading "sudo" from the command.
+					sudoCmd := strings.TrimSpace(cmd)
+					sudoCmd = strings.TrimPrefix(sudoCmd, "sudo")
+					sudoCmd = strings.TrimSpace(sudoCmd)
+					modifiedCmd := "echo " + tools.EscapeShellArg(pw) + " | sudo -S " + sudoCmd
+
+					// Rebuild tool call arguments.
+					var args tools.RunBashArgs
+					args.Command = modifiedCmd
+					args.Title, _ = tools.ExtractBashTitle(json.RawMessage(tc.Function.Arguments))
+					args.Timeout = 30000
+					if rawArgs, err := json.Marshal(args); err == nil {
+						tc.Function.Arguments = string(rawArgs)
+					}
+				}
+
+				m.pendingPerm = nil
+				m.permCursor = 0
+				m.sudoPasswordInput.SetValue("")
+				m.chatInput.Focus()
+				m = m.adjustViewportHeight()
+
+				m.toolQueue = append(m.toolQueue, tc)
+				return m.processToolCalls(remaining)
+			}
+
+			if msg.String() == "esc" {
+				m.pendingPerm = nil
+				m.permCursor = 0
+				m.sudoPasswordInput.SetValue("")
+				m.chatInput.Focus()
+				m = m.adjustViewportHeight()
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.sudoPasswordInput, cmd = m.sudoPasswordInput.Update(msg)
+			return m, cmd
+		}
+
 		tc := m.pendingPerm.toolCall
-		optionCount := len(ui.PermissionOptions(tc.Function.Name, "", m.pendingPerm.externalPath))
+		optionCount := len(ui.PermissionOptions(tc.Function.Name, "", m.pendingPerm.externalPath, m.pendingPerm.sudo))
 
 		switch msg.String() {
 		case "up":
@@ -1553,6 +1614,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			remaining := m.pendingPerm.remaining
 			externalPath := m.pendingPerm.externalPath
+			isSudo := m.pendingPerm.sudo
 			cursor := m.permCursor
 			m.pendingPerm = nil
 			m.permCursor = 0
@@ -1607,9 +1669,27 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 			switch cursor {
 			case 0: // Yes
+				// If this is a sudo prompt, enter password input phase.
+				if isSudo {
+					m.pendingPerm = &pendingPerm{
+						toolCall:    tc,
+						remaining:   remaining,
+						sudo:        true,
+						confirmSudo: true,
+					}
+					m.chatInput.Blur()
+					m.sudoPasswordInput.Focus()
+					m.sudoPasswordInput.SetValue("")
+					m = m.adjustViewportHeight()
+					return m, nil
+				}
 				m.toolQueue = append(m.toolQueue, tc)
 				return m.processToolCalls(remaining)
 			case 1:
+				// For sudo, option 1 is "No".
+				if isSudo {
+					return deny()
+				}
 				switch name {
 				case "run_bash":
 					if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
@@ -2037,9 +2117,38 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// In YOLO mode, reject sudo commands instead of running them.
+		if (m.yolo || m.alwaysAllowPerms) && tc.Function.Name == "run_bash" {
+			if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil && tools.IsSudoCommand(cmd) {
+				m.messages = append(m.messages, llm.Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    "sudo commands are not allowed in YOLO mode",
+				})
+				m.toolCallCycle = 0
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
+				m.chatViewport.GotoBottom()
+				return m, m.persistSessionCmd()
+			}
+		}
+
 		if !m.yolo && !m.alwaysAllowPerms && tc.Function.Name == "run_bash" {
 			cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
 			if err == nil {
+				// Check if the command uses sudo.
+				if tools.IsSudoCommand(cmd) {
+					m.pendingPerm = &pendingPerm{
+						toolCall:  tc,
+						remaining: tcs[i+1:],
+						sudo:      true,
+					}
+					m.chatViewport.SetContent(buildChatContentHighlighted(m))
+					m.chatViewport.GotoBottom()
+					m.chatInput.Blur()
+					m = m.adjustViewportHeight()
+					return m, m.persistSessionCmd()
+				}
+
 				matched := false
 				for prefix := range m.allowedBashPrefixesSession {
 					if strings.HasPrefix(cmd, prefix) {
@@ -2077,6 +2186,15 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			if tc.Function.Name == "read_file" || tc.Function.Name == "write_file" ||
 				tc.Function.Name == "edit_file" || tc.Function.Name == "delete_file" {
 				if filePath, err := tools.ExtractFileToolPath(tc.Function.Name, json.RawMessage(tc.Function.Arguments)); err == nil && tools.IsPathOutsideWorkspace(m.workspaceRoot, filePath) {
+					// Skip prompt if the path is within the session outputs directory.
+					cleanPath := filepath.Clean(filePath)
+					if m.sessionOutputsDir != "" {
+						cleanOutputsDir := filepath.Clean(m.sessionOutputsDir)
+						if strings.HasPrefix(cleanPath, cleanOutputsDir) {
+							m.toolQueue = append(m.toolQueue, tc)
+							continue
+						}
+					}
 					fileDir := filepath.Dir(filePath)
 					if !filepath.IsAbs(fileDir) {
 						fileDir = filepath.Join(m.workspaceRoot, fileDir)
@@ -2792,6 +2910,24 @@ func (m model) adjustViewportHeight() model {
 }
 
 func (m model) permOverlayHeight() int {
+	// Sudo password input phase has a simpler height.
+	if m.pendingPerm.confirmSudo {
+		boxW := ui.NewLayout(m.width, m.height).PopupWidth()
+		var pwContent strings.Builder
+		pwContent.WriteString(m.theme.PermPrompt.Render("  Enter sudo password"))
+		pwContent.WriteString("\n\n")
+		pwContent.WriteString("  " + m.sudoPasswordInput.View())
+		pwContent.WriteString("\n\n")
+		pwContent.WriteString(m.theme.Dim.Render("  enter confirm • esc cancel"))
+		box := lipgloss.NewStyle().
+			Background(lipgloss.Color(m.theme.Base)).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(m.theme.Mauve)).
+			Width(boxW).
+			Padding(1, 1)
+		return strings.Count(box.Render(pwContent.String()), "\n") + 1
+	}
+
 	tc := m.pendingPerm.toolCall
 	bashPrefix := ""
 	if tc.Function.Name == "run_bash" {
@@ -2799,7 +2935,7 @@ func (m model) permOverlayHeight() int {
 			bashPrefix = tools.BashCommandPrefix(cmd)
 		}
 	}
-	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath) + "\n" +
+	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath, m.pendingPerm.sudo) + "\n" +
 		m.theme.Dim.Render("  ↑/↓ navigate • enter select")
 	boxW := ui.NewLayout(m.width, m.height).PopupWidth()
 	box := lipgloss.NewStyle().

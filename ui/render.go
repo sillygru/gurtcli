@@ -262,7 +262,14 @@ func RenderAssistantContent(t Theme, content string, width int, commands []strin
 // This is the single source of truth for option count and order.
 // bashPrefix is embedded for run_bash labels.
 // externalPath is non-empty when the tool targets a path outside the workspace.
-func PermissionOptions(toolName, bashPrefix, externalPath string) []string {
+// sudo is true when the command starts with "sudo".
+func PermissionOptions(toolName, bashPrefix, externalPath string, sudo bool) []string {
+	if sudo {
+		return []string{
+			"Yes, enter sudo password",
+			"No",
+		}
+	}
 	if externalPath != "" {
 		return []string{
 			"Yes",
@@ -305,14 +312,20 @@ func PermissionOptions(toolName, bashPrefix, externalPath string) []string {
 // cursor is the index of the currently selected option.
 // bashPrefix is the command prefix to display in bash-related options, if any.
 // externalPath is the external file path being accessed, if any (triggers external access prompt).
-func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string, externalPath string) string {
+// sudo is true when the command starts with "sudo" (shows a simplified prompt).
+func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string, externalPath string, sudo bool) string {
 	content := RenderToolCall(t, tc, width) + "\n\n"
-	if externalPath != "" {
+	if sudo {
+		content += t.PermPrompt.Render("  This command requires sudo (administrator privileges).")
+		content += "\n"
+		content += t.PermPrompt.Render("  You will be asked to enter your password if you approve.")
+		content += "\n\n"
+	} else if externalPath != "" {
 		content += t.PermPrompt.Render("  External path: " + externalPath)
 		content += "\n\n"
 	}
 
-	options := PermissionOptions(tc.Function.Name, bashPrefix, externalPath)
+	options := PermissionOptions(tc.Function.Name, bashPrefix, externalPath, sudo)
 
 	b := new(strings.Builder)
 	b.WriteString(content)

@@ -114,10 +114,19 @@ type deleteFileArgs struct {
 	FilePath string `json:"filePath"`
 }
 
-type runBashArgs struct {
+type RunBashArgs struct {
 	Command string `json:"command"`
 	Timeout int    `json:"timeout"`
 	Title   string `json:"title"`
+}
+
+// EscapeShellArg escapes a string for safe use in a single-quoted shell argument.
+// It handles the case where the string contains single quotes by ending the quote,
+// inserting an escaped quote, and resuming.
+func EscapeShellArg(s string) string {
+	// Replace each ' with '\'' (end quote, escaped quote, start quote)
+	escaped := strings.ReplaceAll(s, "'", "'\\''")
+	return "'" + escaped + "'"
 }
 
 func Definitions() []llm.Tool {
@@ -266,7 +275,7 @@ func Execute(ctx context.Context, name string, args json.RawMessage, opts Option
 		return DeleteFile(opts.WorkspaceRoot, a.FilePath, opts.AllowedExternalDirs)
 
 	case "run_bash":
-		var a runBashArgs
+		var a RunBashArgs
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("invalid run_bash arguments: %w", err)
 		}
@@ -292,6 +301,13 @@ func IsDestructive(name string) bool {
 	default:
 		return false
 	}
+}
+
+// IsSudoCommand checks whether a command starts with "sudo" (after stripping leading whitespace).
+func IsSudoCommand(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	return strings.HasPrefix(trimmed, "sudo") &&
+		(len(trimmed) == 4 || trimmed[4] == ' ' || trimmed[4] == '\t')
 }
 
 // DefaultSafeBashPrefixes returns the built-in set of safe (read-only) command prefixes.
@@ -340,7 +356,7 @@ done:
 
 // ExtractBashCommand parses a run_bash tool call arguments and returns the command string.
 func ExtractBashCommand(args json.RawMessage) (string, error) {
-	var a runBashArgs
+	var a RunBashArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid run_bash arguments: %w", err)
 	}
@@ -349,7 +365,7 @@ func ExtractBashCommand(args json.RawMessage) (string, error) {
 
 // ExtractBashTitle parses a run_bash tool call arguments and returns the title.
 func ExtractBashTitle(args json.RawMessage) (string, error) {
-	var a runBashArgs
+	var a RunBashArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid run_bash arguments: %w", err)
 	}
