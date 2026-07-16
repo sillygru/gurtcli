@@ -1605,6 +1605,17 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.permCursor = 0
 			}
 			return m, nil
+		case "pgup":
+			scrollStep := 5
+			m.permScroll -= scrollStep
+			if m.permScroll < 0 {
+				m.permScroll = 0
+			}
+			return m, nil
+		case "pgdown":
+			scrollStep := 5
+			m.permScroll += scrollStep
+			return m, nil
 		case "esc":
 			m.pendingPerm = nil
 			m.permCursor = 0
@@ -1677,6 +1688,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 						sudo:        true,
 						confirmSudo: true,
 					}
+					m.permScroll = 0
 					m.chatInput.Blur()
 					m.sudoPasswordInput.Focus()
 					m.sudoPasswordInput.SetValue("")
@@ -2142,6 +2154,7 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 						remaining: tcs[i+1:],
 						sudo:      true,
 					}
+					m.permScroll = 0
 					m.chatViewport.SetContent(buildChatContentHighlighted(m))
 					m.chatViewport.GotoBottom()
 					m.chatInput.Blur()
@@ -2205,6 +2218,7 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 							remaining:    tcs[i+1:],
 							externalPath: filePath,
 						}
+						m.permScroll = 0
 						m.chatViewport.SetContent(buildChatContentHighlighted(m))
 						m.chatViewport.GotoBottom()
 						m.chatInput.Blur()
@@ -2220,6 +2234,7 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 				toolCall:  tc,
 				remaining: tcs[i+1:],
 			}
+			m.permScroll = 0
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			m.chatViewport.GotoBottom()
 			m.chatInput.Blur()
@@ -2928,23 +2943,24 @@ func (m model) permOverlayHeight() int {
 		return strings.Count(box.Render(pwContent.String()), "\n") + 1
 	}
 
-	tc := m.pendingPerm.toolCall
-	bashPrefix := ""
-	if tc.Function.Name == "run_bash" {
-		if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-			bashPrefix = tools.BashCommandPrefix(cmd)
-		}
+	// Compute a capped height for the permission overlay.
+	// Fixed overhead: border(2) + padding(2) + header(1) + blank(1) + "Allow this action?"(1) + blank(1) + options(3-6) + help(1) = 12-15
+	// sudo/ext info adds ~3 lines
+	overhead := 14
+	if m.pendingPerm.sudo {
+		overhead += 3
+	} else if m.pendingPerm.externalPath != "" {
+		overhead += 3
 	}
-	content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath, m.pendingPerm.sudo) + "\n" +
-		m.theme.Dim.Render("  ↑/↓ navigate • enter select")
-	boxW := ui.NewLayout(m.width, m.height).PopupWidth()
-	box := lipgloss.NewStyle().
-		Background(lipgloss.Color(m.theme.Base)).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.theme.Mauve)).
-		Width(boxW).
-		Padding(1, 1)
-	return strings.Count(box.Render(content), "\n") + 1
+	maxBodyLines := m.height - overhead - 6 // reserve 6 for header/rule/toast/etc
+	if maxBodyLines < 3 {
+		maxBodyLines = 3
+	}
+	if maxBodyLines > 30 {
+		maxBodyLines = 30
+	}
+	// Body lines + scroll info + blank
+	return overhead + maxBodyLines + 1
 }
 
 func (m model) themePickerOverlayHeight() int {

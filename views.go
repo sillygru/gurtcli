@@ -632,8 +632,26 @@ func (m model) chatView() string {
 				Width(boxW).
 				Padding(1, 1)
 
-			content := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath, m.pendingPerm.sudo) + "\n" +
-				m.theme.Dim.Render("  ↑/↓ navigate • enter select")
+			// Calculate available height for the popup body.
+			// Fixed overhead: brand(1) + rule(1) + spacer(1) + toast(1) + rule(1) + help(1) = 6
+			// Popup border(2) + padding(2) = 4
+			// Popup overhead: header(1) + blank(1) + "Allow"(1) + blank(1) + options(5-6) + scrollInfo(1) = 10-11
+			// sudo/ext info adds ~3 more lines
+			overhead := 6 + 4 + 10
+			if m.pendingPerm.sudo {
+				overhead += 3 // sudo info lines
+			} else if m.pendingPerm.externalPath != "" {
+				overhead += 3 // external path info lines
+			}
+			maxBodyLines := m.height - overhead
+			if maxBodyLines < 3 {
+				maxBodyLines = 3
+			}
+
+			content, totalLines := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath, m.pendingPerm.sudo, m.permScroll, maxBodyLines)
+			m.permScrollTotal = totalLines
+			content += "\n" +
+				m.theme.Dim.Render("  ↑/↓ navigate • enter select • pgup/pgdn scroll")
 
 			b.WriteString(permBox.Render(content))
 		}

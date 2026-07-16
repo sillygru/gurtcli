@@ -275,6 +275,8 @@ type model struct {
 	toolCallCycle        int
 	pendingPerm          *pendingPerm
 	permCursor           int
+	permScroll           int
+	permScrollTotal      int
 	sudoPasswordInput    textinput.Model
 
 	provider  string
@@ -912,6 +914,8 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		allowManageCursor:    0,
 		allowManageScroll:    0,
 		allowManageInput:     allowIn,
+		permScroll:           0,
+		permScrollTotal:      0,
 		sudoPasswordInput:    sudoIn,
 		providerList:         pl,
 		providerDel:          &pd,
@@ -1008,6 +1012,8 @@ func (m model) applySession(s *sessions.Session) model {
 	m.reasoning.visible = s.ReasoningVisible
 	m.toolCallCycle = 0
 	m.pendingPerm = nil
+	m.permCursor = 0
+	m.permScroll = 0
 	m.queuedMessage = ""
 	m.isStreaming = false
 	m.streamingContent = nil
@@ -1023,6 +1029,8 @@ func (m model) resetToNewSession() model {
 	m.messages = []llm.Message{}
 	m.toolCallCycle = 0
 	m.pendingPerm = nil
+	m.permCursor = 0
+	m.permScroll = 0
 	m.queuedMessage = ""
 	m.isStreaming = false
 	m.streamingContent = nil

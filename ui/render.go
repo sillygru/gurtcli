@@ -313,22 +313,99 @@ func PermissionOptions(toolName, bashPrefix, externalPath string, sudo bool) []s
 // bashPrefix is the command prefix to display in bash-related options, if any.
 // externalPath is the external file path being accessed, if any (triggers external access prompt).
 // sudo is true when the command starts with "sudo" (shows a simplified prompt).
-func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string, externalPath string, sudo bool) string {
-	content := RenderToolCall(t, tc, width) + "\n\n"
+// scrollOffset is the number of lines to skip in the tool call body preview.
+// maxBodyLines is the maximum number of body lines to show (0 = unlimited).
+// Returns the rendered content and the total number of body lines available.
+func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string, externalPath string, sudo bool, scrollOffset int, maxBodyLines int) (string, int) {
+	// Render the tool call header only (always visible).
+	accent := t.ToolAccentFor(tc.Function.Name)
+	header := renderToolHeader(t, accent)
+
+	// Render the body separately so we can truncate it.
+	args := parseToolArgs(tc.Function.Arguments)
+	var fullBody strings.Builder
+	switch tc.Function.Name {
+	case "run_bash":
+		renderBashArgs(&fullBody, t, args)
+	case "edit_file":
+		renderEditArgs(&fullBody, t, args, width)
+	case "write_file":
+		renderWriteArgs(&fullBody, t, args)
+	case "delete_file":
+		renderDeleteArgs(&fullBody, t, args)
+	default:
+		renderGenericArgs(&fullBody, t, args)
+	}
+
+	bodyStr := fullBody.String()
+	bodyLines := 0
+	if bodyStr != "" {
+		bodyLines = strings.Count(bodyStr, "\n") + 1
+	}
+
+	// Special case: read_file is rendered as a single line (no card).
+	if tc.Function.Name == "read_file" {
+		bodyStr = ""
+		bodyLines = 0
+	}
+
+	// Truncate body to the visible window.
+	visibleBody := bodyStr
+	totalLines := bodyLines
+	scrollInfo := ""
+	if maxBodyLines > 0 && bodyLines > maxBodyLines {
+		// Calculate the visible slice.
+		startLine := scrollOffset
+		endLine := scrollOffset + maxBodyLines
+		if endLine > bodyLines {
+			endLine = bodyLines
+		}
+
+		// Split body into lines and take the slice.
+		lines := strings.Split(bodyStr, "\n")
+		if startLine >= len(lines) {
+			startLine = len(lines) - maxBodyLines
+			if startLine < 0 {
+				startLine = 0
+			}
+		}
+		if startLine > 0 || endLine < bodyLines {
+			visibleBody = strings.Join(lines[startLine:endLine], "\n")
+			if visibleBody != "" {
+				visibleBody += "\n"
+			}
+			remaining := bodyLines - endLine
+			if remaining < 0 {
+				remaining = 0
+			}
+			scrollInfo = t.PermPrompt.Render(fmt.Sprintf("  [%d-%d of %d lines — pgup/pgdn scroll]", startLine+1, endLine, bodyLines))
+		}
+	}
+
+	// Build the content.
+	b := new(strings.Builder)
+	b.WriteString(header)
+	if bodyStr != "" {
+		b.WriteString("\n")
+		b.WriteString(visibleBody)
+	}
+	if scrollInfo != "" {
+		b.WriteString(scrollInfo)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
 	if sudo {
-		content += t.PermPrompt.Render("  This command requires sudo (administrator privileges).")
-		content += "\n"
-		content += t.PermPrompt.Render("  You will be asked to enter your password if you approve.")
-		content += "\n\n"
+		b.WriteString(t.PermPrompt.Render("  This command requires sudo (administrator privileges)."))
+		b.WriteString("\n")
+		b.WriteString(t.PermPrompt.Render("  You will be asked to enter your password if you approve."))
+		b.WriteString("\n\n")
 	} else if externalPath != "" {
-		content += t.PermPrompt.Render("  External path: " + externalPath)
-		content += "\n\n"
+		b.WriteString(t.PermPrompt.Render("  External path: " + externalPath))
+		b.WriteString("\n\n")
 	}
 
 	options := PermissionOptions(tc.Function.Name, bashPrefix, externalPath, sudo)
-
-	b := new(strings.Builder)
-	b.WriteString(content)
 	b.WriteString(t.PermPrompt.Render("  Allow this action?"))
 	b.WriteString("\n\n")
 	for i, opt := range options {
@@ -341,7 +418,7 @@ func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bas
 		b.WriteString(style.Render(prefix + opt))
 		b.WriteString("\n")
 	}
-	return b.String()
+	return b.String(), totalLines
 }
 
 func renderToolHeader(t Theme, accent ToolAccent) string {
