@@ -473,7 +473,7 @@ func toolResultPreview(content, toolName string) string {
 	}
 
 	switch toolName {
-	case "read_file":
+	case "read_file", "edit_file":
 		return ""
 	case "run_bash":
 		return joinPreviewLines(lines, maxBashResultLines)

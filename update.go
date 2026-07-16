@@ -2699,8 +2699,9 @@ func (m model) updateSuggestions() model {
 
 			if m.filesCached && len(m.fileList) > 0 {
 				var matches []suggestionItem
+				afterAtLower := strings.ToLower(afterAt)
 				for _, f := range m.fileList {
-					if strings.HasPrefix(f, afterAt) {
+					if strings.Contains(strings.ToLower(f), afterAtLower) {
 						matches = append(matches, suggestionItem{name: f})
 					}
 				}

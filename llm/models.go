@@ -290,9 +290,16 @@ func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]Model
 
 	models := make([]ModelInfo, 0, len(result.Data))
 	for _, m := range result.Data {
-		if m.ID != "" {
-			models = append(models, m)
+		if m.ID == "" {
+			continue
 		}
+		if provider == ProviderOpenAI {
+			idLower := strings.ToLower(m.ID)
+			if strings.Contains(idLower, "instruct") || strings.Contains(idLower, "pro") {
+				continue
+			}
+		}
+		models = append(models, m)
 	}
 
 	if len(models) == 0 {

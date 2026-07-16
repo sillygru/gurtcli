@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bufio"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -79,10 +80,119 @@ func IsHomeDir(root string) bool {
 	return cleanRoot == cleanHome
 }
 
+type gitignorePattern struct {
+	pattern string
+	negate  bool
+	// baseDir is the relative path of the directory containing this .gitignore
+	// (empty string for root). Used to scope patterns correctly.
+	baseDir string
+}
+
+func loadGitignorePatterns(dirPath, baseDirRel string) ([]gitignorePattern, error) {
+	f, err := os.Open(filepath.Join(dirPath, ".gitignore"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var patterns []gitignorePattern
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		negate := false
+		if strings.HasPrefix(line, "!") {
+			negate = true
+			line = line[1:]
+		}
+		// Strip trailing slash for directory-only patterns
+		line = strings.TrimSuffix(line, "/")
+
+		// Patterns from subdirectory .gitignore need to be scoped.
+		// If the pattern contains a slash (after stripping leading ! and /**),
+		// it's relative to the .gitignore location, so we prepend baseDir.
+		// If it has no slash, it matches against the basename (works globally).
+		effective := line
+		if baseDirRel != "" && strings.Contains(line, "/") {
+			effective = baseDirRel + "/" + line
+		}
+		patterns = append(patterns, gitignorePattern{pattern: effective, negate: negate, baseDir: baseDirRel})
+	}
+	return patterns, scanner.Err()
+}
+
+func matchesGitignorePattern(relPath string, patterns []gitignorePattern) bool {
+	matched := false
+	for _, p := range patterns {
+		// Try matching against the full relative path
+		if match, _ := filepath.Match(p.pattern, relPath); match {
+			matched = !p.negate
+			continue
+		}
+		// Try matching the basename (for patterns without a slash)
+		if !strings.Contains(p.pattern, "/") {
+			base := filepath.Base(relPath)
+			if match, _ := filepath.Match(p.pattern, base); match {
+				matched = !p.negate
+				continue
+			}
+		}
+		// Try matching with leading **/
+		if strings.HasPrefix(p.pattern, "**/") {
+			suffix := p.pattern[3:]
+			if match, _ := filepath.Match(suffix, relPath); match {
+				matched = !p.negate
+				continue
+			}
+			// Also check basename with **/
+			base := filepath.Base(relPath)
+			if match, _ := filepath.Match(suffix, base); match {
+				matched = !p.negate
+				continue
+			}
+		}
+		// Try matching a prefix (directory-only pattern, e.g. "build" matches "build/foo.o")
+		if strings.HasPrefix(relPath, p.pattern+"/") || relPath == p.pattern {
+			matched = !p.negate
+			continue
+		}
+		// Try matching a pattern with a directory component (e.g. "build/*.o")
+		baseName := filepath.Base(relPath)
+		basePattern := filepath.Base(p.pattern)
+		dirPattern := filepath.Dir(p.pattern)
+		dirName := filepath.Dir(relPath)
+		if dirPattern == "." {
+			dirPattern = ""
+		}
+		if strings.HasPrefix(dirName, dirPattern) || dirPattern == "" {
+			if match, _ := filepath.Match(basePattern, baseName); match {
+				matched = !p.negate
+				continue
+			}
+		}
+	}
+	return matched
+}
+
+// dirPatterns holds the gitignore patterns loaded from a specific directory.
+type dirPatterns struct {
+	dirRel   string // relative path of the directory (empty for root)
+	patterns []gitignorePattern
+}
+
 func WalkWorkspace(root string, maxFiles int) ([]string, error) {
 	cleanRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		cleanRoot = root
+	}
+
+	// Load root .gitignore
+	rootPatterns, _ := loadGitignorePatterns(cleanRoot, "")
+	var patternStack []dirPatterns
+	if len(rootPatterns) > 0 {
+		patternStack = append(patternStack, dirPatterns{dirRel: "", patterns: rootPatterns})
 	}
 
 	var files []string
@@ -104,14 +214,43 @@ func WalkWorkspace(root string, maxFiles int) ([]string, error) {
 			return nil
 		}
 
+		// Pop patterns from the stack that are no longer ancestors of the current path
+		for len(patternStack) > 1 {
+			top := patternStack[len(patternStack)-1].dirRel
+			if top == "" {
+				break // root is always an ancestor
+			}
+			if rel == top || strings.HasPrefix(rel, top+"/") {
+				break
+			}
+			patternStack = patternStack[:len(patternStack)-1]
+		}
+
+		// Build active patterns from the stack (root first, then nested)
+		var activePatterns []gitignorePattern
+		for _, dp := range patternStack {
+			activePatterns = append(activePatterns, dp.patterns...)
+		}
+
 		if d.IsDir() {
 			if isSkippedDir(d.Name()) {
 				return fs.SkipDir
+			}
+			if matchesGitignorePattern(rel+"/", activePatterns) {
+				return fs.SkipDir
+			}
+			// Load subdirectory .gitignore (if any) and push onto stack
+			if subPatterns, err := loadGitignorePatterns(path, rel); err == nil && len(subPatterns) > 0 {
+				patternStack = append(patternStack, dirPatterns{dirRel: rel, patterns: subPatterns})
 			}
 			return nil
 		}
 
 		if isMediaFile(d.Name()) {
+			return nil
+		}
+
+		if matchesGitignorePattern(rel, activePatterns) {
 			return nil
 		}
 

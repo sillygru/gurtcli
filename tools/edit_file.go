@@ -40,5 +40,9 @@ func countLines(s string) int {
 	if s == "" {
 		return 0
 	}
-	return strings.Count(s, "\n") + 1
+	lines := strings.Split(s, "\n")
+	if lines[len(lines)-1] == "" {
+		return len(lines) - 1
+	}
+	return len(lines)
 }
