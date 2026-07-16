@@ -1430,8 +1430,9 @@ func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	cmds := m.alwaysAllowCommandPrefixes
 	if len(cmds) == 0 {
 		if msg.String() == "esc" {
-			m2, cmd := m.enterChatState()
-	return m2, cmd
+			m.state = stateChat
+			m.chatInput.Focus()
+			return m, nil
 		}
 		return m, nil
 	}
@@ -1484,8 +1485,9 @@ func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "esc":
-		m2, cmd := m.enterChatState()
-	return m2, cmd
+		m.state = stateChat
+		m.chatInput.Focus()
+		return m, nil
 	}
 
 	// Adjust scroll to keep cursor row in view
@@ -1825,7 +1827,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if isCommand {
 				cmd := strings.TrimPrefix(strings.Fields(input)[0], "/")
 				switch cmd {
-				case "show-reasoning", "theme", "version", "help", "telemetry", "reasoning", "effort":
+				case "show-reasoning", "theme", "version", "help", "telemetry", "reasoning", "effort", "allow", "auth":
 					return m.handleSlashCommand(input)
 				}
 			} else {
@@ -1922,6 +1924,9 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 	if len(m.toolQueue) == 0 {
 		m.toolCallCycle = 0
+		if m.queuedMessage != "" {
+			return m.replayQueuedMessage()
+		}
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
@@ -2282,6 +2287,8 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		"telemetry":      true,
 		"reasoning":      true,
 		"effort":         true,
+		"allow":          true,
+		"auth":           true,
 	}
 
 	if m.isStreaming && !streamingSafe[cmd] {
@@ -2869,9 +2876,14 @@ func startChatStreamCmd(m model) tea.Cmd {
 			maxTokens = info.MaxTokens
 		}
 
+		msgs := stripReasoning(filterInternal(m.messages))
+		if attachments := collectFileAttachments(m, msgs); attachments != "" {
+			systemPrompt += "\n\n## Attached Files\n\n" + attachments
+		}
+
 		req := llm.ChatRequest{
 			Model:           m.modelName,
-			Messages:        injectFileAttachments(m, stripReasoning(filterInternal(m.messages))),
+			Messages:        msgs,
 			SystemPrompt:    systemPrompt,
 			Tools:           tools.Definitions(),
 			Thinking:        thinkingCfg,
@@ -3003,8 +3015,7 @@ func resourceMonitorTickCmd() tea.Cmd {
 }
 
 func workingTickCmd() tea.Cmd {
-	delay := time.Duration(300+rand.Intn(300)) * time.Millisecond
-	return tea.Tick(delay, func(t time.Time) tea.Msg {
+	return tea.Tick(450*time.Millisecond, func(t time.Time) tea.Msg {
 		return workingTickMsg{}
 	})
 }
@@ -3176,11 +3187,20 @@ func buildChatContent(m model) string {
 			}
 if len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
-				if i+1 < len(m.messages) && m.messages[i+1].Role == "tool" && m.messages[i+1].ToolCallID == tc.ID {
-					b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[i+1].Content, m.chatViewport.Width(), m.messages[i+1].IsError))
-					b.WriteString("\n")
-					skipResultIDs[tc.ID] = true
-				} else {
+				// Search forward through subsequent messages to find the matching tool result.
+				// Tool results are stored sequentially after the assistant message in the order
+				// they were executed, not necessarily in the same order as the ToolCalls array.
+				found := false
+				for j := i + 1; j < len(m.messages); j++ {
+					if m.messages[j].Role == "tool" && m.messages[j].ToolCallID == tc.ID {
+						b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[j].Content, m.chatViewport.Width(), m.messages[j].IsError))
+						b.WriteString("\n")
+						skipResultIDs[tc.ID] = true
+						found = true
+						break
+					}
+				}
+				if !found {
 					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
 					b.WriteString("\n")
 				}
@@ -3268,20 +3288,20 @@ func stripReasoning(msgs []llm.Message) []llm.Message {
 	return out
 }
 
-func injectFileAttachments(m model, msgs []llm.Message) []llm.Message {
+func collectFileAttachments(m model, msgs []llm.Message) string {
 	if len(msgs) == 0 || m.workspaceRoot == "" || files.IsHomeDir(m.workspaceRoot) {
-		return msgs
+		return ""
 	}
 
 	lastIdx := len(msgs) - 1
 	lastMsg := msgs[lastIdx]
 	if lastMsg.Role != "user" {
-		return msgs
+		return ""
 	}
 
 	matches := atFileRefRe.FindAllStringSubmatch(lastMsg.Content, -1)
 	if len(matches) == 0 {
-		return msgs
+		return ""
 	}
 
 	var attachments strings.Builder
@@ -3296,15 +3316,7 @@ func injectFileAttachments(m model, msgs []llm.Message) []llm.Message {
 		attachments.WriteString(fmt.Sprintf("Contents of %s:\n```%s\n%s\n```\n\n", relPath, lang, content))
 	}
 
-	if attachments.Len() == 0 {
-		return msgs
-	}
-
-	msgs[lastIdx] = llm.Message{
-		Role:    "user",
-		Content: attachments.String() + lastMsg.Content,
-	}
-	return msgs
+	return attachments.String()
 }
 
 func eventTypeName(t llm.StreamEventType) string {
