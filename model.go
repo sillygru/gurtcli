@@ -340,6 +340,7 @@ type model struct {
 	suggestions           suggestionState
 	fileList              []string
 	filesCached           bool
+	lastDateMessage       string
 	history               []string
 	historyIndex          int
 	historyDraft          string
@@ -1041,6 +1042,7 @@ func (m model) resetToNewSession() model {
 	m.reasoningOutputTokens = 0
 	m.fileList = nil
 	m.filesCached = false
+	m.lastDateMessage = ""
 	return m.initNewSession()
 }
 

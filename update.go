@@ -396,11 +396,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatStreamUsage:
 		if msg.inputTokens > 0 {
-			if msg.inputTokens >= m.contextInputTokens {
-				m.contextInputTokens = msg.inputTokens
-			} else {
-				m.contextInputTokens += msg.inputTokens
-			}
+			// contextInputTokens tracks the total prompt tokens for the
+			// most recent request (the API returns the full total, not a delta).
+			m.contextInputTokens = msg.inputTokens
 			m.inputTokens += msg.inputTokens
 		}
 		if msg.outputTokens > 0 {
@@ -1947,6 +1945,11 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.historyDraft = ""
 		history.Save(m.history)
 
+		today := time.Now().Format("January 2, 2006")
+		if today != m.lastDateMessage {
+			m.lastDateMessage = today
+			input = "System: Current date is " + today + ".\n\n" + input
+		}
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
@@ -3030,7 +3033,11 @@ func startChatStreamCmd(m model) tea.Cmd {
 
 		msgs := stripReasoning(filterInternal(m.messages))
 		if attachments := collectFileAttachments(m, msgs); attachments != "" {
-			systemPrompt += "\n\n## Attached Files\n\n" + attachments
+			// Append file attachments as a separate user message rather than
+			// modifying the system prompt. This keeps the system prompt stable
+			// for prompt caching (both Anthropic's cache_control and OpenAI's
+			// prefix-based caching).
+			msgs = append(msgs, llm.Message{Role: "user", Content: attachments})
 		}
 
 		req := llm.ChatRequest{
@@ -3150,6 +3157,11 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 		return m.handleSlashCommand(qmsg)
 	}
 
+	today := time.Now().Format("January 2, 2006")
+	if today != m.lastDateMessage {
+		m.lastDateMessage = today
+		qmsg = "System: Current date is " + today + ".\n\n" + qmsg
+	}
 	m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
 	m.isStreaming = true
 	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
@@ -3215,7 +3227,6 @@ func renderSystemPrompt(m model) (string, error) {
 	err = tmpl.Execute(&buf, map[string]string{
 		"OS":        runtime.GOOS,
 		"Arch":      runtime.GOARCH,
-		"Date":      time.Now().Format("January 2, 2006"),
 		"Workspace": m.workspaceRoot,
 		"CWD":       m.workspaceRoot,
 		"Model":     m.modelName,

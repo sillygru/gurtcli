@@ -41,9 +41,14 @@ type ChatRequest struct {
 	MaxTokens      int             `json:"-"`
 }
 
+type CacheControl struct {
+	Type string `json:"type"`
+}
+
 type Tool struct {
-	Type     string       `json:"type"`
-	Function ToolFunction `json:"function"`
+	Type         string       `json:"type"`
+	Function     ToolFunction `json:"function"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type ToolFunction struct {
@@ -102,9 +107,15 @@ type anthropicChatBody struct {
 	Messages  []anthropicMessage  `json:"messages"`
 	MaxTokens int                `json:"max_tokens"`
 	Stream    bool                `json:"stream"`
-	System    string              `json:"system,omitempty"`
+	System    []anthropicSystemBlock `json:"system,omitempty"`
 	Tools     []Tool              `json:"tools,omitempty"`
 	Thinking  *ThinkingConfig     `json:"thinking,omitempty"`
+}
+
+type anthropicSystemBlock struct {
+	Type         string       `json:"type"`
+	Text         string       `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -113,13 +124,14 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Type        string          `json:"type"`
+	Text        string          `json:"text,omitempty"`
+	ID          string          `json:"id,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	Input       json.RawMessage `json:"input,omitempty"`
+	ToolUseID   string          `json:"tool_use_id,omitempty"`
+	Content     string          `json:"content,omitempty"`
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 type openaiUsage struct {
@@ -214,8 +226,31 @@ type anthropicStopReason struct {
 }
 
 func convertToAnthropicMessages(msgs []Message) []anthropicMessage {
+	// Find indices for cache_control placement:
+	//   - First user message (non-tool-result) gets a breakpoint
+	//   - First assistant message with text content gets a breakpoint
+	//   - Last tool_result gets a breakpoint (becomes the new cache prefix)
+	firstUserIdx := -1
+	firstAssistantTextIdx := -1
+	lastToolResultIdx := -1
+	for i, msg := range msgs {
+		if msg.Role == "user" && msg.ToolCallID == "" {
+			if firstUserIdx == -1 {
+				firstUserIdx = i
+			}
+		}
+		if msg.Role == "assistant" && msg.Content != "" {
+			if firstAssistantTextIdx == -1 {
+				firstAssistantTextIdx = i
+			}
+		}
+		if msg.Role == "user" && msg.ToolCallID != "" {
+			lastToolResultIdx = i
+		}
+	}
+
 	result := make([]anthropicMessage, 0, len(msgs))
-	for _, msg := range msgs {
+	for i, msg := range msgs {
 		switch msg.Role {
 		case "user":
 			if msg.ToolCallID != "" {
@@ -224,16 +259,30 @@ func convertToAnthropicMessages(msgs []Message) []anthropicMessage {
 					ToolUseID: msg.ToolCallID,
 					Content:   msg.Content,
 				}
+				// Last tool_result gets cache_control so the prefix up to
+				// this point is cached across tool call cycles.
+				if i == lastToolResultIdx {
+					block.CacheControl = &CacheControl{Type: "ephemeral"}
+				}
 				blocks, _ := json.Marshal([]anthropicContentBlock{block})
 				result = append(result, anthropicMessage{
 					Role:    "user",
 					Content: blocks,
 				})
 			} else {
-				content, _ := json.Marshal(msg.Content)
+				block := anthropicContentBlock{
+					Type: "text",
+					Text: msg.Content,
+				}
+				// First user message gets cache_control to anchor the
+				// conversation prefix in the cache.
+				if i == firstUserIdx {
+					block.CacheControl = &CacheControl{Type: "ephemeral"}
+				}
+				blocks, _ := json.Marshal([]anthropicContentBlock{block})
 				result = append(result, anthropicMessage{
 					Role:    "user",
-					Content: content,
+					Content: blocks,
 				})
 			}
 
@@ -241,10 +290,16 @@ func convertToAnthropicMessages(msgs []Message) []anthropicMessage {
 			if len(msg.ToolCalls) > 0 {
 				blocks := make([]anthropicContentBlock, 0)
 				if msg.Content != "" {
-					blocks = append(blocks, anthropicContentBlock{
+					textBlock := anthropicContentBlock{
 						Type: "text",
 						Text: msg.Content,
-					})
+					}
+					// First assistant message with text gets cache_control
+					// to keep the initial exchange cached.
+					if i == firstAssistantTextIdx {
+						textBlock.CacheControl = &CacheControl{Type: "ephemeral"}
+					}
+					blocks = append(blocks, textBlock)
 				}
 				for _, tc := range msg.ToolCalls {
 					input := json.RawMessage(tc.Function.Arguments)
@@ -264,10 +319,18 @@ func convertToAnthropicMessages(msgs []Message) []anthropicMessage {
 					Content: blocksJSON,
 				})
 			} else {
-				content, _ := json.Marshal(msg.Content)
+				block := anthropicContentBlock{
+					Type: "text",
+					Text: msg.Content,
+				}
+				// First assistant message with text gets cache_control.
+				if i == firstAssistantTextIdx {
+					block.CacheControl = &CacheControl{Type: "ephemeral"}
+				}
+				blocks, _ := json.Marshal([]anthropicContentBlock{block})
 				result = append(result, anthropicMessage{
 					Role:    "assistant",
-					Content: content,
+					Content: blocks,
 				})
 			}
 
@@ -306,13 +369,32 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 		if maxTokens == 0 {
 			maxTokens = 128000
 		}
+
+		// System prompt as content blocks with cache_control so it's
+		// cached across calls in the same session.
+		systemBlocks := []anthropicSystemBlock{}
+		if req.SystemPrompt != "" {
+			systemBlocks = append(systemBlocks, anthropicSystemBlock{
+				Type: "text",
+				Text: req.SystemPrompt,
+				CacheControl: &CacheControl{Type: "ephemeral"},
+			})
+		}
+
+		// Tools with cache_control so tool definitions are cached.
+		tools := req.Tools
+		if len(tools) > 0 {
+			tools = append([]Tool(nil), tools...)
+			tools[len(tools)-1].CacheControl = &CacheControl{Type: "ephemeral"}
+		}
+
 		bodyBytes, err = json.Marshal(anthropicChatBody{
 			Model:     req.Model,
 			Messages:  convertToAnthropicMessages(msgs),
 			MaxTokens: maxTokens,
 			Stream:    true,
-			System:    req.SystemPrompt,
-			Tools:     req.Tools,
+			System:    systemBlocks,
+			Tools:     tools,
 			Thinking:  req.Thinking,
 		})
 	default:
@@ -344,6 +426,8 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 	case ProviderAnthropic:
 		httpReq.Header.Set("x-api-key", apiKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		// Enable prompt caching (GA as of 2025).
+		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	default:
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -641,7 +725,7 @@ type anthropicSimpleBody struct {
 	Model     string              `json:"model"`
 	Messages  []anthropicMessage  `json:"messages"`
 	MaxTokens int                `json:"max_tokens"`
-	System    string              `json:"system,omitempty"`
+	System    []anthropicSystemBlock `json:"system,omitempty"`
 }
 
 // SimpleChatCompletion does a non-streaming chat completion and returns the response text.
@@ -664,11 +748,21 @@ func SimpleChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 		if maxTokens == 0 {
 			maxTokens = 128000
 		}
+
+		systemBlocks := []anthropicSystemBlock{}
+		if req.SystemPrompt != "" {
+			systemBlocks = append(systemBlocks, anthropicSystemBlock{
+				Type: "text",
+				Text: req.SystemPrompt,
+				CacheControl: &CacheControl{Type: "ephemeral"},
+			})
+		}
+
 		bodyBytes, err = json.Marshal(anthropicSimpleBody{
 			Model:     req.Model,
 			Messages:  convertToAnthropicMessages(msgs),
 			MaxTokens: maxTokens,
-			System:    req.SystemPrompt,
+			System:    systemBlocks,
 		})
 	default:
 		msgs := make([]Message, 0, len(req.Messages)+1)
@@ -700,6 +794,7 @@ func SimpleChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 	case ProviderAnthropic:
 		httpReq.Header.Set("x-api-key", apiKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	default:
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
