@@ -98,22 +98,27 @@ func renderTokenUsage(w io.Writer, s *Stats, inner int) {
 	if outputText < 0 {
 		outputText = 0
 	}
-	total := s.InputTokens + s.OutputTokens
+	totalInput := s.InputTokens
+	if s.CacheHitTokens > s.InputTokens {
+		totalInput = s.InputTokens + s.CacheHitTokens
+	}
+	total := totalInput + s.OutputTokens
 
 	rows := []struct {
 		label string
 		value int
 		color string
+		denom int
 	}{
-		{"Input", s.InputTokens, green},
-		{"Cached", s.CacheHitTokens, overlay0},
-		{"Reasoning", s.ReasoningTokens, mauve},
-		{"Output", outputText, blue},
+		{"Input", totalInput, green, total},
+		{"Cached", s.CacheHitTokens, overlay0, totalInput},
+		{"Reasoning", s.ReasoningTokens, mauve, total},
+		{"Output", outputText, blue, total},
 	}
 
 	// Append "*" to the Reasoning label if the count is estimated.
 	if s.ReasoningEstimated {
-		rows[1].label = "Reasoning*"
+		rows[2].label = "Reasoning*"
 	}
 
 	maxLabel := 0
@@ -127,7 +132,7 @@ func renderTokenUsage(w io.Writer, s *Stats, inner int) {
 	for _, r := range rows {
 		label := r.label + strings.Repeat(" ", maxLabel-runewidth.StringWidth(r.label))
 		val := formatInt(r.value)
-		pctStr := fmt.Sprintf("(%5.1f%%)", pctOf(r.value, total))
+		pctStr := fmt.Sprintf("(%5.1f%%)", pctOf(r.value, r.denom))
 		content := fmt.Sprintf("%s  %s%s %s", label, r.color, val, pctStr)
 		fill := inner - runewidth.StringWidth(content)
 		if fill < 0 {

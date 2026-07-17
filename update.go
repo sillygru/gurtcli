@@ -3113,7 +3113,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 					case llm.StreamReasoning:
 						globalProgram.Send(chatStreamReasoning{content: event.Content})
 					case llm.StreamUsage:
-						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens})
+						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens, cacheHitTokens: event.CacheHitTokens})
 					case llm.StreamToolCalls:
 						pendingToolCalls = event.ToolCalls
 					case llm.StreamDone:

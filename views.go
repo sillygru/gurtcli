@@ -824,8 +824,12 @@ func (m model) renderDebugBar() string {
 }
 
 func (m model) renderContextBar() string {
-	tokens := m.contextInputTokens
-	if tokens <= 0 && m.maxInputTokens <= 0 && m.cacheHitTokens <= 0 {
+	totalInput := m.inputTokens
+	if m.cacheHitTokens > m.inputTokens {
+		totalInput = m.inputTokens + m.cacheHitTokens
+	}
+	totalSession := totalInput + m.outputTokens
+	if totalSession <= 0 && m.maxInputTokens <= 0 && m.cacheHitTokens <= 0 {
 		return ""
 	}
 
@@ -834,20 +838,21 @@ func (m model) renderContextBar() string {
 		barWidth = 12
 	}
 
+	cachePct := 0
+	if totalInput > 0 {
+		cachePct = int(float64(m.cacheHitTokens) / float64(totalInput) * 100)
+	}
+
 	cacheStr := ""
-	if m.cacheHitTokens > 0 {
-		cacheStr = m.theme.Dim.Render("· " + formatTokens(m.cacheHitTokens) + " cached")
+	if cachePct > 0 {
+		cacheStr = m.theme.Dim.Render(fmt.Sprintf("· %d%% cached", cachePct))
 	}
 
 	if m.maxInputTokens <= 0 {
-		return m.theme.ContextBar.Render(formatTokens(tokens) + cacheStr)
+		return m.theme.ContextBar.Render(formatTokens(totalSession) + " " + cacheStr)
 	}
 
-	if tokens <= 0 {
-		emptyBar := m.theme.Dim.Render(strings.Repeat("·", barWidth))
-		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s%s", emptyBar, formatTokens(m.maxInputTokens), cacheStr))
-	}
-	pct := float64(tokens) / float64(m.maxInputTokens)
+	pct := float64(totalSession) / float64(m.maxInputTokens)
 	filled := int(pct * float64(barWidth))
 	if filled > barWidth {
 		filled = barWidth
@@ -855,8 +860,8 @@ func (m model) renderContextBar() string {
 	filledPart := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Teal)).Render(strings.Repeat("━", filled))
 	emptyPart := m.theme.Dim.Render(strings.Repeat("─", barWidth-filled))
 	bar := filledPart + emptyPart
-	pctStr := fmt.Sprintf("%3.0f%%", pct*100)
-	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s / %s%s", bar, pctStr, formatTokens(tokens), formatTokens(m.maxInputTokens), cacheStr))
+
+	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s / %s %s", bar, formatTokens(totalSession), formatTokens(m.maxInputTokens), cacheStr))
 }
 
 func formatTokens(n int) string {
