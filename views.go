@@ -825,7 +825,7 @@ func (m model) renderDebugBar() string {
 
 func (m model) renderContextBar() string {
 	tokens := m.contextInputTokens
-	if tokens <= 0 && m.maxInputTokens <= 0 {
+	if tokens <= 0 && m.maxInputTokens <= 0 && m.cacheHitTokens <= 0 {
 		return ""
 	}
 
@@ -834,13 +834,18 @@ func (m model) renderContextBar() string {
 		barWidth = 12
 	}
 
+	cacheStr := ""
+	if m.cacheHitTokens > 0 {
+		cacheStr = m.theme.Dim.Render("· " + formatTokens(m.cacheHitTokens) + " cached")
+	}
+
 	if m.maxInputTokens <= 0 {
-		return m.theme.ContextBar.Render(formatTokens(tokens))
+		return m.theme.ContextBar.Render(formatTokens(tokens) + cacheStr)
 	}
 
 	if tokens <= 0 {
 		emptyBar := m.theme.Dim.Render(strings.Repeat("·", barWidth))
-		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s", emptyBar, formatTokens(m.maxInputTokens)))
+		return m.theme.ContextBar.Render(fmt.Sprintf(" %s   0%%  0 / %s%s", emptyBar, formatTokens(m.maxInputTokens), cacheStr))
 	}
 	pct := float64(tokens) / float64(m.maxInputTokens)
 	filled := int(pct * float64(barWidth))
@@ -851,7 +856,7 @@ func (m model) renderContextBar() string {
 	emptyPart := m.theme.Dim.Render(strings.Repeat("─", barWidth-filled))
 	bar := filledPart + emptyPart
 	pctStr := fmt.Sprintf("%3.0f%%", pct*100)
-	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s / %s", bar, pctStr, formatTokens(tokens), formatTokens(m.maxInputTokens)))
+	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s  %s / %s%s", bar, pctStr, formatTokens(tokens), formatTokens(m.maxInputTokens), cacheStr))
 }
 
 func formatTokens(n int) string {

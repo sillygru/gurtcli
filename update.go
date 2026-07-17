@@ -407,6 +407,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.reasoningTokens > 0 {
 			m.reasoningOutputTokens += msg.reasoningTokens
 		}
+		if msg.cacheHitTokens > 0 {
+			m.cacheHitTokens += msg.cacheHitTokens
+		}
 		return m, nil
 
 	case toolResultMsg:
@@ -1958,6 +1961,11 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 
+		if m.cachedSystemPrompt == "" {
+			if sp, err := renderSystemPrompt(m); err == nil {
+				m.cachedSystemPrompt = sp
+			}
+		}
 		cmds := []tea.Cmd{m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd()}
 		if m.needsTitle {
 			m.needsTitle = false
@@ -2992,10 +3000,14 @@ func startChatStreamCmd(m model) tea.Cmd {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.streamState.cancel = cancel
 
-		systemPrompt, err := renderSystemPrompt(m)
-		if err != nil {
-			cancel()
-			return chatStreamError{err: fmt.Errorf("rendering system prompt: %w", err)}
+		systemPrompt := m.cachedSystemPrompt
+		if systemPrompt == "" {
+			var err error
+			systemPrompt, err = renderSystemPrompt(m)
+			if err != nil {
+				cancel()
+				return chatStreamError{err: fmt.Errorf("rendering system prompt: %w", err)}
+			}
 		}
 
 		baseURL := m.customURL
@@ -3169,6 +3181,11 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
+	if m.cachedSystemPrompt == "" {
+		if sp, err := renderSystemPrompt(m); err == nil {
+			m.cachedSystemPrompt = sp
+		}
+	}
 	return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 }
 

@@ -158,6 +158,7 @@ type chatStreamUsage struct {
 	inputTokens     int
 	outputTokens    int
 	reasoningTokens int
+	cacheHitTokens  int
 }
 
 type resourceStatsMsg struct {
@@ -341,6 +342,7 @@ type model struct {
 	fileList              []string
 	filesCached           bool
 	lastDateMessage       string
+	cachedSystemPrompt    string
 	history               []string
 	historyIndex          int
 	historyDraft          string
@@ -361,6 +363,7 @@ type model struct {
 	contextInputTokens  int
 	outputTokens        int
 	reasoningOutputTokens int
+	cacheHitTokens      int
 	workingMsg        string
 	workingMsgIndex   int
 	workingSpinnerIdx int
@@ -992,6 +995,7 @@ func (m model) toSession() *sessions.Session {
 		InputTokens:       m.inputTokens,
 		OutputTokens:      m.outputTokens,
 		ReasoningTokens:   m.reasoningOutputTokens,
+		CacheHitTokens:    m.cacheHitTokens,
 	}
 }
 
@@ -1023,6 +1027,7 @@ func (m model) applySession(s *sessions.Session) model {
 	m.contextInputTokens = s.InputTokens
 	m.outputTokens = s.OutputTokens
 	m.reasoningOutputTokens = s.ReasoningTokens
+	m.cacheHitTokens = s.CacheHitTokens
 	return m
 }
 
@@ -1043,6 +1048,8 @@ func (m model) resetToNewSession() model {
 	m.fileList = nil
 	m.filesCached = false
 	m.lastDateMessage = ""
+	m.cacheHitTokens = 0
+	m.cachedSystemPrompt = ""
 	return m.initNewSession()
 }
 

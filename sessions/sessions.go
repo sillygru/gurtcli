@@ -139,6 +139,17 @@ func migrate(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("migrate v3: %w", err)
 		}
+		version = 3
+	}
+
+	if version < 4 {
+		_, err := db.Exec(`
+			ALTER TABLE sessions ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0;
+			PRAGMA user_version = 4;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v4: %w", err)
+		}
 	}
 
 	return nil
@@ -161,6 +172,7 @@ type Session struct {
 	InputTokens       int           `json:"input_tokens,omitempty"`
 	OutputTokens      int           `json:"output_tokens,omitempty"`
 	ReasoningTokens   int           `json:"reasoning_tokens,omitempty"`
+	CacheHitTokens    int           `json:"cache_hit_tokens,omitempty"`
 }
 
 type Metadata struct {
@@ -233,8 +245,9 @@ func Save(s *Session) error {
 		INSERT OR REPLACE INTO sessions
 			(id, name, created_at, updated_at, provider, model, custom_url,
 			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
-			 workspace_root, messages, input_tokens, output_tokens, reasoning_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
+			 cache_hit_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		s.ID, s.Name,
 		s.CreatedAt.UTC().Format(time.RFC3339),
@@ -244,6 +257,7 @@ func Save(s *Session) error {
 		boolToInt(s.ReasoningVisible),
 		s.WorkspaceRoot, string(msgs),
 		s.InputTokens, s.OutputTokens, s.ReasoningTokens,
+		s.CacheHitTokens,
 	)
 	if err != nil {
 		return fmt.Errorf("saving session: %w", err)
@@ -272,7 +286,8 @@ func Load(workspace, id string) (*Session, error) {
 	row := db.QueryRow(`
 		SELECT id, name, created_at, updated_at, provider, model, custom_url,
 		       saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
-		       workspace_root, messages, input_tokens, output_tokens, reasoning_tokens
+		       workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
+		       COALESCE(cache_hit_tokens, 0)
 		FROM sessions WHERE id = ? AND workspace_root = ?
 	`, id, workspace)
 
@@ -287,6 +302,7 @@ func Load(workspace, id string) (*Session, error) {
 		&s.SavedEndpointName, &s.ThinkingType, &s.EffortLevel,
 		&reasoningVisible, &s.WorkspaceRoot, &msgsJSON,
 		&s.InputTokens, &s.OutputTokens, &s.ReasoningTokens,
+		&s.CacheHitTokens,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("session not found: %s", id)

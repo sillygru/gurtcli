@@ -87,6 +87,7 @@ type StreamEvent struct {
 	InputTokens     int
 	OutputTokens    int
 	ReasoningTokens int
+	CacheHitTokens  int
 }
 
 type openaiStreamOptions struct {
@@ -134,10 +135,16 @@ type anthropicContentBlock struct {
 	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
+type openaiPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
 type openaiUsage struct {
 	PromptTokens           int                         `json:"prompt_tokens"`
 	CompletionTokens       int                         `json:"completion_tokens"`
 	CompletionTokensDetails *openaiCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptTokensDetails    *openaiPromptTokensDetails    `json:"prompt_tokens_details,omitempty"`
+	PromptCacheHitTokens   int                          `json:"prompt_cache_hit_tokens,omitempty"`
 }
 
 type openaiCompletionTokensDetails struct {
@@ -175,8 +182,10 @@ type openaiToolCallFunc struct {
 
 // Anthropic SSE types for tool call parsing
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens            int `json:"input_tokens"`
+	OutputTokens           int `json:"output_tokens"`
+	CacheReadInputTokens   int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 type anthropicMessageStart struct {
@@ -537,7 +546,14 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					if chunk.Usage.CompletionTokensDetails != nil {
 						rt = chunk.Usage.CompletionTokensDetails.ReasoningTokens
 					}
-					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt}
+					ct := 0
+					if chunk.Usage.PromptTokensDetails != nil {
+						ct = chunk.Usage.PromptTokensDetails.CachedTokens
+					}
+					if chunk.Usage.PromptCacheHitTokens > ct {
+						ct = chunk.Usage.PromptCacheHitTokens
+					}
+					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt, CacheHitTokens: ct}
 				}
 				if len(chunk.Choices) == 0 {
 					continue
@@ -593,7 +609,11 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					if err := json.Unmarshal([]byte(data), &start); err != nil {
 						continue
 					}
-					events <- StreamEvent{Type: StreamUsage, InputTokens: start.Message.Usage.InputTokens}
+					ct := start.Message.Usage.CacheReadInputTokens
+					if ct == 0 {
+						ct = start.Message.Usage.CacheCreationInputTokens
+					}
+					events <- StreamEvent{Type: StreamUsage, InputTokens: start.Message.Usage.InputTokens, CacheHitTokens: ct}
 
 				case "content_block_start":
 					var start anthropicContentBlockStart

@@ -106,6 +106,7 @@ func renderTokenUsage(w io.Writer, s *Stats, inner int) {
 		color string
 	}{
 		{"Input", s.InputTokens, green},
+		{"Cached", s.CacheHitTokens, overlay0},
 		{"Reasoning", s.ReasoningTokens, mauve},
 		{"Output", outputText, blue},
 	}

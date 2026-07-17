@@ -26,21 +26,23 @@ type Stats struct {
 	ReasoningTokens     int
 	ReasoningEstimated  bool
 	Tools               []ToolStat
+	CacheHitTokens      int
 }
 
 func Compute() (*Stats, error) {
 	var (
-		totalSessions    int
-		totalDays        int
-		userMsgs         int
-		apiCalls         int
-		inputTokens      int
-		outputTokens     int
-		reasoningTokens  int
-		estimated        bool
-		toolCounts       map[string]int
-		reasoningChars   int
+		totalSessions        int
+		totalDays            int
+		userMsgs             int
+		apiCalls             int
+		inputTokens          int
+		outputTokens         int
+		reasoningTokens      int
+		estimated            bool
+		toolCounts           map[string]int
+		reasoningChars       int
 		assistantContentChars int
+		cacheHitTokens       int
 	)
 
 	err := sessions.Query(func(db *sql.DB) error {
@@ -64,6 +66,9 @@ func Compute() (*Stats, error) {
 		}
 		if err := db.QueryRow("SELECT COALESCE(SUM(reasoning_tokens), 0) FROM sessions").Scan(&reasoningTokens); err != nil {
 			return fmt.Errorf("summing reasoning tokens: %w", err)
+		}
+		if err := db.QueryRow("SELECT COALESCE(SUM(cache_hit_tokens), 0) FROM sessions").Scan(&cacheHitTokens); err != nil {
+			return fmt.Errorf("summing cache hit tokens: %w", err)
 		}
 
 		var err error
@@ -104,6 +109,7 @@ func Compute() (*Stats, error) {
 		ReasoningTokens:    reasoningTokens,
 		ReasoningEstimated: estimated,
 		Tools:              tools,
+		CacheHitTokens:     cacheHitTokens,
 	}, nil
 }
 
