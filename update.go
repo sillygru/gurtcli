@@ -80,6 +80,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatViewport.SetWidth(msg.Width - 4)
 		m.chatViewport.SetHeight(chatViewHeight)
 		m.chatInput.SetWidth(msg.Width - 4)
+		// A resize re-wraps the transcript, so the cells a selection points at
+		// are no longer the ones the user picked.
+		m.selection = textSelection{}
+		m.lastClick = clickTracker{}
 		m = m.adjustViewportHeight()
 		if m.state == stateChat {
 			m.stableContent = buildChatContent(m)
@@ -2311,12 +2315,32 @@ func (m model) updateMouse(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Outside the transcript the click lands on chrome — the context meter,
+		// the status bar, the permission prompt — where there is nothing to drag
+		// but plenty worth copying. A pending prompt owns every click, the same
+		// way it owns the wheel, because it can grow to cover the transcript.
+		if m.pendingPerm != nil || !insideViewport(m, mouse.Y) {
+			m.lastClick = clickTracker{}
+			if m.selection.exists {
+				m.selection = textSelection{}
+				m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			}
+			if zone, ok := hitTestCopyZone(m, mouse.X, mouse.Y); ok {
+				return m.copyWithToast(zone.text, "Copied "+zone.label)
+			}
+			return m, nil
+		}
+
 		// Left click: check reasoning markers first, then start selection
 		line, col, ok := computeContentPosition(m, mouse.Mouse())
 		if !ok {
 			return m, nil
 		}
-		if line >= 0 {
+		var clicks int
+		m, clicks = m.trackClick(mouse.X, mouse.Y)
+
+		// The reasoning disclosure markers own the first click on their row.
+		if clicks == 1 {
 			content := buildChatContent(m)
 			lines := strings.Split(content, "\n")
 			if line < len(lines) {
@@ -2379,6 +2403,13 @@ func (m model) updateMouse(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Repeat clicks select structure instead of starting a drag: two clicks
+		// grab the word under the cursor, three grab the whole line — or the
+		// whole code block, which is the snippet people are usually after.
+		if clicks >= 2 {
+			return m.selectByGesture(line, col, clicks)
+		}
+
 		// Start new text selection
 		m.selection = textSelection{
 			anchorY: line, anchorX: col,
@@ -2389,23 +2420,101 @@ func (m model) updateMouse(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseReleaseMsg:
-		if m.selection.active {
-			m.selection.active = false
-			m.selection.exists = true
-			text := extractSelectedText(buildChatContent(m), m.selection)
-			copyToClipboard(text)
-			m.selection = textSelection{}
-			m.chatViewport.SetContent(buildChatContent(m))
-			if text != "" {
-				m.toastSeq++
-				m.toast = &toastMsg{text: "Copied to clipboard", id: m.toastSeq}
-				return m, toastTimeoutCmd(m.toastSeq)
-			}
+		if !m.selection.active {
+			return m, nil
 		}
-		return m, nil
+		m.selection.active = false
+
+		// A press and release on the same cell is a click, not a drag: there is
+		// nothing to copy, and copying one character on every stray click would
+		// trample whatever the user already had on the clipboard.
+		if m.selection.anchorY == m.selection.focusY && m.selection.anchorX == m.selection.focusX {
+			m.selection = textSelection{}
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		}
+
+		// The highlight stays up after the copy so the user can see what landed
+		// on the clipboard; the next click, scroll or keystroke clears it.
+		m.selection.exists = true
+		m.chatViewport.SetContent(buildChatContentHighlighted(m))
+		text := extractSelectedText(buildChatContent(m), m.selection)
+		return m.copyWithToast(text, copiedLabel(text))
 	}
 
 	return m, nil
+}
+
+// selectByGesture handles double and triple clicks: word, then line or the
+// enclosing styled block. The selection is copied straight away and left on
+// screen so the user can see what they got.
+func (m model) selectByGesture(line, col, clicks int) (tea.Model, tea.Cmd) {
+	content := buildChatContent(m)
+
+	var (
+		sel textSelection
+		ok  bool
+	)
+	if clicks == 2 {
+		sel, ok = selectWordAt(content, line, col)
+	} else {
+		if sel, ok = selectBlockAt(content, line, codeBlockStylePrefix(m.theme)); !ok {
+			sel, ok = selectLineAt(content, line)
+		}
+	}
+	if !ok {
+		return m, nil
+	}
+
+	m.selection = sel
+	m.chatViewport.SetContent(buildChatContentHighlighted(m))
+	text := extractSelectedText(content, sel)
+	return m.copyWithToast(text, copiedLabel(text))
+}
+
+// trackClick folds a click into the double/triple click run in progress and
+// reports how many clicks that run is up to.
+func (m model) trackClick(x, y int) (model, int) {
+	const clickInterval = 450 * time.Millisecond
+
+	now := time.Now()
+	sameSpot := y == m.lastClick.y && (x-m.lastClick.x < 2 && m.lastClick.x-x < 2)
+	if m.lastClick.count > 0 && sameSpot && now.Sub(m.lastClick.at) < clickInterval {
+		m.lastClick.count++
+	} else {
+		m.lastClick.count = 1
+	}
+	if m.lastClick.count > 3 {
+		m.lastClick.count = 3
+	}
+	m.lastClick.x, m.lastClick.y, m.lastClick.at = x, y, now
+	return m, m.lastClick.count
+}
+
+// copyWithToast copies text and raises a toast naming what was copied.
+func (m model) copyWithToast(text, label string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" {
+		return m, nil
+	}
+	cmd := copyCmd(text)
+	m.toastSeq++
+	m.toast = &toastMsg{text: label, id: m.toastSeq}
+	return m, tea.Batch(cmd, toastTimeoutCmd(m.toastSeq))
+}
+
+// copiedLabel describes a copied chunk of transcript by its shape: short
+// single-line copies quote themselves, longer ones report their size.
+func copiedLabel(text string) string {
+	if text == "" {
+		return ""
+	}
+	if lines := strings.Count(text, "\n") + 1; lines > 1 {
+		return fmt.Sprintf("Copied %d lines", lines)
+	}
+	if len([]rune(text)) <= 30 {
+		return "Copied \"" + text + "\""
+	}
+	return "Copied to clipboard"
 }
 
 // findMarker scans lines in [contentLine-radius, contentLine+radius] for any
@@ -2931,6 +3040,9 @@ func (m model) adjustViewportHeight() model {
 		if m.suggestions.active && len(m.suggestions.items) > 0 {
 			fixed += len(m.suggestions.items)
 		}
+		if m.queuedMessage != "" {
+			fixed++ // the queued-message notice
+		}
 	}
 	m.chatViewport.SetHeight(m.height - fixed)
 	if m.chatViewport.Height() < 1 {
@@ -3351,7 +3463,8 @@ func buildChatContent(m model) string {
 		}
 		switch msg.Role {
 		case "user":
-			b.WriteString(ui.RenderUserMessage(m.theme, msg.Content, m.width, commandNames()))
+			display := sessions.StripDatePrefix(msg.Content)
+			b.WriteString(ui.RenderUserMessage(m.theme, display, m.width, commandNames()))
 			b.WriteString("\n")
 		case "assistant":
 			if msg.Internal {

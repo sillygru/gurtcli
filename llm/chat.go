@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -93,6 +94,43 @@ type StreamEvent struct {
 	// system + tools), cached or not. Providers disagree about whether their
 	// input counter includes cache reads, so it is normalized here.
 	PromptTotalTokens int
+}
+
+// normalizePromptTokens reconciles the two conventions OpenAI-compatible
+// endpoints use for reporting cached prompt tokens. The spec says prompt_tokens
+// is the whole prompt and cached_tokens is the subset served from cache, but
+// some endpoints report prompt_tokens as the uncached remainder instead, which
+// makes the two additive. A cached count larger than the prompt count is only
+// possible under the second reading, so it is used as the discriminator.
+//
+// It returns the full prompt size and the cached portion, with the cached
+// portion never exceeding the total.
+func normalizePromptTokens(promptTokens, cachedTokens int) (total, cached int) {
+	if cachedTokens > promptTokens {
+		return promptTokens + cachedTokens, cachedTokens
+	}
+	return promptTokens, cachedTokens
+}
+
+// logRawUsage appends raw usage payloads to $GURT_DEBUG_USAGE when set, so a
+// misreporting endpoint can be identified from real traffic.
+func logRawUsage(data string) {
+	path := os.Getenv("GURT_DEBUG_USAGE")
+	if path == "" {
+		return
+	}
+	var probe struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(data), &probe); err != nil || len(probe.Usage) == 0 {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), probe.Usage)
 }
 
 type openaiStreamOptions struct {
@@ -547,6 +585,7 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					continue
 				}
 				if chunk.Usage != nil {
+					logRawUsage(data)
 					rt := 0
 					if chunk.Usage.CompletionTokensDetails != nil {
 						rt = chunk.Usage.CompletionTokensDetails.ReasoningTokens
@@ -558,8 +597,8 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					if chunk.Usage.PromptCacheHitTokens > ct {
 						ct = chunk.Usage.PromptCacheHitTokens
 					}
-					// prompt_tokens already includes cached_tokens.
-					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt, CacheHitTokens: ct, PromptTotalTokens: chunk.Usage.PromptTokens}
+					pt, ct := normalizePromptTokens(chunk.Usage.PromptTokens, ct)
+					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt, CacheHitTokens: ct, PromptTotalTokens: pt}
 				}
 				if len(chunk.Choices) == 0 {
 					continue

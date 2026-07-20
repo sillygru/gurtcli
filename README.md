@@ -103,6 +103,26 @@ Navigate with `↑`/`↓`, change values with `←`/`→`, confirm with `enter`.
 Change mid-session with `/reasoning <type>` and `/effort <level>`.
 Toggle visibility inline with `/show-reasoning` or click `[▼]` / `[▶]`.
 
+## Copying with the mouse
+
+Anything on screen can be lifted out with the mouse — no `ctrl+shift` gymnastics, and the highlight always shows exactly what will land on the clipboard.
+
+In the transcript:
+
+- **Drag** — select a span of text
+- **Double click** — the word under the cursor (identifiers, paths and flags count as one word)
+- **Triple click** — the whole line, or the whole code block when you click inside one
+
+Everywhere else, one click copies the element you clicked, as plain text:
+
+- The **model name** in the title bar and the status bar
+- The **context meter** — copied as prose (`Context: 18K tokens / 200K (9%) · 50% cached · <model>`), not the bar glyphs
+- The **session name**, **provider**, **version** and **working directory** in the bottom bar
+- The **command or path** a permission prompt is asking about
+- A **queued message** waiting to be sent
+
+`ctrl+a` copies the input field. Over ssh the clipboard is set with OSC 52, so the text reaches the terminal you are sitting at rather than the host gurt runs on.
+
 ## Permissions
 
 Destructive operations (write, edit, delete, run) prompt for confirmation. Navigate with `↑`/`↓`, confirm with `enter`:

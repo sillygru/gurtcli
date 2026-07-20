@@ -371,15 +371,81 @@ func (m model) sessionDisplayName() string {
 	return "New session"
 }
 
-func (m model) helpWithStatus(help string) string {
-	providerLabel := llm.DisplayName(m.provider)
-	if m.savedEndpointName != "" {
-		providerLabel = m.savedEndpointName
-	} else if m.provider == llm.ProviderCustom {
-		providerLabel = "Custom"
+// segment is one " • "-joined part of the help or status line. The two views
+// of it — what gets drawn and what a click on it copies — are kept together so
+// the copy zones cannot drift away from the rendered columns.
+type segment struct {
+	display string // as it appears in the row
+	text    string // what a click copies
+	label   string // how the toast names it
+}
+
+// joinSegments renders segments the way the help and status lines join them.
+func joinSegments(segs []segment) string {
+	parts := make([]string, 0, len(segs))
+	for _, s := range segs {
+		parts = append(parts, s.display)
 	}
+	return strings.Join(parts, segmentSeparator)
+}
+
+const segmentSeparator = " • "
+
+// providerLabel returns the provider name as the status line shows it.
+func (m model) providerLabel() string {
+	if m.savedEndpointName != "" {
+		return m.savedEndpointName
+	}
+	if m.provider == llm.ProviderCustom {
+		return "Custom"
+	}
+	return llm.DisplayName(m.provider)
+}
+
+// statusSegments returns the right-hand side of the bottom bar.
+func (m model) statusSegments() []segment {
+	session := m.sessionDisplayName()
+	provider := m.providerLabel()
+	name := m.modelDisplayName()
+	return []segment{
+		{display: session, text: session, label: "session name"},
+		{display: provider, text: provider, label: "provider"},
+		{display: name, text: name, label: "model name"},
+	}
+}
+
+// helpSegments returns the left-hand side of the bottom bar in its default
+// state: the build and where it is running. The working directory copies as an
+// absolute path even though it is displayed with a ~.
+func (m model) helpSegments() []segment {
+	segs := []segment{
+		{display: VersionString(), text: VersionString(), label: "version"},
+		{display: m.cwdDisplay, text: m.workspaceRoot, label: "working directory"},
+	}
+	if m.updateAvailable {
+		note := "Update " + m.latestVersion + " — /update"
+		segs = append(segs, segment{display: note, text: "/update", label: "update command"})
+	}
+	return segs
+}
+
+// chatHelpText returns the left-hand hint line and whether it is the default
+// one — the transient hints shown while streaming or picking a suggestion have
+// nothing worth copying.
+func (m model) chatHelpText() (string, bool) {
+	switch {
+	case m.isStreaming:
+		return "esc cancel • ctrl+c quit", false
+	case m.suggestions.active && len(m.suggestions.items) > 0:
+		return "↑↓ navigate • tab select • esc dismiss", false
+	default:
+		return joinSegments(m.helpSegments()), true
+	}
+}
+
+func (m model) helpWithStatus(help string) string {
 	helpRendered := m.theme.Dim.Render(help)
-	statusRendered := m.theme.StatusBar.Render(fmt.Sprintf("%s • %s • %s", m.sessionDisplayName(), providerLabel, m.modelDisplayName()))
+	statusRendered := m.theme.StatusBar.Render(joinSegments(m.statusSegments()))
 	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
 	if pad < 1 {
 		pad = 1
@@ -761,14 +827,8 @@ func (m model) chatView() string {
 
 		b.WriteString(popup.Render(pc.String()))
 	} else {
-		help := VersionString() + " • " + m.cwdDisplay
-		if m.updateAvailable {
-			help = VersionString() + " • " + m.cwdDisplay + " — Update " + m.latestVersion + " — /update"
-		}
-		if m.isStreaming {
-			help = "esc cancel • ctrl+c quit"
-		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
-			help = "↑↓ navigate • tab select • esc dismiss"
+		help, _ := m.chatHelpText()
+		if m.suggestions.active && len(m.suggestions.items) > 0 {
 			for i, item := range m.suggestions.items {
 				prefix := "  "
 				style := m.theme.Dim
@@ -849,7 +909,7 @@ func (m model) renderSpacerLine() string {
 	debugBar := m.renderDebugBar()
 
 	var left string
-	if m.toolExec.active {
+	if m.toolExec != nil && m.toolExec.active {
 		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
 		spinner := workingSpinnerFrames[idx]
 		label := m.toolExec.label
@@ -916,9 +976,14 @@ func (m model) renderContextBar() string {
 		barWidth = 12
 	}
 
+	// Clamped because a misreporting endpoint should show a wrong-but-sane
+	// number rather than garbage like "823% cached".
 	cachePct := 0
 	if m.contextInputTokens > 0 {
 		cachePct = int(float64(m.contextCacheTokens) / float64(m.contextInputTokens) * 100)
+	}
+	if cachePct > 100 {
+		cachePct = 100
 	}
 
 	cacheStr := ""

@@ -219,13 +219,26 @@ type toolExecState struct {
 	label    string
 }
 
+// textSelection is a stream selection over the transcript. All X coordinates
+// are terminal *cells*, not runes or bytes: a wide glyph covers two columns on
+// screen, so anything counted in runes drifts away from the mouse as soon as a
+// line holds CJK text or an emoji. anchor is the cell the drag started on and
+// is always part of the selection; focus is the cell under the cursor now and
+// is included too, which is what every terminal does and what users expect.
 type textSelection struct {
-	anchorY int  // Content line where drag started
-	anchorX int  // Column in that line
-	focusY  int  // Current content line
-	focusX  int  // Current column
+	anchorY int  // Content line where the drag started
+	anchorX int  // Cell in that line
+	focusY  int  // Content line under the cursor
+	focusX  int  // Cell under the cursor
 	active  bool // User is currently dragging
-	exists  bool // Selection finalized (mouse released)
+	exists  bool // Selection finalized (mouse released) and still shown
+}
+
+// clickTracker turns a stream of clicks into single/double/triple gestures.
+type clickTracker struct {
+	x, y  int
+	count int
+	at    time.Time
 }
 
 type suggestionItem struct {
@@ -338,6 +351,7 @@ type model struct {
 	cancelRequested      bool
 	queuedMessage        string
 	selection            textSelection
+	lastClick            clickTracker
 	toast                *toastMsg
 	toastSeq             int
 	suggestions          suggestionState

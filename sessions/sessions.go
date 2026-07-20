@@ -441,7 +441,7 @@ func generateName(msgs []llm.Message) string {
 	for _, msg := range msgs {
 		if msg.Role == "user" && msg.Content != "" {
 			name := msg.Content
-			name = stripDatePrefix(name)
+			name = StripDatePrefix(name)
 			if idx := strings.Index(name, "\n"); idx != -1 {
 				name = name[:idx]
 			}
@@ -454,9 +454,9 @@ func generateName(msgs []llm.Message) string {
 	return "Empty session"
 }
 
-// stripDatePrefix removes the "System: Current date is ..." prefix that is
+// StripDatePrefix removes the "System: Current date is ..." prefix that is
 // prepended to the first user message of each day.
-func stripDatePrefix(s string) string {
+func StripDatePrefix(s string) string {
 	const prefix = "System: Current date is "
 	if strings.HasPrefix(s, prefix) {
 		// Find the blank line after the date sentence and skip past it.
