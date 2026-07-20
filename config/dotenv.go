@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,11 +9,11 @@ import (
 )
 
 func DotenvPath() (string, error) {
-	d, err := dir()
+	cwd, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getting current working directory: %w", err)
 	}
-	return filepath.Join(d, ".env"), nil
+	return filepath.Join(cwd, ".env"), nil
 }
 
 func SaveDotenv(key, value string) error {

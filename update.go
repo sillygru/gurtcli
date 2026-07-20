@@ -3213,6 +3213,9 @@ func generateTitleCmd(m model) tea.Cmd {
 		for _, msg := range m.messages {
 			if msg.Role == "user" && msg.Content != "" {
 				titleMsg = msg.Content
+				// Strip the "System: Current date is ..." prefix that is
+				// prepended to the first user message of each day.
+				titleMsg = stripDatePrefixForTitle(titleMsg)
 				break
 			}
 		}
@@ -3233,6 +3236,18 @@ func generateTitleCmd(m model) tea.Cmd {
 
 		return sessionTitleGeneratedMsg{title: title}
 	}
+}
+
+// stripDatePrefixForTitle removes the "System: Current date is ...\n\n" prefix
+// from the first user message so the title generator sees the actual question.
+func stripDatePrefixForTitle(s string) string {
+	const prefix = "System: Current date is "
+	if strings.HasPrefix(s, prefix) {
+		if idx := strings.Index(s, "\n\n"); idx != -1 {
+			return s[idx+2:]
+		}
+	}
+	return s
 }
 
 func renderSystemPrompt(m model) (string, error) {
