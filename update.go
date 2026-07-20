@@ -395,14 +395,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.persistSessionCmd()
 
 	case chatStreamUsage:
+		// The input/output/cache counters are session-lifetime sums used for
+		// cost accounting. The context counters are a snapshot of the most
+		// recent request, which is what the context bar shows.
+		if msg.promptTotalTokens > 0 {
+			m.contextInputTokens = msg.promptTotalTokens
+			m.contextCacheTokens = msg.cacheHitTokens
+			// A new prompt supersedes the previous turn's response, which is
+			// already folded into this request's history.
+			m.contextOutputTokens = 0
+		}
 		if msg.inputTokens > 0 {
-			// contextInputTokens tracks the total prompt tokens for the
-			// most recent request (the API returns the full total, not a delta).
-			m.contextInputTokens = msg.inputTokens
 			m.inputTokens += msg.inputTokens
 		}
 		if msg.outputTokens > 0 {
 			m.outputTokens += msg.outputTokens
+			m.contextOutputTokens += msg.outputTokens
 		}
 		if msg.reasoningTokens > 0 {
 			m.reasoningOutputTokens += msg.reasoningTokens
@@ -474,7 +482,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.title != "" && m.sessionName == "" {
 			m.sessionName = msg.title
 			m.windowTitle = "gurt | " + m.sessionName
-		return m, tea.Batch(m.persistSessionCmd())
+			return m, tea.Batch(m.persistSessionCmd())
 		}
 		return m, nil
 
@@ -599,7 +607,7 @@ func (m model) updateWelcome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			)
 		}
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 	if m.provider == "" {
 		m.state = stateProviderPick
@@ -663,7 +671,7 @@ func (m model) updateProviderPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if msg.String() == "esc" {
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 
 	// Delete saved endpoint
@@ -787,7 +795,7 @@ func (m model) continueProviderPick() (tea.Model, tea.Cmd) {
 		m.apiKey = key
 		if m.modelName != "" {
 			m2, cmd := m.enterChatState()
-	return m2, cmd
+			return m2, cmd
 		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
@@ -835,7 +843,7 @@ func (m model) updateCustomURL(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.apiKey = key
 		if m.modelName != "" {
 			m2, cmd := m.enterChatState()
-	return m2, cmd
+			return m2, cmd
 		}
 		m.state = stateModelFetch
 		return m, tea.Batch(
@@ -1062,7 +1070,7 @@ func (m model) updateModelPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if msg.String() == "esc" {
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -1219,7 +1227,7 @@ func (m model) updateReasoningConfig(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 	return m, nil
 }
@@ -1293,7 +1301,7 @@ func (m model) updateManualModel(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if msg.String() == "esc" && m.isMidSession() {
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -1322,7 +1330,7 @@ func (m model) updateSessionPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if msg.String() == "esc" {
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 	if msg.String() != "enter" {
 		return m, cmd
@@ -1334,7 +1342,7 @@ func (m model) updateSessionPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if selected.meta.ID == m.sessionID {
 		m2, cmd := m.enterChatState()
-	return m2, cmd
+		return m2, cmd
 	}
 
 	var saveCmd tea.Cmd
@@ -1607,16 +1615,9 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "pgup":
-			scrollStep := 5
-			m.permScroll -= scrollStep
-			if m.permScroll < 0 {
-				m.permScroll = 0
-			}
-			return m, nil
+			return m.scrollPerm(-5), nil
 		case "pgdown":
-			scrollStep := 5
-			m.permScroll += scrollStep
-			return m, nil
+			return m.scrollPerm(5), nil
 		case "esc":
 			m.pendingPerm = nil
 			m.permCursor = 0
@@ -2260,6 +2261,17 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 func (m model) updateMouse(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch mouse := msg.(type) {
 	case tea.MouseWheelMsg:
+		// The permission prompt owns the wheel while it is up.
+		if m.pendingPerm != nil {
+			switch mouse.Button {
+			case tea.MouseWheelUp:
+				return m.scrollPerm(-3), nil
+			case tea.MouseWheelDown:
+				return m.scrollPerm(3), nil
+			}
+			return m, nil
+		}
+
 		if m.selection.exists {
 			m.selection = textSelection{}
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -2904,18 +2916,10 @@ func (m model) updateSuggestions() model {
 }
 
 func (m model) adjustViewportHeight() model {
-	fixed := 0
-	fixed++ // title
-	if m.updateAvailable {
-		fixed++ // update banner
-	}
-	fixed++ // top divider
-	// spacer line — 0 when idle, 1 when streaming, executing tool, or showing context bar
-	if m.toolExec.active || (m.isStreaming && m.workingMsg != "") || m.maxInputTokens > 0 || m.contextInputTokens > 0 || m.inputTokens > 0 {
-		fixed++
-	}
-	fixed++ // toast line (always 1 — blank line when no toast)
-	fixed++ // bottom divider
+	// title + top divider + spacer + toast + bottom divider; every one of these
+	// occupies a row even when empty, so chatView and this must agree exactly or
+	// the view overflows the screen and scrolls the terminal.
+	fixed := chatChromeLines
 	// bottom section
 	switch {
 	case m.pendingPerm != nil:
@@ -2935,43 +2939,35 @@ func (m model) adjustViewportHeight() model {
 	return m
 }
 
-func (m model) permOverlayHeight() int {
-	// Sudo password input phase has a simpler height.
-	if m.pendingPerm.confirmSudo {
-		boxW := ui.NewLayout(m.width, m.height).PopupWidth()
-		var pwContent strings.Builder
-		pwContent.WriteString(m.theme.PermPrompt.Render("  Enter sudo password"))
-		pwContent.WriteString("\n\n")
-		pwContent.WriteString("  " + m.sudoPasswordInput.View())
-		pwContent.WriteString("\n\n")
-		pwContent.WriteString(m.theme.Dim.Render("  enter confirm • esc cancel"))
-		box := lipgloss.NewStyle().
-			Background(lipgloss.Color(m.theme.Base)).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.theme.Mauve)).
-			Width(boxW).
-			Padding(1, 1)
-		return strings.Count(box.Render(pwContent.String()), "\n") + 1
+// scrollPerm scrolls the permission prompt body by delta lines, clamped to the
+// body that is actually there.
+func (m model) scrollPerm(delta int) model {
+	// How many body lines fit depends on how they soft-wrap, so it varies with
+	// the offset. Measuring the window at the top gives a fixed bound to clamp
+	// against: scrolling stays stable, and the end of the body is always
+	// reachable (a shorter tail simply leaves the window part-empty).
+	top := m
+	top.permScroll = 0
+	_, _, total, visible := top.renderPermOverlay()
+	maxScroll := total - visible
+	if maxScroll < 0 {
+		maxScroll = 0
 	}
 
-	// Compute a capped height for the permission overlay.
-	// Fixed overhead: border(2) + padding(2) + header(1) + blank(1) + "Allow this action?"(1) + blank(1) + options(3-6) + help(1) = 12-15
-	// sudo/ext info adds ~3 lines
-	overhead := 14
-	if m.pendingPerm.sudo {
-		overhead += 3
-	} else if m.pendingPerm.externalPath != "" {
-		overhead += 3
+	m.permScroll += delta
+	if m.permScroll > maxScroll {
+		m.permScroll = maxScroll
 	}
-	maxBodyLines := m.height - overhead - 6 // reserve 6 for header/rule/toast/etc
-	if maxBodyLines < 3 {
-		maxBodyLines = 3
+	if m.permScroll < 0 {
+		m.permScroll = 0
 	}
-	if maxBodyLines > 30 {
-		maxBodyLines = 30
-	}
-	// Body lines + scroll info + blank
-	return overhead + maxBodyLines + 1
+	m.permScrollTotal = total
+	return m
+}
+
+func (m model) permOverlayHeight() int {
+	_, height, _, _ := m.renderPermOverlay()
+	return height
 }
 
 func (m model) themePickerOverlayHeight() int {
@@ -3113,7 +3109,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 					case llm.StreamReasoning:
 						globalProgram.Send(chatStreamReasoning{content: event.Content})
 					case llm.StreamUsage:
-						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens, cacheHitTokens: event.CacheHitTokens})
+						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens, cacheHitTokens: event.CacheHitTokens, cacheWriteTokens: event.CacheWriteTokens, promptTotalTokens: event.PromptTotalTokens})
 					case llm.StreamToolCalls:
 						pendingToolCalls = event.ToolCalls
 					case llm.StreamDone:
@@ -3380,27 +3376,27 @@ func buildChatContent(m model) string {
 				b.WriteString(ui.RenderAssistantContent(m.theme, msg.Content, m.chatViewport.Width(), commandNames()))
 				b.WriteString("\n")
 			}
-if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				// Search forward through subsequent messages to find the matching tool result.
-				// Tool results are stored sequentially after the assistant message in the order
-				// they were executed, not necessarily in the same order as the ToolCalls array.
-				found := false
-				for j := i + 1; j < len(m.messages); j++ {
-					if m.messages[j].Role == "tool" && m.messages[j].ToolCallID == tc.ID {
-						b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[j].Content, m.chatViewport.Width(), m.messages[j].IsError))
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					// Search forward through subsequent messages to find the matching tool result.
+					// Tool results are stored sequentially after the assistant message in the order
+					// they were executed, not necessarily in the same order as the ToolCalls array.
+					found := false
+					for j := i + 1; j < len(m.messages); j++ {
+						if m.messages[j].Role == "tool" && m.messages[j].ToolCallID == tc.ID {
+							b.WriteString(ui.RenderUnifiedToolCard(m.theme, tc, m.messages[j].Content, m.chatViewport.Width(), m.messages[j].IsError))
+							b.WriteString("\n")
+							skipResultIDs[tc.ID] = true
+							found = true
+							break
+						}
+					}
+					if !found {
+						b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
 						b.WriteString("\n")
-						skipResultIDs[tc.ID] = true
-						found = true
-						break
 					}
 				}
-				if !found {
-					b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
-					b.WriteString("\n")
-				}
 			}
-		}
 		case "tool":
 			if skipResultIDs[msg.ToolCallID] {
 				continue

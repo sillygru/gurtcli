@@ -155,10 +155,12 @@ type chatStreamError struct {
 }
 
 type chatStreamUsage struct {
-	inputTokens     int
-	outputTokens    int
-	reasoningTokens int
-	cacheHitTokens  int
+	inputTokens       int
+	outputTokens      int
+	reasoningTokens   int
+	cacheHitTokens    int
+	cacheWriteTokens  int
+	promptTotalTokens int
 }
 
 type resourceStatsMsg struct {
@@ -197,12 +199,12 @@ type reasoningState struct {
 }
 
 type pendingPerm struct {
-	toolCall      llm.ToolCall
-	remaining     []llm.ToolCall
-	externalPath  string // set when the prompt is about an external path
-	sudo          bool   // true when the command starts with sudo and needs password
-	sudoPassword  string // populated after user enters password; cleared after use
-	confirmSudo   bool   // true after user has confirmed the sudo prompt (entering password phase)
+	toolCall     llm.ToolCall
+	remaining    []llm.ToolCall
+	externalPath string // set when the prompt is about an external path
+	sudo         bool   // true when the command starts with sudo and needs password
+	sudoPassword string // populated after user enters password; cleared after use
+	confirmSudo  bool   // true after user has confirmed the sudo prompt (entering password phase)
 }
 
 type streamState struct {
@@ -244,41 +246,41 @@ type resourceStats struct {
 }
 
 type model struct {
-	state            state
-	yolo             bool
-	reconfigure      bool
-	forceLocal       bool
-	debug            bool
-	debugStats       resourceStats
-	theme            ui.Theme
-	themeName        string
-	width            int
-	height           int
-	workspaceRoot        string
-	cwdDisplay           string
-	alwaysAllowPerms          bool
-	allowEdits               bool
-	allowDeletions           bool
-	allowedBashPrefixes       map[string]bool
-	allowedBashPrefixesSession map[string]bool
-	alwaysAllowTools           []string
-	alwaysAllowCommandPrefixes []string
+	state                       state
+	yolo                        bool
+	reconfigure                 bool
+	forceLocal                  bool
+	debug                       bool
+	debugStats                  resourceStats
+	theme                       ui.Theme
+	themeName                   string
+	width                       int
+	height                      int
+	workspaceRoot               string
+	cwdDisplay                  string
+	alwaysAllowPerms            bool
+	allowEdits                  bool
+	allowDeletions              bool
+	allowedBashPrefixes         map[string]bool
+	allowedBashPrefixesSession  map[string]bool
+	alwaysAllowTools            []string
+	alwaysAllowCommandPrefixes  []string
 	allowedExternalPathsSession map[string]bool
 	allowAllExternal            bool
 	alwaysAllowExternal         bool
-	allowManageCursor          int
-	allowManageScroll          int
-	allowManageInput          textinput.Model
-	allowManageAdding          bool
-	allowManageAddType         string
-	allowToolCheckItems        []string
-	allowToolCheckCursor       int
-	toolCallCycle        int
-	pendingPerm          *pendingPerm
-	permCursor           int
-	permScroll           int
-	permScrollTotal      int
-	sudoPasswordInput    textinput.Model
+	allowManageCursor           int
+	allowManageScroll           int
+	allowManageInput            textinput.Model
+	allowManageAdding           bool
+	allowManageAddType          string
+	allowToolCheckItems         []string
+	allowToolCheckCursor        int
+	toolCallCycle               int
+	pendingPerm                 *pendingPerm
+	permCursor                  int
+	permScroll                  int
+	permScrollTotal             int
+	sudoPasswordInput           textinput.Model
 
 	provider  string
 	modelName string
@@ -294,79 +296,84 @@ type model struct {
 	thinkingOptions []string
 	effortOptions   []string
 
-	forceKeyAfterURL    bool
-	customMode          int
-	customModeCursor    int
-	dotenvCursor        int
-	dotenvPickCursor    int
-	dotenvKeyName           string
-	dotenvExistingKeyValue  string
-	dotenvKeyExistsCursor   int
-	dotenvKeys              []string
-	savedEndpointName   string
-	confirmDeleteEndpoint string
+	forceKeyAfterURL       bool
+	customMode             int
+	customModeCursor       int
+	dotenvCursor           int
+	dotenvPickCursor       int
+	dotenvKeyName          string
+	dotenvExistingKeyValue string
+	dotenvKeyExistsCursor  int
+	dotenvKeys             []string
+	savedEndpointName      string
+	confirmDeleteEndpoint  string
 
-	providerList   list.Model
-	providerDel    *list.DefaultDelegate
-	modelList      list.Model
-	modelDel       *list.DefaultDelegate
-	sessionList    list.Model
-	sessionDel     *list.DefaultDelegate
-	urlInput       textinput.Model
-	keyInput       textinput.Model
-	nameInput      textinput.Model
-	manualInput    textinput.Model
-	dotenvInput    textinput.Model
-	spinner        spinner.Model
+	providerList list.Model
+	providerDel  *list.DefaultDelegate
+	modelList    list.Model
+	modelDel     *list.DefaultDelegate
+	sessionList  list.Model
+	sessionDel   *list.DefaultDelegate
+	urlInput     textinput.Model
+	keyInput     textinput.Model
+	nameInput    textinput.Model
+	manualInput  textinput.Model
+	dotenvInput  textinput.Model
+	spinner      spinner.Model
 
-	messages         []llm.Message
-	chatInput        textarea.Model
-	chatViewport     viewport.Model
-	stableContent    string
-	stableMsgCount   int
-	msgRenders       []*string
-	isStreaming      bool
-	stickToBottom    bool
-	streamingContent *strings.Builder
-	lastStreamRender time.Time
-	reasoning        reasoningState
-	streamState      *streamState
-	toolExec         *toolExecState
-	toolQueue        []llm.ToolCall
-	cancelRequested  bool
-	queuedMessage    string
-	selection        textSelection
-	toast            *toastMsg
-	toastSeq         int
-	suggestions           suggestionState
-	fileList              []string
-	filesCached           bool
-	lastDateMessage       string
-	cachedSystemPrompt    string
-	history               []string
-	historyIndex          int
-	historyDraft          string
-	historyLoadedValue    string
-	windowTitle           string
-	showThemePicker       bool
-	themePickerCursor     int
-	themePickerOrigTheme  ui.Theme
-	themePickerOrigName   string
+	messages             []llm.Message
+	chatInput            textarea.Model
+	chatViewport         viewport.Model
+	stableContent        string
+	stableMsgCount       int
+	msgRenders           []*string
+	isStreaming          bool
+	stickToBottom        bool
+	streamingContent     *strings.Builder
+	lastStreamRender     time.Time
+	reasoning            reasoningState
+	streamState          *streamState
+	toolExec             *toolExecState
+	toolQueue            []llm.ToolCall
+	cancelRequested      bool
+	queuedMessage        string
+	selection            textSelection
+	toast                *toastMsg
+	toastSeq             int
+	suggestions          suggestionState
+	fileList             []string
+	filesCached          bool
+	lastDateMessage      string
+	cachedSystemPrompt   string
+	history              []string
+	historyIndex         int
+	historyDraft         string
+	historyLoadedValue   string
+	windowTitle          string
+	showThemePicker      bool
+	themePickerCursor    int
+	themePickerOrigTheme ui.Theme
+	themePickerOrigName  string
 
 	sessionID        string
 	sessionName      string
 	sessionCreatedAt time.Time
 	needsTitle       bool
 
-	maxInputTokens      int
-	inputTokens         int
-	contextInputTokens  int
-	outputTokens        int
+	maxInputTokens        int
+	inputTokens           int
+	outputTokens          int
 	reasoningOutputTokens int
-	cacheHitTokens      int
-	workingMsg        string
-	workingMsgIndex   int
-	workingSpinnerIdx int
+	cacheHitTokens        int
+
+	// Context-window state describes the *last* request only, not session
+	// totals: how much history was actually sent to the model.
+	contextInputTokens  int
+	contextCacheTokens  int
+	contextOutputTokens int
+	workingMsg          string
+	workingMsgIndex     int
+	workingSpinnerIdx   int
 
 	telemetryEnabled   bool
 	updateAvailable    bool
@@ -590,9 +597,9 @@ var slashCommands = []slashCommand{
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
 	{name: "update", description: "Update to the latest version"},
 	{name: "allow", description: "Manage always-allowed tools and commands"},
-	{name: "theme",        description: "Change the color theme"},
-	{name: "telemetry",    description: "Toggle anonymous usage telemetry"},
-	{name: "version",      description: "Show current version and check for updates"},
+	{name: "theme", description: "Change the color theme"},
+	{name: "telemetry", description: "Toggle anonymous usage telemetry"},
+	{name: "version", description: "Show current version and check for updates"},
 }
 
 // commandNames returns the names of all registered slash commands for highlighting.
@@ -891,54 +898,54 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	}
 
 	m := model{
-		state:                startState,
-		telemetryEnabled:     telemetryEnabled,
-		yolo:                 yolo,
-		forceLocal:           forceLocal,
-		reconfigure:          reconfigure,
-		debug:                debug,
-		forceKeyAfterURL:     false,
-		theme:                s,
-		themeName:            themeName,
-		provider:             provider,
-		modelName:            modelName,
-		customURL:            customURL,
-		savedEndpointName:    savedEndpointName,
-		apiKey:               apiKey,
-		dotenvKeys:           envKeys,
-		workspaceRoot:        wd,
-		cwdDisplay:           cwdDisplay,
-		allowedBashPrefixes:        allowedBashPrefixes,
-		allowedBashPrefixesSession: make(map[string]bool),
-		alwaysAllowTools:           alwaysAllowTools,
-		alwaysAllowCommandPrefixes: alwaysAllowCommandPrefixes,
+		state:                       startState,
+		telemetryEnabled:            telemetryEnabled,
+		yolo:                        yolo,
+		forceLocal:                  forceLocal,
+		reconfigure:                 reconfigure,
+		debug:                       debug,
+		forceKeyAfterURL:            false,
+		theme:                       s,
+		themeName:                   themeName,
+		provider:                    provider,
+		modelName:                   modelName,
+		customURL:                   customURL,
+		savedEndpointName:           savedEndpointName,
+		apiKey:                      apiKey,
+		dotenvKeys:                  envKeys,
+		workspaceRoot:               wd,
+		cwdDisplay:                  cwdDisplay,
+		allowedBashPrefixes:         allowedBashPrefixes,
+		allowedBashPrefixesSession:  make(map[string]bool),
+		alwaysAllowTools:            alwaysAllowTools,
+		alwaysAllowCommandPrefixes:  alwaysAllowCommandPrefixes,
 		allowedExternalPathsSession: make(map[string]bool),
 		alwaysAllowExternal:         alwaysAllowExternal,
-		sessionOutputsDir:       outputsDir,
-		allowManageCursor:    0,
-		allowManageScroll:    0,
-		allowManageInput:     allowIn,
-		permScroll:           0,
-		permScrollTotal:      0,
-		sudoPasswordInput:    sudoIn,
-		providerList:         pl,
-		providerDel:          &pd,
-		modelList:            ml,
-		modelDel:             &md,
-		sessionList:          sl,
-		sessionDel:           &sd,
-		urlInput:             urlIn,
-		keyInput:             ki,
-		nameInput:            ni,
-		manualInput:          mi,
-		dotenvInput:          di,
-		spinner:              sp,
-		messages:             []llm.Message{},
-		chatInput:            ci,
-		chatViewport:         cv,
-		streamState:          &streamState{},
-		toolExec:             &toolExecState{},
-		windowTitle:          "gurt",
+		sessionOutputsDir:           outputsDir,
+		allowManageCursor:           0,
+		allowManageScroll:           0,
+		allowManageInput:            allowIn,
+		permScroll:                  0,
+		permScrollTotal:             0,
+		sudoPasswordInput:           sudoIn,
+		providerList:                pl,
+		providerDel:                 &pd,
+		modelList:                   ml,
+		modelDel:                    &md,
+		sessionList:                 sl,
+		sessionDel:                  &sd,
+		urlInput:                    urlIn,
+		keyInput:                    ki,
+		nameInput:                   ni,
+		manualInput:                 mi,
+		dotenvInput:                 di,
+		spinner:                     sp,
+		messages:                    []llm.Message{},
+		chatInput:                   ci,
+		chatViewport:                cv,
+		streamState:                 &streamState{},
+		toolExec:                    &toolExecState{},
+		windowTitle:                 "gurt",
 	}
 
 	h, _ := history.Load()
@@ -980,22 +987,24 @@ func (m model) toSession() *sessions.Session {
 		}
 	}
 	return &sessions.Session{
-		ID:                m.sessionID,
-		Name:              m.sessionName,
-		CreatedAt:         m.sessionCreatedAt,
-		Provider:          m.provider,
-		Model:             m.modelName,
-		CustomURL:         m.customURL,
-		SavedEndpointName: m.savedEndpointName,
-		ThinkingType:      m.thinkingType,
-		EffortLevel:       m.effortLevel,
-		ReasoningVisible:  m.reasoning.defaultVisible,
-		WorkspaceRoot:     m.workspaceRoot,
-		Messages:          msgs,
-		InputTokens:       m.inputTokens,
-		OutputTokens:      m.outputTokens,
-		ReasoningTokens:   m.reasoningOutputTokens,
-		CacheHitTokens:    m.cacheHitTokens,
+		ID:                 m.sessionID,
+		Name:               m.sessionName,
+		CreatedAt:          m.sessionCreatedAt,
+		Provider:           m.provider,
+		Model:              m.modelName,
+		CustomURL:          m.customURL,
+		SavedEndpointName:  m.savedEndpointName,
+		ThinkingType:       m.thinkingType,
+		EffortLevel:        m.effortLevel,
+		ReasoningVisible:   m.reasoning.defaultVisible,
+		WorkspaceRoot:      m.workspaceRoot,
+		Messages:           msgs,
+		InputTokens:        m.inputTokens,
+		OutputTokens:       m.outputTokens,
+		ReasoningTokens:    m.reasoningOutputTokens,
+		CacheHitTokens:     m.cacheHitTokens,
+		ContextTokens:      m.contextInputTokens + m.contextOutputTokens,
+		ContextCacheTokens: m.contextCacheTokens,
 	}
 }
 
@@ -1024,10 +1033,14 @@ func (m model) applySession(s *sessions.Session) model {
 	m.streamingContent = nil
 	m.reasoning = reasoningState{defaultVisible: s.ReasoningVisible, visible: s.ReasoningVisible}
 	m.inputTokens = s.InputTokens
-	m.contextInputTokens = s.InputTokens
 	m.outputTokens = s.OutputTokens
 	m.reasoningOutputTokens = s.ReasoningTokens
 	m.cacheHitTokens = s.CacheHitTokens
+	// Sessions saved before context tracking existed report 0 here; the bar
+	// stays hidden until the next request reports a real prompt size.
+	m.contextInputTokens = s.ContextTokens
+	m.contextCacheTokens = s.ContextCacheTokens
+	m.contextOutputTokens = 0
 	return m
 }
 
@@ -1043,6 +1056,8 @@ func (m model) resetToNewSession() model {
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible, visible: m.reasoning.defaultVisible}
 	m.inputTokens = 0
 	m.contextInputTokens = 0
+	m.contextCacheTokens = 0
+	m.contextOutputTokens = 0
 	m.outputTokens = 0
 	m.reasoningOutputTokens = 0
 	m.fileList = nil

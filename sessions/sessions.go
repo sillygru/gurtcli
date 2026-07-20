@@ -150,6 +150,18 @@ func migrate(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("migrate v4: %w", err)
 		}
+		version = 4
+	}
+
+	if version < 5 {
+		_, err := db.Exec(`
+			ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE sessions ADD COLUMN context_cache_tokens INTEGER NOT NULL DEFAULT 0;
+			PRAGMA user_version = 5;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v5: %w", err)
+		}
 	}
 
 	return nil
@@ -173,6 +185,11 @@ type Session struct {
 	OutputTokens      int           `json:"output_tokens,omitempty"`
 	ReasoningTokens   int           `json:"reasoning_tokens,omitempty"`
 	CacheHitTokens    int           `json:"cache_hit_tokens,omitempty"`
+	// ContextTokens is the prompt size of the last request in this session,
+	// i.e. how full the context window was, as opposed to the lifetime sums
+	// above.
+	ContextTokens      int `json:"context_tokens,omitempty"`
+	ContextCacheTokens int `json:"context_cache_tokens,omitempty"`
 }
 
 type Metadata struct {
@@ -246,8 +263,8 @@ func Save(s *Session) error {
 			(id, name, created_at, updated_at, provider, model, custom_url,
 			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
 			 workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
-			 cache_hit_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 cache_hit_tokens, context_tokens, context_cache_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		s.ID, s.Name,
 		s.CreatedAt.UTC().Format(time.RFC3339),
@@ -257,7 +274,7 @@ func Save(s *Session) error {
 		boolToInt(s.ReasoningVisible),
 		s.WorkspaceRoot, string(msgs),
 		s.InputTokens, s.OutputTokens, s.ReasoningTokens,
-		s.CacheHitTokens,
+		s.CacheHitTokens, s.ContextTokens, s.ContextCacheTokens,
 	)
 	if err != nil {
 		return fmt.Errorf("saving session: %w", err)
@@ -287,7 +304,8 @@ func Load(workspace, id string) (*Session, error) {
 		SELECT id, name, created_at, updated_at, provider, model, custom_url,
 		       saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
 		       workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
-		       COALESCE(cache_hit_tokens, 0)
+		       COALESCE(cache_hit_tokens, 0),
+		       COALESCE(context_tokens, 0), COALESCE(context_cache_tokens, 0)
 		FROM sessions WHERE id = ? AND workspace_root = ?
 	`, id, workspace)
 
@@ -302,7 +320,7 @@ func Load(workspace, id string) (*Session, error) {
 		&s.SavedEndpointName, &s.ThinkingType, &s.EffortLevel,
 		&reasoningVisible, &s.WorkspaceRoot, &msgsJSON,
 		&s.InputTokens, &s.OutputTokens, &s.ReasoningTokens,
-		&s.CacheHitTokens,
+		&s.CacheHitTokens, &s.ContextTokens, &s.ContextCacheTokens,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("session not found: %s", id)

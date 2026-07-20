@@ -14,31 +14,31 @@ import (
 )
 
 type Message struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content"`
-	Reasoning          string        `json:"reasoning,omitempty"`
-	ReasoningDuration  time.Duration `json:"reasoning_duration,omitempty"`
-	ReasoningVisible   bool          `json:"reasoning_visible,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	Model            string     `json:"model,omitempty"`
-	Internal         bool       `json:"-"`
-	IsError          bool       `json:"is_error,omitempty"`
+	Role              string        `json:"role"`
+	Content           string        `json:"content"`
+	Reasoning         string        `json:"reasoning,omitempty"`
+	ReasoningDuration time.Duration `json:"reasoning_duration,omitempty"`
+	ReasoningVisible  bool          `json:"reasoning_visible,omitempty"`
+	ToolCallID        string        `json:"tool_call_id,omitempty"`
+	ToolCalls         []ToolCall    `json:"tool_calls,omitempty"`
+	Model             string        `json:"model,omitempty"`
+	Internal          bool          `json:"-"`
+	IsError           bool          `json:"is_error,omitempty"`
 }
 
 type ThinkingConfig struct {
-	Type        string `json:"type"`
-	BudgetTokens int   `json:"budget_tokens,omitempty"`
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type ChatRequest struct {
-	Model          string          `json:"model"`
-	Messages       []Message       `json:"messages"`
-	SystemPrompt   string          `json:"-"`
-	Tools          []Tool          `json:"-"`
-	Thinking       *ThinkingConfig `json:"-"`
-	ReasoningEffort string         `json:"-"`
-	MaxTokens      int             `json:"-"`
+	Model           string          `json:"model"`
+	Messages        []Message       `json:"messages"`
+	SystemPrompt    string          `json:"-"`
+	Tools           []Tool          `json:"-"`
+	Thinking        *ThinkingConfig `json:"-"`
+	ReasoningEffort string          `json:"-"`
+	MaxTokens       int             `json:"-"`
 }
 
 type CacheControl struct {
@@ -46,8 +46,8 @@ type CacheControl struct {
 }
 
 type Tool struct {
-	Type         string       `json:"type"`
-	Function     ToolFunction `json:"function"`
+	Type         string        `json:"type"`
+	Function     ToolFunction  `json:"function"`
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
@@ -80,14 +80,19 @@ const (
 )
 
 type StreamEvent struct {
-	Type            StreamEventType
-	Content         string
-	Err             error
-	ToolCalls       []ToolCall
-	InputTokens     int
-	OutputTokens    int
-	ReasoningTokens int
-	CacheHitTokens  int
+	Type             StreamEventType
+	Content          string
+	Err              error
+	ToolCalls        []ToolCall
+	InputTokens      int
+	OutputTokens     int
+	ReasoningTokens  int
+	CacheHitTokens   int
+	CacheWriteTokens int
+	// PromptTotalTokens is the full prompt size for this request (history +
+	// system + tools), cached or not. Providers disagree about whether their
+	// input counter includes cache reads, so it is normalized here.
+	PromptTotalTokens int
 }
 
 type openaiStreamOptions struct {
@@ -104,18 +109,18 @@ type openaiChatBody struct {
 }
 
 type anthropicChatBody struct {
-	Model     string              `json:"model"`
-	Messages  []anthropicMessage  `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool                `json:"stream"`
+	Model     string                 `json:"model"`
+	Messages  []anthropicMessage     `json:"messages"`
+	MaxTokens int                    `json:"max_tokens"`
+	Stream    bool                   `json:"stream"`
 	System    []anthropicSystemBlock `json:"system,omitempty"`
-	Tools     []Tool              `json:"tools,omitempty"`
-	Thinking  *ThinkingConfig     `json:"thinking,omitempty"`
+	Tools     []Tool                 `json:"tools,omitempty"`
+	Thinking  *ThinkingConfig        `json:"thinking,omitempty"`
 }
 
 type anthropicSystemBlock struct {
-	Type         string       `json:"type"`
-	Text         string       `json:"text"`
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
@@ -125,14 +130,14 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type        string          `json:"type"`
-	Text        string          `json:"text,omitempty"`
-	ID          string          `json:"id,omitempty"`
-	Name        string          `json:"name,omitempty"`
-	Input       json.RawMessage `json:"input,omitempty"`
-	ToolUseID   string          `json:"tool_use_id,omitempty"`
-	Content     string          `json:"content,omitempty"`
-	CacheControl *CacheControl  `json:"cache_control,omitempty"`
+	Type         string          `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
 }
 
 type openaiPromptTokensDetails struct {
@@ -140,11 +145,11 @@ type openaiPromptTokensDetails struct {
 }
 
 type openaiUsage struct {
-	PromptTokens           int                         `json:"prompt_tokens"`
-	CompletionTokens       int                         `json:"completion_tokens"`
+	PromptTokens            int                            `json:"prompt_tokens"`
+	CompletionTokens        int                            `json:"completion_tokens"`
 	CompletionTokensDetails *openaiCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
-	PromptTokensDetails    *openaiPromptTokensDetails    `json:"prompt_tokens_details,omitempty"`
-	PromptCacheHitTokens   int                          `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptTokensDetails     *openaiPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	PromptCacheHitTokens    int                            `json:"prompt_cache_hit_tokens,omitempty"`
 }
 
 type openaiCompletionTokensDetails struct {
@@ -182,9 +187,9 @@ type openaiToolCallFunc struct {
 
 // Anthropic SSE types for tool call parsing
 type anthropicUsage struct {
-	InputTokens            int `json:"input_tokens"`
-	OutputTokens           int `json:"output_tokens"`
-	CacheReadInputTokens   int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
@@ -204,8 +209,8 @@ type anthropicMessageDeltaEvt struct {
 }
 
 type anthropicContentBlockStart struct {
-	Type         string               `json:"type"`
-	Index        int                  `json:"index"`
+	Type         string                `json:"type"`
+	Index        int                   `json:"index"`
 	ContentBlock anthropicBlockContent `json:"content_block"`
 }
 
@@ -384,8 +389,8 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 		systemBlocks := []anthropicSystemBlock{}
 		if req.SystemPrompt != "" {
 			systemBlocks = append(systemBlocks, anthropicSystemBlock{
-				Type: "text",
-				Text: req.SystemPrompt,
+				Type:         "text",
+				Text:         req.SystemPrompt,
 				CacheControl: &CacheControl{Type: "ephemeral"},
 			})
 		}
@@ -468,10 +473,10 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 }
 
 type openaiToolAccumEntry struct {
-	Index    int
-	ID       string
-	Type     string
-	Name     string
+	Index     int
+	ID        string
+	Type      string
+	Name      string
 	Arguments string
 }
 
@@ -553,7 +558,8 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					if chunk.Usage.PromptCacheHitTokens > ct {
 						ct = chunk.Usage.PromptCacheHitTokens
 					}
-					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt, CacheHitTokens: ct}
+					// prompt_tokens already includes cached_tokens.
+					events <- StreamEvent{Type: StreamUsage, InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, ReasoningTokens: rt, CacheHitTokens: ct, PromptTotalTokens: chunk.Usage.PromptTokens}
 				}
 				if len(chunk.Choices) == 0 {
 					continue
@@ -609,11 +615,17 @@ func readSSE(ctx context.Context, r io.Reader, provider string, events chan<- St
 					if err := json.Unmarshal([]byte(data), &start); err != nil {
 						continue
 					}
-					ct := start.Message.Usage.CacheReadInputTokens
-					if ct == 0 {
-						ct = start.Message.Usage.CacheCreationInputTokens
+					// Anthropic reports input_tokens exclusive of both cache
+					// counters, so the prompt total is the sum of all three.
+					read := start.Message.Usage.CacheReadInputTokens
+					write := start.Message.Usage.CacheCreationInputTokens
+					events <- StreamEvent{
+						Type:              StreamUsage,
+						InputTokens:       start.Message.Usage.InputTokens,
+						CacheHitTokens:    read,
+						CacheWriteTokens:  write,
+						PromptTotalTokens: start.Message.Usage.InputTokens + read + write,
 					}
-					events <- StreamEvent{Type: StreamUsage, InputTokens: start.Message.Usage.InputTokens, CacheHitTokens: ct}
 
 				case "content_block_start":
 					var start anthropicContentBlockStart
@@ -742,9 +754,9 @@ type openaiSimpleChatBody struct {
 }
 
 type anthropicSimpleBody struct {
-	Model     string              `json:"model"`
-	Messages  []anthropicMessage  `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
+	Model     string                 `json:"model"`
+	Messages  []anthropicMessage     `json:"messages"`
+	MaxTokens int                    `json:"max_tokens"`
 	System    []anthropicSystemBlock `json:"system,omitempty"`
 }
 
@@ -772,8 +784,8 @@ func SimpleChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 		systemBlocks := []anthropicSystemBlock{}
 		if req.SystemPrompt != "" {
 			systemBlocks = append(systemBlocks, anthropicSystemBlock{
-				Type: "text",
-				Text: req.SystemPrompt,
+				Type:         "text",
+				Text:         req.SystemPrompt,
 				CacheControl: &CacheControl{Type: "ephemeral"},
 			})
 		}

@@ -20,7 +20,8 @@ func ansiBackground(hex string) string {
 
 // WrapScreen fills the terminal area with the given base background color and
 // places content at the top. Remaining vertical space is padded with
-// background-colored blank lines.
+// background-colored blank lines; content taller than the screen is trimmed so
+// an over-long view can never scroll the terminal.
 func WrapScreen(content string, width, height int, baseColor string) string {
 	if width <= 0 || height <= 0 {
 		return content
@@ -30,6 +31,9 @@ func WrapScreen(content string, width, height int, baseColor string) string {
 	reset2 := "\033[m" // short form used by charm v2 libs
 
 	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
 	var b strings.Builder
 	for i, line := range lines {
 		rawWidth := lipgloss.Width(line)

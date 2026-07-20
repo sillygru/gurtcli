@@ -554,10 +554,147 @@ func (m model) renderChatInput() string {
 	return b.String()
 }
 
+// chatChromeLines is the number of rows chatView always renders around the
+// transcript viewport: title, top rule, spacer, toast, bottom rule.
+const chatChromeLines = 5
+
+// permOverlayMaxHeight is the tallest the permission overlay may grow while
+// still leaving a row of transcript above it.
+func (m model) permOverlayMaxHeight() int {
+	h := m.height - chatChromeLines - 1
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
+
+// renderPermOverlay renders the permission box so that it fits on screen. The
+// tool-call body is shrunk first; if the prompt still cannot fit alongside the
+// transcript, the box is rendered in a compact form, and failing that it is
+// allowed to take the whole screen (chatView then drops the chrome around it).
+//
+// Returns the rendered box, its height in rows, the total number of body lines
+// available to scroll through, and the size of the visible body window.
+func (m model) renderPermOverlay() (string, int, int, int) {
+	maxHeight := m.permOverlayMaxHeight()
+
+	box, height, total, visible := m.permBox(maxHeight, false)
+	if height <= maxHeight {
+		return box, height, total, visible
+	}
+	if cBox, cHeight, cTotal, cVisible := m.permBox(maxHeight, true); cHeight <= maxHeight {
+		return cBox, cHeight, cTotal, cVisible
+	}
+	// Nothing fits with the chat chrome in place — fill the screen instead.
+	return m.permBox(m.height, true)
+}
+
+// permBox renders the permission box, shrinking the tool-call body until the
+// box fits within maxHeight rows. Measuring the rendered box (rather than
+// predicting its height) keeps the overlay honest about soft-wrapped lines and
+// per-tool option counts. compact drops the box padding and the key hints to
+// buy back rows on short terminals.
+func (m model) permBox(maxHeight int, compact bool) (string, int, int, int) {
+	verticalPad := 1
+	if compact {
+		verticalPad = 0
+	}
+	boxStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(m.theme.Base)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.theme.Mauve)).
+		Width(ui.NewLayout(m.width, m.height).PopupWidth()).
+		Padding(verticalPad, 1)
+
+	// Sudo password input phase: fixed size, nothing to scroll.
+	if m.pendingPerm.confirmSudo {
+		var pw strings.Builder
+		pw.WriteString(m.theme.PermPrompt.Render("  Enter sudo password"))
+		pw.WriteString("\n\n")
+		pw.WriteString("  " + m.sudoPasswordInput.View())
+		pw.WriteString("\n\n")
+		pw.WriteString(m.theme.Dim.Render("  enter confirm • esc cancel"))
+		box := boxStyle.Render(pw.String())
+		return box, lipgloss.Height(box), 0, 0
+	}
+
+	tc := m.pendingPerm.toolCall
+	bashPrefix := ""
+	if tc.Function.Name == "run_bash" {
+		if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+			bashPrefix = tools.BashCommandPrefix(cmd)
+		}
+	}
+
+	// Body content is laid out for the inside of the box, not the terminal, so
+	// it does not get soft-wrapped into extra rows after the fact.
+	innerWidth := ui.NewLayout(m.width, m.height).PopupWidth() - 4
+
+	maxBody := maxHeight
+	box := ""
+	height := 0
+	total := 0
+	for i := 0; i < 8; i++ {
+		content, totalLines := ui.RenderPermissionPrompt(m.theme, ui.PermPrompt{
+			Call:         tc,
+			Width:        innerWidth,
+			Cursor:       m.permCursor,
+			BashPrefix:   bashPrefix,
+			ExternalPath: m.pendingPerm.externalPath,
+			Sudo:         m.pendingPerm.sudo,
+			ScrollOffset: m.permScroll,
+			MaxBodyLines: maxBody,
+			Compact:      compact,
+			HideBody:     maxBody == 0,
+		})
+		if !compact {
+			content += "\n" + m.theme.Dim.Render("  ↑/↓ navigate • enter select • pgup/pgdn scroll")
+		}
+		box = boxStyle.Render(content)
+		height = lipgloss.Height(box)
+		total = totalLines
+		if height <= maxHeight || maxBody <= 0 {
+			break
+		}
+		// Body lines can soft-wrap, so a row over budget may cost more than one
+		// body line; shrink by the overflow and re-measure. A last pass with no
+		// body at all keeps the question and its options on screen.
+		maxBody -= height - maxHeight
+		if maxBody < 0 {
+			maxBody = 0
+		}
+	}
+	return box, height, total, maxBody
+}
+
 func (m model) chatView() string {
 	var b strings.Builder
 	layout := ui.NewLayout(m.width, m.height)
-	b.WriteString("\x1b[2 q") // DECSCUSR: non-blinking block cursor
+
+	// Measure the permission overlay first: it is anchored to the bottom of the
+	// screen and must never be pushed off, so the transcript viewport gets
+	// whatever height is left over rather than the other way around.
+	permBox := ""
+	if m.pendingPerm != nil {
+		box, boxHeight, _, _ := m.renderPermOverlay()
+		permBox = box
+		if boxHeight > m.permOverlayMaxHeight() {
+			// Terminal too short for both — the prompt wins the screen, still
+			// anchored to the bottom. If it is taller than the screen even at
+			// its smallest, the top is what gets clipped, so that the options
+			// and the box's own bottom edge stay visible.
+			rows := strings.Split(box, "\n")
+			if pad := m.height - len(rows); pad > 0 {
+				rows = append(make([]string, pad), rows...)
+			} else if pad < 0 {
+				rows = rows[-pad:]
+			}
+			return "\x1b[2 q\x1b[?25l" + strings.Join(rows, "\n")
+		}
+		m.chatViewport.SetHeight(m.height - chatChromeLines - boxHeight)
+	}
+
+	b.WriteString("\x1b[2 q")  // DECSCUSR: non-blinking block cursor
 	b.WriteString("\x1b[?25l") // hide hardware cursor
 
 	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
@@ -596,65 +733,7 @@ func (m model) chatView() string {
 	b.WriteString("\n")
 
 	if m.pendingPerm != nil {
-		tc := m.pendingPerm.toolCall
-
-		// Sudo password input phase.
-		if m.pendingPerm.confirmSudo {
-			boxW := layout.PopupWidth()
-			pwBox := lipgloss.NewStyle().
-				Background(lipgloss.Color(m.theme.Base)).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color(m.theme.Mauve)).
-				Width(boxW).
-				Padding(1, 1)
-
-			var pwContent strings.Builder
-			pwContent.WriteString(m.theme.PermPrompt.Render("  Enter sudo password"))
-			pwContent.WriteString("\n\n")
-			pwContent.WriteString("  " + m.sudoPasswordInput.View())
-			pwContent.WriteString("\n\n")
-			pwContent.WriteString(m.theme.Dim.Render("  enter confirm • esc cancel"))
-
-			b.WriteString(pwBox.Render(pwContent.String()))
-		} else {
-			bashPrefix := ""
-			if tc.Function.Name == "run_bash" {
-				if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-					bashPrefix = tools.BashCommandPrefix(cmd)
-				}
-			}
-
-			boxW := layout.PopupWidth()
-			permBox := lipgloss.NewStyle().
-				Background(lipgloss.Color(m.theme.Base)).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color(m.theme.Mauve)).
-				Width(boxW).
-				Padding(1, 1)
-
-			// Calculate available height for the popup body.
-			// Fixed overhead: brand(1) + rule(1) + spacer(1) + toast(1) + rule(1) + help(1) = 6
-			// Popup border(2) + padding(2) = 4
-			// Popup overhead: header(1) + blank(1) + "Allow"(1) + blank(1) + options(5-6) + scrollInfo(1) = 10-11
-			// sudo/ext info adds ~3 more lines
-			overhead := 6 + 4 + 10
-			if m.pendingPerm.sudo {
-				overhead += 3 // sudo info lines
-			} else if m.pendingPerm.externalPath != "" {
-				overhead += 3 // external path info lines
-			}
-			maxBodyLines := m.height - overhead
-			if maxBodyLines < 3 {
-				maxBodyLines = 3
-			}
-
-			content, totalLines := ui.RenderPermissionPrompt(m.theme, tc, m.width, m.permCursor, bashPrefix, m.pendingPerm.externalPath, m.pendingPerm.sudo, m.permScroll, maxBodyLines)
-			m.permScrollTotal = totalLines
-			content += "\n" +
-				m.theme.Dim.Render("  ↑/↓ navigate • enter select • pgup/pgdn scroll")
-
-			b.WriteString(permBox.Render(content))
-		}
+		b.WriteString(permBox)
 	} else if m.showThemePicker {
 		boxW := layout.PopupWidth()
 		popup := lipgloss.NewStyle().
@@ -690,31 +769,31 @@ func (m model) chatView() string {
 			help = "esc cancel • ctrl+c quit"
 		} else if m.suggestions.active && len(m.suggestions.items) > 0 {
 			help = "↑↓ navigate • tab select • esc dismiss"
-		for i, item := range m.suggestions.items {
-			prefix := "  "
-			style := m.theme.Dim
-			if i == m.suggestions.selected {
-				prefix = "> "
-				style = m.theme.Header
-			}
-			if m.suggestions.isFiles {
+			for i, item := range m.suggestions.items {
+				prefix := "  "
+				style := m.theme.Dim
 				if i == m.suggestions.selected {
-					b.WriteString(style.Render(prefix + "@" + item.name))
-				} else {
-					b.WriteString(style.Render(prefix))
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("@" + item.name))
+					prefix = "> "
+					style = m.theme.Header
 				}
-			} else {
-				if i == m.suggestions.selected {
-					b.WriteString(style.Render(prefix + "/" + item.name))
+				if m.suggestions.isFiles {
+					if i == m.suggestions.selected {
+						b.WriteString(style.Render(prefix + "@" + item.name))
+					} else {
+						b.WriteString(style.Render(prefix))
+						b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("@" + item.name))
+					}
 				} else {
-					b.WriteString(style.Render(prefix))
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Mauve)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("/" + item.name))
+					if i == m.suggestions.selected {
+						b.WriteString(style.Render(prefix + "/" + item.name))
+					} else {
+						b.WriteString(style.Render(prefix))
+						b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Mauve)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("/" + item.name))
+					}
+					b.WriteString(m.theme.Dim.Render("  " + item.description))
 				}
-				b.WriteString(m.theme.Dim.Render("  " + item.description))
+				b.WriteString("\n")
 			}
-			b.WriteString("\n")
-		}
 		}
 
 		if m.queuedMessage != "" {
@@ -824,12 +903,11 @@ func (m model) renderDebugBar() string {
 }
 
 func (m model) renderContextBar() string {
-	totalInput := m.inputTokens
-	if m.cacheHitTokens > m.inputTokens {
-		totalInput = m.inputTokens + m.cacheHitTokens
-	}
-	totalSession := totalInput + m.outputTokens
-	if totalSession <= 0 && m.maxInputTokens <= 0 && m.cacheHitTokens <= 0 {
+	// The window holds the history that gets resent every request: the last
+	// prompt total plus the response that arrived after it. Session-lifetime
+	// sums belong in /stats, not here.
+	used := m.contextInputTokens + m.contextOutputTokens
+	if used <= 0 {
 		return ""
 	}
 
@@ -839,8 +917,8 @@ func (m model) renderContextBar() string {
 	}
 
 	cachePct := 0
-	if totalInput > 0 {
-		cachePct = int(float64(m.cacheHitTokens) / float64(totalInput) * 100)
+	if m.contextInputTokens > 0 {
+		cachePct = int(float64(m.contextCacheTokens) / float64(m.contextInputTokens) * 100)
 	}
 
 	cacheStr := ""
@@ -849,10 +927,10 @@ func (m model) renderContextBar() string {
 	}
 
 	if m.maxInputTokens <= 0 {
-		return m.theme.ContextBar.Render(formatTokens(totalSession) + " " + cacheStr)
+		return m.theme.ContextBar.Render(formatTokens(used) + " " + cacheStr)
 	}
 
-	pct := float64(totalSession) / float64(m.maxInputTokens)
+	pct := float64(used) / float64(m.maxInputTokens)
 	filled := int(pct * float64(barWidth))
 	if filled > barWidth {
 		filled = barWidth
@@ -861,7 +939,7 @@ func (m model) renderContextBar() string {
 	emptyPart := m.theme.Dim.Render(strings.Repeat("─", barWidth-filled))
 	bar := filledPart + emptyPart
 
-	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s / %s %s", bar, formatTokens(totalSession), formatTokens(m.maxInputTokens), cacheStr))
+	return m.theme.ContextBar.Render(fmt.Sprintf(" %s  %s / %s %s", bar, formatTokens(used), formatTokens(m.maxInputTokens), cacheStr))
 }
 
 func formatTokens(n int) string {

@@ -308,15 +308,45 @@ func PermissionOptions(toolName, bashPrefix, externalPath string, sudo bool) []s
 	}
 }
 
+// PermPrompt describes a permission confirmation box to render.
+type PermPrompt struct {
+	Call llm.ToolCall
+	// Width is the width the body is laid out for.
+	Width int
+	// Cursor is the index of the currently selected option.
+	Cursor int
+	// BashPrefix is the command prefix to display in bash-related options, if any.
+	BashPrefix string
+	// ExternalPath is the external file path being accessed, if any (triggers
+	// the external access prompt).
+	ExternalPath string
+	// Sudo is true when the command starts with "sudo" (shows a simplified prompt).
+	Sudo bool
+	// ScrollOffset is the number of lines to skip in the tool call body preview.
+	ScrollOffset int
+	// MaxBodyLines is the maximum number of body lines to show (0 = unlimited).
+	MaxBodyLines int
+	// Compact drops the blank separator rows, for terminals too short to
+	// otherwise show the whole prompt.
+	Compact bool
+	// HideBody drops the tool call preview entirely, the last resort for
+	// terminals too short to show it alongside the question and the options.
+	HideBody bool
+}
+
 // RenderPermissionPrompt renders the permission confirmation box content.
-// cursor is the index of the currently selected option.
-// bashPrefix is the command prefix to display in bash-related options, if any.
-// externalPath is the external file path being accessed, if any (triggers external access prompt).
-// sudo is true when the command starts with "sudo" (shows a simplified prompt).
-// scrollOffset is the number of lines to skip in the tool call body preview.
-// maxBodyLines is the maximum number of body lines to show (0 = unlimited).
 // Returns the rendered content and the total number of body lines available.
-func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bashPrefix string, externalPath string, sudo bool, scrollOffset int, maxBodyLines int) (string, int) {
+func RenderPermissionPrompt(t Theme, p PermPrompt) (string, int) {
+	tc, width, cursor := p.Call, p.Width, p.Cursor
+	bashPrefix, externalPath, sudo := p.BashPrefix, p.ExternalPath, p.Sudo
+	scrollOffset, maxBodyLines := p.ScrollOffset, p.MaxBodyLines
+
+	// A blank separator row, dropped in compact mode.
+	gap := "\n"
+	if p.Compact {
+		gap = ""
+	}
+
 	// Render the tool call header only (always visible).
 	accent := t.ToolAccentFor(tc.Function.Name)
 	header := renderToolHeader(t, accent)
@@ -344,7 +374,7 @@ func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bas
 	}
 
 	// Special case: read_file is rendered as a single line (no card).
-	if tc.Function.Name == "read_file" {
+	if tc.Function.Name == "read_file" || p.HideBody {
 		bodyStr = ""
 		bodyLines = 0
 	}
@@ -393,21 +423,21 @@ func RenderPermissionPrompt(t Theme, tc llm.ToolCall, width int, cursor int, bas
 		b.WriteString(scrollInfo)
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
+	b.WriteString(gap)
 
 	if sudo {
 		b.WriteString(t.PermPrompt.Render("  This command requires sudo (administrator privileges)."))
 		b.WriteString("\n")
 		b.WriteString(t.PermPrompt.Render("  You will be asked to enter your password if you approve."))
-		b.WriteString("\n\n")
+		b.WriteString("\n" + gap)
 	} else if externalPath != "" {
 		b.WriteString(t.PermPrompt.Render("  External path: " + externalPath))
-		b.WriteString("\n\n")
+		b.WriteString("\n" + gap)
 	}
 
 	options := PermissionOptions(tc.Function.Name, bashPrefix, externalPath, sudo)
 	b.WriteString(t.PermPrompt.Render("  Allow this action?"))
-	b.WriteString("\n\n")
+	b.WriteString("\n" + gap)
 	for i, opt := range options {
 		prefix := "  "
 		style := t.Dim
