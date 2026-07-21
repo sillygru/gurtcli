@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -909,7 +910,9 @@ func (m model) renderSpacerLine() string {
 	debugBar := m.renderDebugBar()
 
 	var left string
-	if m.toolExec != nil && m.toolExec.active {
+	if m.retry.active {
+		left = m.renderRetryStatus()
+	} else if m.toolExec != nil && m.toolExec.active {
 		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
 		spinner := workingSpinnerFrames[idx]
 		label := m.toolExec.label
@@ -952,6 +955,57 @@ func (m model) renderSpacerLine() string {
 		b.WriteString(right)
 	}
 	return b.String()
+}
+
+// renderRetryStatus draws the countdown between a failed request and the
+// attempt that repeats it. It occupies the same single row as the working
+// spinner it replaces, so no layout math changes.
+func (m model) renderRetryStatus() string {
+	label := "Failed"
+	if m.retry.rateLimit {
+		label = "Rate limited"
+	}
+
+	if m.retry.needsOK {
+		lead := m.theme.Error.Render(fmt.Sprintf("✗ %s — resets in %s", label, formatRetryWait(m.retry.delay)))
+		return lead + m.theme.Dim.Render("  enter/r to wait it out • esc to cancel")
+	}
+
+	remaining := time.Until(m.retry.until)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return m.theme.Error.Render(fmt.Sprintf(
+		"✗ %s — retrying in %s (attempt %d/%d)",
+		label, formatRetryWait(remaining), m.retry.attempt, maxRetryAttempts,
+	))
+}
+
+// formatRetryWait renders a countdown at second granularity, coarsening to
+// minutes and hours for the long usage-limit waits.
+func formatRetryWait(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	secs := int(d.Round(time.Second).Seconds())
+	switch {
+	case secs >= 3600:
+		h := secs / 3600
+		mins := (secs % 3600) / 60
+		if mins == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh%dm", h, mins)
+	case secs >= 60:
+		mins := secs / 60
+		rem := secs % 60
+		if rem == 0 {
+			return fmt.Sprintf("%dm", mins)
+		}
+		return fmt.Sprintf("%dm%ds", mins, rem)
+	default:
+		return fmt.Sprintf("%ds", secs)
+	}
 }
 
 func (m model) renderDebugBar() string {

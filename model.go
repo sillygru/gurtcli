@@ -27,6 +27,7 @@ import (
 )
 
 const maxToolCallCycles = 25
+const maxSessionMessages = 2000
 
 var globalProgram *tea.Program
 
@@ -154,6 +155,12 @@ type chatStreamError struct {
 	err error
 }
 
+// retryFireMsg is delivered when a retry's wait elapses. The token must match
+// model.retry.token or the wait was cancelled or re-armed in the meantime.
+type retryFireMsg struct {
+	token int
+}
+
 type chatStreamUsage struct {
 	inputTokens       int
 	outputTokens      int
@@ -209,6 +216,25 @@ type pendingPerm struct {
 
 type streamState struct {
 	cancel context.CancelFunc
+}
+
+// retryState tracks an in-progress wait between a failed chat request and the
+// attempt that repeats it. It is zeroed on success, on cancellation, and once
+// the attempts are exhausted.
+type retryState struct {
+	active  bool
+	attempt int       // 1-based, counts up to maxRetryAttempts
+	until   time.Time // when the retry fires; drives the countdown
+	delay   time.Duration
+	err     error
+	// token invalidates a scheduled retryFireMsg after the user cancels or
+	// re-arms the wait, so a stale tick can't resurrect a dead request.
+	token int
+	// needsOK is set when the provider asked for a wait longer than
+	// longRetryWaitThreshold; the retry only fires after the user confirms.
+	needsOK bool
+	// rateLimit distinguishes a usage-limit rejection from a generic failure.
+	rateLimit bool
 }
 
 type toolExecState struct {
@@ -346,6 +372,7 @@ type model struct {
 	lastStreamRender     time.Time
 	reasoning            reasoningState
 	streamState          *streamState
+	retry                retryState
 	toolExec             *toolExecState
 	toolQueue            []llm.ToolCall
 	cancelRequested      bool
@@ -358,8 +385,11 @@ type model struct {
 	fileList             []string
 	filesCached          bool
 	lastDateMessage      string
-	cachedSystemPrompt   string
-	history              []string
+	cachedSystemPrompt     string
+	transcriptCacheContent string
+	transcriptCacheUpTo    int
+	transcriptCachedKey    string
+	history                []string
 	historyIndex         int
 	historyDraft         string
 	historyLoadedValue   string
@@ -469,6 +499,7 @@ func (m model) enterChatState() (model, tea.Cmd) {
 			}
 		}
 	}
+	m = m.extendTranscriptCache()
 	m.stableContent = buildChatContent(m)
 	m.stableMsgCount = len(m.messages)
 	m.chatViewport.SetContent(m.stableContent)
@@ -1055,6 +1086,7 @@ func (m model) applySession(s *sessions.Session) model {
 	m.contextInputTokens = s.ContextTokens
 	m.contextCacheTokens = s.ContextCacheTokens
 	m.contextOutputTokens = 0
+	m = m.invalidateTranscriptCache()
 	return m
 }
 
@@ -1079,6 +1111,7 @@ func (m model) resetToNewSession() model {
 	m.lastDateMessage = ""
 	m.cacheHitTokens = 0
 	m.cachedSystemPrompt = ""
+	m = m.invalidateTranscriptCache()
 	return m.initNewSession()
 }
 

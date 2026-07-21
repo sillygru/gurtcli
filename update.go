@@ -88,6 +88,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateChat {
 			m.stableContent = buildChatContent(m)
 			m.stableMsgCount = len(m.messages)
+			m = m.extendTranscriptCache()
 			m.chatViewport.SetContent(m.stableContent)
 		}
 		return m, nil
@@ -145,7 +146,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Content: "_Interrupted_",
 				})
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
-				m.chatViewport.GotoBottom()
+				if m.stickToBottom {
+					m.chatViewport.GotoBottom()
+				}
 				return m, m.persistSessionCmd()
 			}
 			if m.pendingPerm != nil {
@@ -329,9 +332,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatStreamDone:
 		if m.cancelRequested {
 			m.cancelRequested = false
+			m.retry = retryState{token: m.retry.token + 1}
 			m.chatInput.Focus()
 			return m, nil
 		}
+		// A stream that ran to completion clears the ladder, so the next
+		// unrelated failure starts over at the base delay. Deliberately not
+		// done on the first chunk: an endpoint that always dies mid-stream
+		// would then retry forever.
+		m.retry = retryState{token: m.retry.token + 1}
 
 		contentStr := ""
 		if m.streamingContent != nil {
@@ -355,10 +364,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			asm.ToolCalls = msg.toolCalls
 			m.messages = append(m.messages, asm)
+			m = m.extendTranscriptCache().trimMessages()
 			m.stableContent = buildChatContent(m)
 			m.stableMsgCount = len(m.messages)
 			m.chatViewport.SetContent(m.stableContent)
-			m.chatViewport.GotoBottom()
+			if m.stickToBottom {
+				m.chatViewport.GotoBottom()
+			}
 			m.toolCallCycle++
 			if m.toolCallCycle > maxToolCallCycles {
 				m.messages = append(m.messages, llm.Message{
@@ -366,11 +378,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Content: "_Interrupted_",
 					Model:   m.modelName,
 				})
+				m = m.extendTranscriptCache().trimMessages()
 				m.toolCallCycle = 0
 				m.stableContent = buildChatContent(m)
 				m.stableMsgCount = len(m.messages)
 				m.chatViewport.SetContent(m.stableContent)
-				m.chatViewport.GotoBottom()
+				if m.stickToBottom {
+					m.chatViewport.GotoBottom()
+				}
 				m.chatInput.Focus()
 				if m.queuedMessage != "" {
 					return m.replayQueuedMessage()
@@ -387,11 +402,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.ReasoningDuration = reasoningDuration
 			}
 			m.messages = append(m.messages, msg)
+			m = m.extendTranscriptCache().trimMessages()
 		}
 		m.stableContent = buildChatContent(m)
 		m.stableMsgCount = len(m.messages)
 		m.chatViewport.SetContent(m.stableContent)
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		m.chatInput.Focus()
 		if m.queuedMessage != "" {
 			return m.replayQueuedMessage()
@@ -438,14 +456,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Content:    msg.content,
 			IsError:    msg.isError,
 		})
+		m = m.extendTranscriptCache().trimMessages()
 		m.stableContent = buildChatContent(m)
 		m.stableMsgCount = len(m.messages)
 		m.chatViewport.SetContent(m.stableContent)
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		return m.executeNextTool()
+
+	case retryFireMsg:
+		if !m.retry.active || m.retry.needsOK || msg.token != m.retry.token {
+			return m, nil
+		}
+		m.retry.active = false
+		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+		m.workingSpinnerIdx = 0
+		return m, tea.Batch(startChatStreamCmd(m), workingTickCmd())
 
 	case workingTickMsg:
 		m.workingSpinnerIdx++
+		if m.retry.active {
+			// The retry countdown redraws off this tick, so keep it running
+			// even though nothing is streaming yet.
+			return m, workingTickCmd()
+		}
 		if m.isStreaming || m.toolExec.active {
 			if m.workingSpinnerIdx%40 == 0 {
 				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
@@ -468,17 +503,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatStreamError:
 		if m.cancelRequested {
 			m.cancelRequested = false
+			m.retry = retryState{token: m.retry.token + 1}
 			m.chatInput.Focus()
 			return m, nil
 		}
+		if llm.Retryable(msg.err) && m.retry.attempt < maxRetryAttempts {
+			return m.scheduleRetry(msg.err)
+		}
+
+		attempts := m.retry.attempt
 		m = m.resetStreamingState()
+		errText := fmt.Sprintf("_Error: %v_", msg.err)
+		if attempts > 0 {
+			errText = fmt.Sprintf("_Error after %d retries: %v_", attempts, msg.err)
+		}
 		m.messages = append(m.messages, llm.Message{
 			Role:    "assistant",
-			Content: fmt.Sprintf("_Error: %v_", msg.err),
+			Content: errText,
 		})
 		m.queuedMessage = ""
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		m.chatInput.Focus()
 		return m, m.persistSessionCmd()
 
@@ -538,7 +585,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		return m, nil
 
 	case sessionSaveErrorMsg:
@@ -548,7 +597,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Content:  fmt.Sprintf("_Session save failed: %v_", msg.err),
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		return m, nil
 
 	case resourceStatsMsg:
@@ -578,7 +629,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Content:  b.String(),
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		return m, nil
 	}
 
@@ -1769,6 +1822,18 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A retry whose wait exceeds longRetryWaitThreshold parks until the user
+	// says to sit it out.
+	if m.retry.active && m.retry.needsOK {
+		switch msg.String() {
+		case "enter", "r":
+			m.retry.needsOK = false
+			m.retry.token++
+			m.retry.until = time.Now().Add(m.retry.delay)
+			return m, tea.Batch(retryFireCmd(m.retry.delay, m.retry.token), workingTickCmd())
+		}
+	}
+
 	if msg.String() == "esc" && (m.isStreaming || (m.toolExec != nil && m.toolExec.active)) {
 		m.cancelRequested = true
 		if m.streamState.cancel != nil {
@@ -1783,7 +1848,9 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			Content: "_Interrupted_",
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
-		m.chatViewport.GotoBottom()
+		if m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
 		m.chatInput.Focus()
 		return m, m.persistSessionCmd()
 	}
@@ -1959,12 +2026,14 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			input = "System: Current date is " + today + ".\n\n" + input
 		}
 		m.messages = append(m.messages, llm.Message{Role: "user", Content: input})
+		m = m.extendTranscriptCache().trimMessages()
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
 		m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
+		m.stickToBottom = true
 
 		if m.cachedSystemPrompt == "" {
 			if sp, err := renderSystemPrompt(m); err == nil {
@@ -2155,7 +2224,9 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 				})
 				m.toolCallCycle = 0
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
-				m.chatViewport.GotoBottom()
+				if m.stickToBottom {
+					m.chatViewport.GotoBottom()
+				}
 				return m, m.persistSessionCmd()
 			}
 		}
@@ -2172,7 +2243,9 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 					}
 					m.permScroll = 0
 					m.chatViewport.SetContent(buildChatContentHighlighted(m))
-					m.chatViewport.GotoBottom()
+					if m.stickToBottom {
+						m.chatViewport.GotoBottom()
+					}
 					m.chatInput.Blur()
 					m = m.adjustViewportHeight()
 					return m, m.persistSessionCmd()
@@ -2235,11 +2308,13 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 							externalPath: filePath,
 						}
 						m.permScroll = 0
-						m.chatViewport.SetContent(buildChatContentHighlighted(m))
+					m.chatViewport.SetContent(buildChatContentHighlighted(m))
+					if m.stickToBottom {
 						m.chatViewport.GotoBottom()
-						m.chatInput.Blur()
-						m = m.adjustViewportHeight()
-						return m, m.persistSessionCmd()
+					}
+					m.chatInput.Blur()
+					m = m.adjustViewportHeight()
+					return m, m.persistSessionCmd()
 					}
 				}
 			}
@@ -2252,7 +2327,9 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			}
 			m.permScroll = 0
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
-			m.chatViewport.GotoBottom()
+			if m.stickToBottom {
+				m.chatViewport.GotoBottom()
+			}
 			m.chatInput.Blur()
 			m = m.adjustViewportHeight()
 			return m, m.persistSessionCmd()
@@ -2385,6 +2462,7 @@ func (m model) updateMouse(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.messages[msgIdx].ReasoningVisible = !m.messages[msgIdx].ReasoningVisible
 						yOff := m.chatViewport.YOffset()
 						m.selection = textSelection{}
+						m = m.invalidateTranscriptCache()
 						m.chatViewport.SetContent(buildChatContentHighlighted(m))
 						if yOff > m.chatViewport.YOffset() {
 							m.chatViewport.GotoBottom()
@@ -2610,6 +2688,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.messages[i].ReasoningVisible = newVisible
 			}
 		}
+		m = m.invalidateTranscriptCache()
 		m.messages = append(m.messages, llm.Message{
 			Role:     "assistant",
 			Internal: true,
@@ -3103,6 +3182,63 @@ func (m model) themePickerOverlayHeight() int {
 	return strings.Count(popup.Render(pc.String()), "\n") + 1
 }
 
+const (
+	// maxRetryAttempts bounds how many times a failed chat request is
+	// repeated before the error surfaces in the transcript.
+	maxRetryAttempts = 8
+	// longRetryWaitThreshold is the point past which a wait is no longer
+	// automatic. Usage-limit resets can be hours out, and silently parking the
+	// TUI that long is worse than asking.
+	longRetryWaitThreshold = 5 * time.Minute
+)
+
+// scheduleRetry arms a retry after a failed request, discarding whatever the
+// dead stream had already produced. isStreaming stays true so the cancel keys
+// and the spinner tick keep working while the countdown runs.
+func (m model) scheduleRetry(err error) (tea.Model, tea.Cmd) {
+	m.streamingContent = nil
+	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.isStreaming = true
+	m.workingMsg = ""
+	m.workingSpinnerIdx = 0
+	if m.streamState != nil {
+		m.streamState.cancel = nil
+	}
+
+	delay, fromProvider := llm.RetryHint(err)
+	if !fromProvider {
+		delay = llm.BackoffDelay(m.retry.attempt + 1)
+	}
+
+	m.retry = retryState{
+		active:    true,
+		attempt:   m.retry.attempt + 1,
+		delay:     delay,
+		until:     time.Now().Add(delay),
+		err:       err,
+		token:     m.retry.token + 1,
+		needsOK:   delay > longRetryWaitThreshold,
+		rateLimit: llm.IsRateLimit(err),
+	}
+
+	// Drop the partial assistant text from the transcript view.
+	m.chatViewport.SetContent(buildChatContentHighlighted(m))
+	if m.stickToBottom {
+		m.chatViewport.GotoBottom()
+	}
+
+	if m.retry.needsOK {
+		return m, workingTickCmd()
+	}
+	return m, tea.Batch(retryFireCmd(delay, m.retry.token), workingTickCmd())
+}
+
+func retryFireCmd(d time.Duration, token int) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return retryFireMsg{token: token}
+	})
+}
+
 func startChatStreamCmd(m model) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -3264,6 +3400,9 @@ func (m model) resetStreamingState() model {
 	m.toolQueue = nil
 	m.toolCallCycle = 0
 	m.streamState.cancel = nil
+	// Bump the token so any retry already scheduled by tea.Tick is ignored
+	// when it fires.
+	m.retry = retryState{token: m.retry.token + 1}
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 	m.stickToBottom = true
 	return m
@@ -3283,12 +3422,14 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 		qmsg = "System: Current date is " + today + ".\n\n" + qmsg
 	}
 	m.messages = append(m.messages, llm.Message{Role: "user", Content: qmsg})
+	m = m.extendTranscriptCache().trimMessages()
 	m.isStreaming = true
 	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 	m.workingSpinnerIdx = 0
 	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
+	m.stickToBottom = true
 	if m.cachedSystemPrompt == "" {
 		if sp, err := renderSystemPrompt(m); err == nil {
 			m.cachedSystemPrompt = sp
@@ -3427,40 +3568,98 @@ func renderStreamingPart(m model) string {
 	return b.String()
 }
 
-func buildChatContent(m model) string {
+// transcriptCacheKeyStr returns the cache key for transcript rendering.
+// When theme or width changes, the key changes and the cache is invalidated.
+func (m model) transcriptCacheKeyStr() string {
+	return fmt.Sprintf("%s-%d", m.themeName, m.width)
+}
+
+// transcriptBoundary returns the index of the first message that belongs to an
+// unresolved block. Everything before this index is finalized (no tool calls
+// awaiting results) and can be cached. During streaming all messages are
+// finalized because the in-progress assistant message lives in
+// streamingContent, not in m.messages.
+func (m model) transcriptBoundary() int {
+	if len(m.messages) == 0 {
+		return 0
+	}
+	resolved := make(map[string]bool)
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		msg := m.messages[i]
+		if msg.Role == "tool" {
+			resolved[msg.ToolCallID] = true
+			continue
+		}
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			allDone := true
+			for _, tc := range msg.ToolCalls {
+				if !resolved[tc.ID] {
+					allDone = false
+					break
+				}
+			}
+			if allDone {
+				for _, tc := range msg.ToolCalls {
+					delete(resolved, tc.ID)
+				}
+			} else {
+				return i
+			}
+		}
+	}
+	return len(m.messages)
+}
+
+// extendTranscriptCache extends the render cache to include all finalized
+// messages up to the current transcriptBoundary. Call this after appending
+// or modifying messages so the next buildChatContent call is fast.
+func (m model) extendTranscriptCache() model {
+	key := m.transcriptCacheKeyStr()
+	if m.transcriptCachedKey != key {
+		m.transcriptCacheContent = ""
+		m.transcriptCacheUpTo = 0
+		m.transcriptCachedKey = key
+	}
+	boundary := m.transcriptBoundary()
+	if boundary > m.transcriptCacheUpTo {
+		m.transcriptCacheContent += renderMessageRange(m, m.transcriptCacheUpTo, boundary)
+		m.transcriptCacheUpTo = boundary
+	}
+	return m
+}
+
+// invalidateTranscriptCache clears the render cache so the next call to
+// buildChatContent does a full rebuild. Use when messages are modified
+// in-place (e.g. toggling ReasoningVisible) or when the structure changes
+// in ways that cannot be incrementally extended.
+func (m model) invalidateTranscriptCache() model {
+	m.transcriptCacheContent = ""
+	m.transcriptCacheUpTo = 0
+	m.transcriptCachedKey = ""
+	return m
+}
+
+// renderMessageRange renders messages [from, to) using the same logic as
+// buildChatContent's main message loop. The range must be within
+// m.messages. Tool results are rendered inline with their parent assistant
+// message when found within the full messages array.
+func renderMessageRange(m model, from, to int) string {
+	if from >= to || from >= len(m.messages) {
+		return ""
+	}
+	if to > len(m.messages) {
+		to = len(m.messages)
+	}
+
 	b := builderPool.Get().(*strings.Builder)
 	defer builderPool.Put(b)
 	b.Reset()
-	streamingLen := 0
-	if m.streamingContent != nil {
-		streamingLen = m.streamingContent.Len()
-	}
-	reasoningLen := 0
-	if m.reasoning.content != nil {
-		reasoningLen = m.reasoning.content.Len()
-	}
-
-	if len(m.messages) == 0 && streamingLen == 0 {
-		b.WriteString(m.theme.EmptyState.Render("No messages yet. Send a message to start."))
-		b.WriteString("\n")
-		return b.String()
-	}
 
 	toolNames := buildToolNameLookup(m.messages)
-
-	lastIsCurrent := false
-	if len(m.messages) > 0 {
-		last := m.messages[len(m.messages)-1]
-		lastIsCurrent = last.Role == "assistant" && (m.reasoning.active || streamingLen > 0)
-	}
-
-	skipLast := lastIsCurrent
 	skipResultIDs := make(map[string]bool)
-	for i, msg := range m.messages {
-		isLast := i == len(m.messages)-1
-		if isLast && skipLast {
-			continue
-		}
+
+	for i := from; i < to; i++ {
+		msg := m.messages[i]
 		switch msg.Role {
 		case "user":
 			display := sessions.StripDatePrefix(msg.Content)
@@ -3468,13 +3667,9 @@ func buildChatContent(m model) string {
 			b.WriteString("\n")
 		case "assistant":
 			if msg.Internal {
-				// no label for slash command output
-			} else {
-				// Only show model label when previous message is from user
-				if i == 0 || m.messages[i-1].Role == "user" {
-					b.WriteString(ui.RenderAssistantLabel(m.theme, m.displayNameForModel(msg.Model)))
-					b.WriteString("\n")
-				}
+			} else if i == 0 || m.messages[i-1].Role == "user" {
+				b.WriteString(ui.RenderAssistantLabel(m.theme, m.displayNameForModel(msg.Model)))
+				b.WriteString("\n")
 			}
 			if msg.Reasoning != "" {
 				if msg.ReasoningVisible {
@@ -3491,9 +3686,6 @@ func buildChatContent(m model) string {
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					// Search forward through subsequent messages to find the matching tool result.
-					// Tool results are stored sequentially after the assistant message in the order
-					// they were executed, not necessarily in the same order as the ToolCalls array.
 					found := false
 					for j := i + 1; j < len(m.messages); j++ {
 						if m.messages[j].Role == "tool" && m.messages[j].ToolCallID == tc.ID {
@@ -3520,37 +3712,61 @@ func buildChatContent(m model) string {
 		}
 	}
 
-	if lastIsCurrent || m.reasoning.active || streamingLen > 0 {
-		b.WriteString(ui.RenderAssistantLabel(m.theme, m.modelDisplayName()))
-		b.WriteString("\n")
+	return b.String()
+}
 
-		if reasoningLen > 0 {
-			elapsed := m.reasoning.duration
-			if m.reasoning.active {
-				elapsed = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
-			}
-			content := ""
-			if m.reasoning.content != nil {
-				content = m.reasoning.content.String()
-			}
-			b.WriteString(ui.RenderReasoning(m.theme, m.reasoning.active, m.reasoning.visible, elapsed, content, m.chatViewport.Width()))
-			b.WriteString("\n")
-		}
+// trimMessages removes old messages when the session exceeds the cap. The
+// cache is invalidated since message indices shift.
+func (m model) trimMessages() model {
+	if len(m.messages) <= maxSessionMessages {
+		return m
+	}
+	excess := len(m.messages) - maxSessionMessages
+	if excess+1 >= len(m.messages) {
+		excess = len(m.messages) - 2
+	}
+	if excess <= 0 {
+		return m
+	}
+	n := copy(m.messages, m.messages[excess:])
+	m.messages = m.messages[:n]
+	return m.invalidateTranscriptCache()
+}
 
-		if lastIsCurrent {
-			content := m.messages[len(m.messages)-1].Content
-			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width(), commandNames()))
-				b.WriteString("\n")
-			}
-		} else if streamingLen > 0 && m.streamingContent != nil {
-			content := m.streamingContent.String()
-			if content != "" {
-				b.WriteString(ui.RenderAssistantContent(m.theme, content, m.chatViewport.Width(), commandNames()))
-				b.WriteString("\n")
-			}
-		}
+func buildChatContent(m model) string {
+	streamingLen := 0
+	if m.streamingContent != nil {
+		streamingLen = m.streamingContent.Len()
+	}
+	reasoningLen := 0
+	if m.reasoning.content != nil {
+		reasoningLen = m.reasoning.content.Len()
+	}
+
+	if len(m.messages) == 0 && streamingLen == 0 {
+		b := builderPool.Get().(*strings.Builder)
+		defer builderPool.Put(b)
+		b.Reset()
+		b.WriteString(m.theme.EmptyState.Render("No messages yet. Send a message to start."))
 		b.WriteString("\n")
+		return b.String()
+	}
+
+	var b strings.Builder
+	b.Grow(len(m.transcriptCacheContent) + 512)
+
+	cacheValid := m.transcriptCachedKey == m.transcriptCacheKeyStr()
+	if cacheValid && m.transcriptCacheUpTo >= len(m.messages) {
+		b.WriteString(m.transcriptCacheContent)
+	} else if cacheValid && m.transcriptCacheUpTo > 0 {
+		b.WriteString(m.transcriptCacheContent)
+		b.WriteString(renderMessageRange(m, m.transcriptCacheUpTo, len(m.messages)))
+	} else {
+		b.WriteString(renderMessageRange(m, 0, len(m.messages)))
+	}
+
+	if streamingLen > 0 || reasoningLen > 0 {
+		b.WriteString(renderStreamingPart(m))
 	}
 
 	return b.String()

@@ -497,7 +497,15 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		resp.Body.Close()
-		return nil, fmt.Errorf("chat API error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		text := strings.TrimSpace(string(body))
+		delay, hasHint := ParseRetryAfter(resp.Header, text, time.Now())
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Body:       text,
+			Provider:   provider,
+			RetryAfter: delay,
+			HasHint:    hasHint,
+		}
 	}
 
 	events := make(chan StreamEvent, 16)
