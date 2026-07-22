@@ -794,6 +794,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 
 	cv := viewport.New()
 	cv.FillHeight = true
+	// The viewport cuts over-wide lines and lets ←/→, shift+wheel and a
+	// horizontal trackpad swipe pan across what it cut. Transcript content is
+	// wrapped to the viewport width instead (see ui.FitWidth), so there is
+	// nothing off to the side to pan to; a step of 0 disables the panning.
+	cv.SetHorizontalStep(0)
 
 	sp := spinner.New()
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(s.Mauve)).Background(lipgloss.Color(s.Base))

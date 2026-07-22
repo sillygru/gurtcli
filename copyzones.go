@@ -143,20 +143,30 @@ func appendSpacerZones(m model, zones []copyZone) []copyZone {
 	return zones
 }
 
-// appendBottomZones adds the queued message, the help line and the status line.
-// The bottom section ends on the last row of the screen, so it is laid out
-// upwards from there.
+// appendBottomZones adds the queued message and the bar at the foot of the
+// screen. The bottom section ends on the last row, so it is laid out upwards
+// from there — and the bar is as many rows tall as it needed to wrap, which is
+// why its height is read rather than assumed.
 func appendBottomZones(m model, zones []copyZone) []copyZone {
-	helpRow := m.height - 1
-	if helpRow < 0 {
+	if m.height < 1 {
+		return zones
+	}
+
+	bar := m.fitBottomBar()
+	barTop := m.height - len(bar.rows)
+	if barTop < 0 {
 		return zones
 	}
 
 	if m.queuedMessage != "" {
-		queuedRow := helpRow - m.chatInput.Height() - 1
-		if queuedRow > 0 {
+		queued := len(m.queuedRows())
+		bottom := barTop - m.chatInput.Height()
+		for row := bottom - queued; row < bottom; row++ {
+			if row <= 0 {
+				continue
+			}
 			zones = append(zones, copyZone{
-				row:   queuedRow,
+				row:   row,
 				start: 0,
 				end:   m.width,
 				label: "queued message",
@@ -165,34 +175,21 @@ func appendBottomZones(m model, zones []copyZone) []copyZone {
 		}
 	}
 
-	// The same fitting the renderer used, so the zones land on the columns that
-	// actually got drawn rather than on segments that were dropped.
-	_, helpSegs, statusSegs := m.fitBottomBar()
-	status := joinSegments(statusSegs)
-
-	zones = appendSegmentZones(zones, helpRow, 0, helpSegs)
-	statusStart := m.width - lipgloss.Width(status)
-	return appendSegmentZones(zones, helpRow, statusStart, statusSegs)
-}
-
-// appendSegmentZones turns a joined run of segments into one zone each, so
-// clicking the model name in the status bar copies the model name rather than
-// the whole line.
-func appendSegmentZones(zones []copyZone, row, start int, segments []segment) []copyZone {
-	sepWidth := lipgloss.Width(segmentSeparator)
-	col := start
-	for _, seg := range segments {
-		w := lipgloss.Width(seg.display)
-		if w > 0 && seg.text != "" {
-			zones = append(zones, copyZone{
-				row:   row,
-				start: col,
-				end:   col + w,
-				label: seg.label,
-				text:  seg.text,
-			})
+	// The layout the renderer used, so the zones land on the cells that were
+	// actually drawn rather than on segments that wrapped elsewhere or were
+	// dropped. A segment too wide for a row occupies several of them and every
+	// one of them copies the whole thing.
+	for _, p := range bar.placed {
+		if p.width <= 0 || p.seg.text == "" {
+			continue
 		}
-		col += w + sepWidth
+		zones = append(zones, copyZone{
+			row:   barTop + p.row,
+			start: p.start,
+			end:   p.start + p.width,
+			label: p.seg.label,
+			text:  p.seg.text,
+		})
 	}
 	return zones
 }

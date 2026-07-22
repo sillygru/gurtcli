@@ -3129,13 +3129,9 @@ func (m model) adjustViewportHeight() model {
 	case m.showThemePicker:
 		fixed += m.themePickerOverlayHeight()
 	default:
-		fixed += m.chatInput.Height() + 1 // input area + help line
-		if m.suggestions.active && len(m.suggestions.items) > 0 {
-			fixed += len(m.suggestions.items)
-		}
-		if m.queuedMessage != "" {
-			fixed++ // the queued-message notice
-		}
+		fixed += m.chatInput.Height() + len(m.fitBottomBar().rows)
+		fixed += len(m.suggestionRows())
+		fixed += len(m.queuedRows())
 	}
 	m.chatViewport.SetHeight(m.height - fixed)
 	if m.chatViewport.Height() < 1 {
@@ -3579,7 +3575,7 @@ func renderStreamingPart(m model) string {
 		}
 	}
 	b.WriteString("\n")
-	return b.String()
+	return ui.FitWidth(b.String(), m.chatViewport.Width())
 }
 
 // transcriptCacheKeyStr returns the cache key for transcript rendering.
@@ -3677,7 +3673,7 @@ func renderMessageRange(m model, from, to int) string {
 		switch msg.Role {
 		case "user":
 			display := sessions.StripDatePrefix(msg.Content)
-			b.WriteString(ui.RenderUserMessage(m.theme, display, m.width, commandNames()))
+			b.WriteString(ui.RenderUserMessage(m.theme, display, m.chatViewport.Width(), commandNames()))
 			b.WriteString("\n")
 		case "assistant":
 			if msg.Internal {
@@ -3726,7 +3722,11 @@ func renderMessageRange(m model, from, to int) string {
 		}
 	}
 
-	return b.String()
+	// The renderers below aim at the viewport width; this is the backstop that
+	// makes it true no matter what they emitted, so nothing is ever cut off at
+	// the right edge. Applied here rather than in buildChatContent so the
+	// transcript cache stores already-fitted text.
+	return ui.FitWidth(b.String(), m.chatViewport.Width())
 }
 
 // trimMessages removes old messages when the session exceeds the cap. The

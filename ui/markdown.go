@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -21,7 +22,12 @@ func renderMarkdownContent(t Theme, content string, width int, commands []string
 		return ""
 	}
 	lines := strings.Split(content, "\n")
-	wrapWidth := LayoutForContent(width).ContentWidth()
+	// Every branch below indents by two cells, so that indent comes out of the
+	// width the text is wrapped to rather than being added on top of it.
+	bodyWidth := LayoutForContent(width).ContentWidth() - mdIndent
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
 
 	var b strings.Builder
 	doHL := len(commands) > 0
@@ -36,9 +42,20 @@ func renderMarkdownContent(t Theme, content string, width int, commands []string
 				j++
 			}
 			if j < len(lines) {
+				// The code style paints a background and pads inside it, and
+				// that padding is drawn outside the text it wraps — measure it
+				// rather than assume it.
+				codeWidth := bodyWidth - lipgloss.Width(t.CodeBlock.Render(""))
+				if codeWidth < 1 {
+					codeWidth = 1
+				}
 				for k := i + 1; k < j; k++ {
-					b.WriteString(t.CodeBlock.Render("  " + lines[k]))
-					b.WriteString("\n")
+					// Hard wrap, not word wrap: code reads by column, and a
+					// long line is worth an extra row rather than a cut.
+					for _, row := range strings.Split(ansi.Hardwrap(lines[k], codeWidth, true), "\n") {
+						b.WriteString(t.CodeBlock.Render("  " + row))
+						b.WriteString("\n")
+					}
 				}
 				i = j + 1
 				continue
@@ -65,47 +82,37 @@ func renderMarkdownContent(t Theme, content string, width int, commands []string
 
 		// Headings
 		if m := reHeading3.FindStringSubmatch(trimmed); m != nil {
-			b.WriteString(t.Heading3.Render("  " + renderInlineMarkdown(t, m[1], commands, doHL)))
-			b.WriteString("\n")
+			writeHeading(&b, t.Heading3, t, m[1], bodyWidth, commands, doHL)
 			i++
 			continue
 		}
 		if m := reHeading2.FindStringSubmatch(trimmed); m != nil {
-			b.WriteString(t.Heading2.Render("  " + renderInlineMarkdown(t, m[1], commands, doHL)))
-			b.WriteString("\n")
+			writeHeading(&b, t.Heading2, t, m[1], bodyWidth, commands, doHL)
 			i++
 			continue
 		}
 		if m := reHeading1.FindStringSubmatch(trimmed); m != nil {
-			b.WriteString(t.Heading1.Render("  " + renderInlineMarkdown(t, m[1], commands, doHL)))
-			b.WriteString("\n")
+			writeHeading(&b, t.Heading1, t, m[1], bodyWidth, commands, doHL)
 			i++
 			continue
 		}
 
 		// Bullet list
 		if m := reBullet.FindStringSubmatch(trimmed); m != nil {
-			b.WriteString("  ")
-			b.WriteString(t.ListBullet.Render("• "))
-			b.WriteString(renderInlineMarkdown(t, m[1], commands, doHL))
-			b.WriteString("\n")
+			writeListItem(&b, t.ListBullet, "• ", t, m[1], bodyWidth, commands, doHL)
 			i++
 			continue
 		}
 
 		// Numbered list
 		if m := reNumbered.FindStringSubmatch(trimmed); m != nil {
-			b.WriteString("  ")
-			b.WriteString(t.ListNumber.Render(m[1] + ". "))
-			b.WriteString(renderInlineMarkdown(t, m[2], commands, doHL))
-			b.WriteString("\n")
+			writeListItem(&b, t.ListNumber, m[1]+". ", t, m[2], bodyWidth, commands, doHL)
 			i++
 			continue
 		}
 
 		// Paragraph
-		wrapped := ansi.Hardwrap(line, wrapWidth, true)
-		for _, subLine := range strings.Split(wrapped, "\n") {
+		for _, subLine := range wrapRows(line, bodyWidth) {
 			b.WriteString("  ")
 			b.WriteString(renderInlineMarkdown(t, subLine, commands, doHL))
 			b.WriteString("\n")
@@ -113,6 +120,44 @@ func renderMarkdownContent(t Theme, content string, width int, commands []string
 		i++
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// mdIndent is the two-cell indent every markdown block is drawn at.
+const mdIndent = 2
+
+// wrapRows wraps text to width, breaking inside a word only when the word is
+// wider than the row it has to fit in. The text is still raw markdown here, so
+// the rows come out a little narrower than the budget once the ** and ` markers
+// are stripped — narrower is the safe direction.
+func wrapRows(text string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	return strings.Split(ansi.Wrap(text, width, ""), "\n")
+}
+
+// writeHeading writes a heading wrapped to the body width, every row indented.
+func writeHeading(b *strings.Builder, style lipgloss.Style, t Theme, text string, bodyWidth int, commands []string, doHL bool) {
+	for _, row := range wrapRows(text, bodyWidth) {
+		b.WriteString(style.Render("  " + renderInlineMarkdown(t, row, commands, doHL)))
+		b.WriteString("\n")
+	}
+}
+
+// writeListItem writes one list entry, aligning continuation rows under the
+// text rather than under the bullet so the item still reads as one item.
+func writeListItem(b *strings.Builder, markerStyle lipgloss.Style, marker string, t Theme, text string, bodyWidth int, commands []string, doHL bool) {
+	markerWidth := ansi.StringWidth(marker)
+	for k, row := range wrapRows(text, bodyWidth-markerWidth) {
+		b.WriteString("  ")
+		if k == 0 {
+			b.WriteString(markerStyle.Render(marker))
+		} else {
+			b.WriteString(strings.Repeat(" ", markerWidth))
+		}
+		b.WriteString(renderInlineMarkdown(t, row, commands, doHL))
+		b.WriteString("\n")
+	}
 }
 
 // renderInlineMarkdown applies inline bold, italic, code, and file/cmd refs.

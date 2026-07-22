@@ -20,7 +20,7 @@ func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width
 	args := parseToolArgs(tc.Function.Arguments)
 
 	if tc.Function.Name == "read_file" {
-		return renderReadFileLine(t, args, resultContent, isError)
+		return renderReadFileLine(t, args, resultContent, isError, width)
 	}
 
 	var body strings.Builder
@@ -61,7 +61,11 @@ func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width
 	return wrapToolCard(t, accent, content, NewLayout(width, 0).CardWidth())
 }
 
-func renderReadFileLine(t Theme, args map[string]interface{}, resultContent string, isError bool) string {
+// renderReadFileLine renders a read_file call as a single indented line rather
+// than a card. It is the one tool row without a box around it, so it has to do
+// its own fitting: the path and any error wrap under the label instead of
+// running off the right edge.
+func renderReadFileLine(t Theme, args map[string]interface{}, resultContent string, isError bool, width int) string {
 	path, _ := args["filePath"].(string)
 	if path == "" {
 		path = "(unknown)"
@@ -72,16 +76,38 @@ func renderReadFileLine(t Theme, args map[string]interface{}, resultContent stri
 	accentColor := t.Blue
 
 	iconStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(accentColor)).Bold(true).Render(icon + " " + label)
-	pathStyled := t.ToolPath.Render(" " + shortenPath(path))
 
-	line := "  " + iconStyled + pathStyled
-
+	head := "  " + iconStyled
+	tail := shortenPath(path)
+	errMsg := ""
 	if isError {
-		errMsg := firstLineTrimmed(resultContent, 60)
-		line += " " + t.ToolResultErr.Render("✕ "+errMsg)
+		errMsg = "✕ " + firstLineTrimmed(resultContent, 60)
 	}
 
-	return line
+	// "  ◈ Read " up front, continuation rows aligned under the path.
+	indent := 2 + ansi.StringWidth(icon+" "+label) + 1
+	avail := LayoutForContent(width).ContentWidth() - indent
+	if avail < 1 {
+		avail = 1
+	}
+
+	var b strings.Builder
+	b.WriteString(head)
+	for i, row := range strings.Split(ansi.Wrap(tail, avail, ""), "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+			b.WriteString(strings.Repeat(" ", indent-1))
+		}
+		b.WriteString(t.ToolPath.Render(" " + row))
+	}
+	if errMsg != "" {
+		for _, row := range strings.Split(ansi.Wrap(errMsg, avail, ""), "\n") {
+			b.WriteString("\n")
+			b.WriteString(strings.Repeat(" ", indent-1))
+			b.WriteString(t.ToolResultErr.Render(" " + row))
+		}
+	}
+	return b.String()
 }
 
 // RenderToolCall renders a tool invocation as a bordered card.
@@ -90,7 +116,7 @@ func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 	args := parseToolArgs(tc.Function.Arguments)
 
 	if tc.Function.Name == "read_file" {
-		return renderReadFileLine(t, args, "", false)
+		return renderReadFileLine(t, args, "", false, width)
 	}
 
 	var body strings.Builder

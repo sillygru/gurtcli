@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/ui"
@@ -91,6 +92,81 @@ var busyTranscript = []llm.Message{
 	},
 	{Role: "tool", ToolCallID: "call_1", Content: "Edited /Volumes/KINGSTON/code/projects/gurtcli/ui/layout.go (1 replacement)"},
 	{Role: "assistant", Content: "Done — the floor now clamps down to the terminal width instead of up to a fixed minimum."},
+}
+
+// wideTranscript is everything that used to overhang the transcript viewport:
+// an unbroken path, a long fenced code line, a markdown table too wide for any
+// terminal, a long bullet and heading, and CJK text that covers two cells a
+// glyph.
+var wideTranscript = []llm.Message{
+	{Role: "user", Content: "look at /Volumes/KINGSTON/code/projects/gurtcli/internal/rendering/pipeline/transcript_cache_invalidation_strategy.go and tell me what it does"},
+	{
+		Role: "assistant",
+		Content: "# A heading long enough that it cannot possibly fit inside a phone-sized terminal window\n\n" +
+			"- a bullet whose text runs well past the right edge of a narrow terminal and has to keep going\n\n" +
+			"这是一段中文文本，每个字符占据两个终端单元格，用来验证换行按单元格宽度计算。\n\n" +
+			"```go\nfunc (m model) somethingWithAVeryLongSignature(ctx context.Context, opts ...RenderOption) (string, error) { return \"\", nil }\n```\n\n" +
+			"| Setting | Default | What it changes about the way the transcript is rendered |\n" +
+			"|---------|---------|----------------------------------------------------------|\n" +
+			"| wrap | on | every line is wrapped to the viewport width instead of cut |\n",
+		ToolCalls: []llm.ToolCall{{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"filePath":"/Volumes/KINGSTON/code/projects/gurtcli/internal/rendering/pipeline/transcript_cache_invalidation_strategy.go"}`,
+			},
+		}},
+	},
+	{Role: "tool", ToolCallID: "call_1", Content: "read 412 lines"},
+	{
+		Role:             "assistant",
+		Content:          "Done.",
+		Reasoning:        "The cache key covers the theme and the width, so a resize rebuilds it; anything that mutates a finalized message has to invalidate it by hand.",
+		ReasoningVisible: true,
+	},
+}
+
+// The transcript viewport does not wrap: it cuts over-wide lines and lets the
+// user pan across what it cut. Content that fits it is what makes both of those
+// impossible, so this is the check that keeps them impossible.
+func TestTranscriptFitsViewportWidth(t *testing.T) {
+	for _, size := range terminalSizes {
+		m := sizedChatModel(size.w, size.h)
+		m.messages = wideTranscript
+		content := buildChatContent(m)
+		width := m.chatViewport.Width()
+		for i, line := range strings.Split(content, "\n") {
+			if got := ansi.StringWidth(stripANSI(line)); got > width {
+				t.Errorf("transcript at %dx%d: line %d is %d cells wide, overflows the %d-cell viewport by %d: %q",
+					size.w, size.h, i, got, width, got-width, stripANSI(line))
+			}
+		}
+	}
+}
+
+// Fitting the content is only half of it: the viewport must also refuse to pan
+// even if something over-wide ever slips through.
+func TestTranscriptDoesNotScrollHorizontally(t *testing.T) {
+	m := sizedChatModel(80, 24)
+	m.messages = wideTranscript
+	m.chatViewport.SetContent(buildChatContent(m))
+
+	m.chatViewport.SetXOffset(999)
+	if got := m.chatViewport.XOffset(); got != 0 {
+		t.Errorf("XOffset after SetXOffset(999) = %d, want 0 — content is wider than the viewport", got)
+	}
+
+	for _, msg := range []tea.Msg{
+		tea.MouseWheelMsg{Button: tea.MouseWheelRight},
+		tea.MouseWheelMsg{Button: tea.MouseWheelDown, Mod: tea.ModShift},
+		tea.KeyPressMsg{Code: tea.KeyRight},
+	} {
+		updated, _ := m.Update(msg)
+		after := updated.(model)
+		if got := after.chatViewport.XOffset(); got != 0 {
+			t.Errorf("%T left XOffset at %d, want 0 — horizontal scrolling should be off", msg, got)
+		}
+	}
 }
 
 func TestChatViewFitsEveryTerminalSize(t *testing.T) {
@@ -220,4 +296,43 @@ func stateName(s state) string {
 		return "allowManageView"
 	}
 	return "view"
+}
+
+// The chrome at the foot of the screen used to shrink its text to one row each.
+// It wraps now, so the whole message survives at any width — and the height
+// budget has to follow it, which assertFitsScreen above checks.
+func TestChromeWrapsInsteadOfTruncating(t *testing.T) {
+	toast := "Copied the working directory to the clipboard"
+	queued := "and then run the whole test suite against the narrow layouts"
+
+	for _, size := range terminalSizes {
+		m := sizedChatModel(size.w, size.h)
+		m.toast = &toastMsg{text: toast}
+		m.queuedMessage = queued
+		// No hyphens in the description: a hyphen is a legitimate place to break
+		// a word, and rejoining below cannot tell that break from a lost word.
+		m.suggestions = suggestionState{active: true, items: []suggestionItem{
+			{name: "allow", description: "manage the always allowed tools and command prefixes"},
+		}}
+
+		// Wrapped rows are joined back up before comparing: what matters is that
+		// no words went missing, not where the breaks landed.
+		rejoin := func(rows []string) string {
+			return strings.Join(strings.Fields(stripANSI(strings.Join(rows, " "))), " ")
+		}
+		for _, tc := range []struct {
+			name string
+			rows []string
+			want string
+		}{
+			{"toast", m.toastRows(), toast},
+			{"queued notice", m.queuedRows(), queued},
+			{"suggestion", m.suggestionRows(), "manage the always allowed tools and command prefixes"},
+		} {
+			if got := rejoin(tc.rows); !strings.Contains(got, tc.want) {
+				t.Errorf("%s at %dx%d lost text: %q does not contain %q",
+					tc.name, size.w, size.h, got, tc.want)
+			}
+		}
+	}
 }

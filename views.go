@@ -518,61 +518,200 @@ func (m model) chatHelpText() (string, bool) {
 	}
 }
 
-// fitBottomBar decides what survives on the bottom row at the current width.
+// maxBottomBarRows is how far the bar may grow before it starts dropping
+// segments instead. Wrapping is what keeps text off the cutting board, but a
+// bar that grows without limit would push the prompt off a short screen, and
+// the prompt matters more than the version string does.
+const maxBottomBarRows = 3
+
+// placedSegment is a copyable segment as it was actually drawn: which row of
+// the bar it landed on, and at which column.
+type placedSegment struct {
+	seg   segment
+	row   int
+	start int
+	width int
+}
+
+// bottomBar is the bottom row — or rows — of the chat screen: the hint on the
+// left, the session/provider/model status on the right. Both the renderer and
+// the click-to-copy zones read this one layout, so the two cannot disagree
+// about which cells hold what.
+type bottomBar struct {
+	rows   []string
+	placed []placedSegment
+}
+
+// fitBottomBar lays the bar out at the current width.
 //
-// The row must stay exactly one row tall — adjustViewportHeight budgets for one
-// — so on a narrow terminal segments are dropped rather than allowed to wrap.
-// Least useful goes first: version, then the working directory, then the update
-// notice, then the session name, then the provider. The model name is what
-// people actually need to see, so it survives to the end and is truncated only
-// if even it does not fit.
-//
-// Returns the help text, the help segments it was built from (nil when the help
-// side is a transient hint with nothing worth copying), and the status
-// segments. Both the renderer and the click-to-copy zones read this, so the two
-// cannot disagree about which columns hold what.
-func (m model) fitBottomBar() (help string, helpSegs, statusSegs []segment) {
+// It prefers the classic single row — help flush left, status flush right. When
+// that does not fit, the two halves take rows of their own and wrap between
+// segments rather than being cut. Only when even that exceeds maxBottomBarRows
+// do segments start dropping, least useful first: version, then the working
+// directory, then the update notice, then the session name, then the provider.
+// The model name is what people actually need, so it survives to the end.
+func (m model) fitBottomBar() bottomBar {
 	helpText, isDefault := m.chatHelpText()
-	statusSegs = m.statusSegments()
+	statusSegs := m.statusSegments()
+	var helpSegs []segment
 	if isDefault {
 		helpSegs = m.helpSegments()
+	} else if helpText != "" {
+		// A transient hint: shown, but nothing worth copying.
+		helpSegs = []segment{{display: helpText}}
 	}
 
-	// One column of separation between the two halves, minimum.
-	fits := func() bool {
-		return lipgloss.Width(helpText)+lipgloss.Width(joinSegments(statusSegs))+1 <= m.width
-	}
-
-	for !fits() && len(helpSegs) > 0 {
-		helpSegs = helpSegs[1:]
-		helpText = joinSegments(helpSegs)
-	}
-	for !fits() && len(statusSegs) > 1 {
-		statusSegs = statusSegs[1:]
-	}
-	if !fits() {
-		// Only the model name is left. Give the whole row to it.
-		helpSegs = nil
-		helpText = ""
-		if len(statusSegs) == 1 && lipgloss.Width(statusSegs[0].display) > m.width {
-			statusSegs[0].display = ansi.Truncate(statusSegs[0].display, m.width, "…")
+	for {
+		bar := m.layoutBottomBar(helpSegs, statusSegs)
+		if len(bar.rows) <= maxBottomBarRows {
+			return bar
+		}
+		switch {
+		case len(helpSegs) > 0:
+			helpSegs = helpSegs[1:]
+		case len(statusSegs) > 1:
+			statusSegs = statusSegs[1:]
+		default:
+			// The model name alone, wrapped over as many rows as it needs.
+			// Cutting it here would hide the one thing the row exists for.
+			return bar
 		}
 	}
-	return helpText, helpSegs, statusSegs
+}
+
+// layoutBottomBar places the two runs of segments without dropping any.
+func (m model) layoutBottomBar(helpSegs, statusSegs []segment) bottomBar {
+	width := m.width
+	if width < 1 {
+		width = 1
+	}
+	help := joinSegments(helpSegs)
+	status := joinSegments(statusSegs)
+
+	// The common case: both halves on one row with a column between them.
+	if lipgloss.Width(help)+lipgloss.Width(status)+1 <= width {
+		pad := width - lipgloss.Width(help) - lipgloss.Width(status)
+		if pad < 1 {
+			pad = 1
+		}
+		rendered := ""
+		if help != "" {
+			rendered = m.theme.Dim.Render(help)
+		}
+		rendered += strings.Repeat(" ", pad) + m.theme.StatusBar.Render(status)
+
+		bar := bottomBar{rows: []string{rendered}}
+		bar.placed = placeSegments(bar.placed, helpSegs, 0, 0)
+		bar.placed = placeSegments(bar.placed, statusSegs, 0, width-lipgloss.Width(status))
+		return bar
+	}
+
+	var bar bottomBar
+	helpRows, helpPlaced := packSegments(helpSegs, width, false)
+	for _, row := range helpRows {
+		bar.rows = append(bar.rows, m.theme.Dim.Render(row))
+	}
+	bar.placed = append(bar.placed, helpPlaced...)
+
+	statusRows, statusPlaced := packSegments(statusSegs, width, true)
+	offset := len(bar.rows)
+	for _, row := range statusRows {
+		bar.rows = append(bar.rows, m.theme.StatusBar.Render(row))
+	}
+	for _, p := range statusPlaced {
+		p.row += offset
+		bar.placed = append(bar.placed, p)
+	}
+	return bar
+}
+
+// packSegments lays segments out over rows no wider than width, breaking
+// between segments and, only when one segment is wider than a whole row,
+// inside it. alignRight flushes each row to the right edge, the way the status
+// half of the bar is drawn.
+func packSegments(segs []segment, width int, alignRight bool) (rows []string, placed []placedSegment) {
+	if len(segs) == 0 {
+		return nil, nil
+	}
+	sepWidth := lipgloss.Width(segmentSeparator)
+
+	// Build the rows first as runs of segments, then render, so a row's width
+	// is known before anything is placed in it.
+	type placement struct {
+		seg   segment
+		start int
+		width int // cells on this row, which is less than the segment's own
+		// width when the segment had to be wrapped across rows
+	}
+	var (
+		rowText  string
+		rowItems []placement
+	)
+	flush := func() {
+		if rowText == "" {
+			return
+		}
+		pad := 0
+		if alignRight {
+			pad = width - lipgloss.Width(rowText)
+			if pad < 0 {
+				pad = 0
+			}
+		}
+		for _, it := range rowItems {
+			placed = append(placed, placedSegment{
+				seg:   it.seg,
+				row:   len(rows),
+				start: pad + it.start,
+				width: it.width,
+			})
+		}
+		rows = append(rows, strings.Repeat(" ", pad)+rowText)
+		rowText, rowItems = "", nil
+	}
+
+	for _, seg := range segs {
+		w := lipgloss.Width(seg.display)
+		switch {
+		case w > width:
+			// Wider than a whole row on its own: wrap it, and let every
+			// fragment copy the same thing.
+			flush()
+			for _, frag := range strings.Split(ui.FitWidth(seg.display, width), "\n") {
+				rowItems = []placement{{seg: seg, start: 0, width: lipgloss.Width(frag)}}
+				rowText = frag
+				flush()
+			}
+		case rowText == "":
+			rowItems = []placement{{seg: seg, start: 0, width: w}}
+			rowText = seg.display
+		case lipgloss.Width(rowText)+sepWidth+w <= width:
+			rowItems = append(rowItems, placement{seg: seg, start: lipgloss.Width(rowText) + sepWidth, width: w})
+			rowText += segmentSeparator + seg.display
+		default:
+			flush()
+			rowItems = []placement{{seg: seg, start: 0, width: w}}
+			rowText = seg.display
+		}
+	}
+	flush()
+	return rows, placed
+}
+
+// placeSegments records a run of segments drawn end to end from start.
+func placeSegments(placed []placedSegment, segs []segment, row, start int) []placedSegment {
+	sepWidth := lipgloss.Width(segmentSeparator)
+	col := start
+	for _, seg := range segs {
+		w := lipgloss.Width(seg.display)
+		placed = append(placed, placedSegment{seg: seg, row: row, start: col, width: w})
+		col += w + sepWidth
+	}
+	return placed
 }
 
 func (m model) helpWithStatus() string {
-	help, _, statusSegs := m.fitBottomBar()
-	helpRendered := m.theme.Dim.Render(help)
-	if help == "" {
-		helpRendered = ""
-	}
-	statusRendered := m.theme.StatusBar.Render(joinSegments(statusSegs))
-	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
-	if pad < 1 {
-		pad = 1
-	}
-	return helpRendered + strings.Repeat(" ", pad) + statusRendered
+	return strings.Join(m.fitBottomBar().rows, "\n")
 }
 
 func (m model) sessionPickView() string {
@@ -751,18 +890,21 @@ func (m model) showsChatTitle() bool {
 	return !ui.NewLayout(m.width, m.height).IsShort()
 }
 
-// chatChromeLines is the number of rows chatView always renders around the
-// transcript viewport: title, top rule, spacer, toast, bottom rule — minus the
-// title and its rule when the terminal is too short for them.
+// chatChromeLines is the number of rows chatView renders around the transcript
+// viewport: title, top rule, spacer, toast, bottom rule — minus the title and
+// its rule when the terminal is too short for them, plus whatever extra rows
+// the spacer and the toast took to wrap.
 //
 // chatView, adjustViewportHeight and computeViewportStartRow must all agree
 // with this exactly, or the view overflows the screen and the mouse lands on
-// the wrong row.
+// the wrong row. That is why every one of them counts rendered rows rather than
+// assuming how many each piece needs.
 func (m model) chatChromeLines() int {
+	rows := len(m.spacerRows()) + len(m.toastRows()) + 1 // + the bottom rule
 	if m.showsChatTitle() {
-		return 5
+		rows += 2 // title + its rule
 	}
-	return 3
+	return rows
 }
 
 // permOverlayMaxHeight is the tallest the permission overlay may grow while
@@ -914,35 +1056,13 @@ func (m model) chatView() string {
 	b.WriteString(m.chatViewport.View())
 	b.WriteString("\n")
 
-	b.WriteString(m.renderSpacerLine())
-	b.WriteString("\n")
+	for _, row := range m.spacerRows() {
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
 
-	{
-		toastText := ""
-		if m.toast != nil {
-			style := m.theme.Toast
-			if (m.yolo || m.alwaysAllowPerms) && m.toast.text == "YOLO mode" {
-				style = lipgloss.NewStyle().
-					Background(lipgloss.Color(m.theme.Peach)).
-					Foreground(lipgloss.Color(m.theme.Crust)).
-					Bold(true).
-					Padding(0, 1)
-			}
-			// The toast owns one row, so a long message shrinks rather than
-			// wraps. The style adds its own padding, so the budget is measured
-			// from a rendered empty toast rather than assumed.
-			overhead := lipgloss.Width(style.Render("  "))
-			text := m.toast.text
-			if lipgloss.Width(text)+overhead > m.width {
-				text = ansi.Truncate(text, m.width-overhead, "…")
-			}
-			toastText = style.Render(" " + text + " ")
-		}
-		pad := (m.width - lipgloss.Width(toastText)) / 2
-		if pad > 0 {
-			b.WriteString(strings.Repeat(" ", pad))
-		}
-		b.WriteString(toastText)
+	for _, row := range m.toastRows() {
+		b.WriteString(row)
 		b.WriteString("\n")
 	}
 
@@ -978,48 +1098,13 @@ func (m model) chatView() string {
 
 		b.WriteString(popup.Render(pc.String()))
 	} else {
-		if m.suggestions.active && len(m.suggestions.items) > 0 {
-			// Each suggestion is one row and the list is height-budgeted as one
-			// row per item, so a long name or description has to be cut rather
-			// than allowed to wrap.
-			avail := layout.ContentWidth()
-			sigil, sigilColor := "/", m.theme.Mauve
-			if m.suggestions.isFiles {
-				sigil, sigilColor = "@", m.theme.Blue
-			}
-
-			for i, item := range m.suggestions.items {
-				prefix := "  "
-				style := m.theme.Dim
-				if i == m.suggestions.selected {
-					prefix = "> "
-					style = m.theme.Header
-				}
-
-				name := ansi.Truncate(sigil+item.name, avail-len(prefix), "…")
-				if i == m.suggestions.selected {
-					b.WriteString(style.Render(prefix + name))
-				} else {
-					b.WriteString(style.Render(prefix))
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(sigilColor)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render(name))
-				}
-
-				// File suggestions are just paths; only commands carry a
-				// description, and it takes whatever the name left behind.
-				if !m.suggestions.isFiles {
-					rest := avail - len(prefix) - lipgloss.Width(name)
-					if rest > 4 {
-						b.WriteString(m.theme.Dim.Render(ansi.Truncate("  "+item.description, rest, "…")))
-					}
-				}
-				b.WriteString("\n")
-			}
+		for _, row := range m.suggestionRows() {
+			b.WriteString(row)
+			b.WriteString("\n")
 		}
 
-		if m.queuedMessage != "" {
-			// The notice is one row; the preview shrinks so it stays that way.
-			notice := "  ⏎ \"" + m.queuedMessage + "\" queued — will send after next tool call"
-			b.WriteString(m.theme.QueuedMessage.Render(ansi.Truncate(notice, layout.ContentWidth(), "…")))
+		for _, row := range m.queuedRows() {
+			b.WriteString(row)
 			b.WriteString("\n")
 		}
 
@@ -1037,6 +1122,142 @@ func (m model) chatView() string {
 	}
 
 	return b.String()
+}
+
+// toastRows returns the rows the toast occupies. There is always at least one,
+// empty when no toast is up, because the row is part of the layout either way.
+// A message too wide for the screen wraps and the rows stay centred.
+func (m model) toastRows() []string {
+	if m.toast == nil {
+		return []string{""}
+	}
+
+	style := m.theme.Toast
+	if (m.yolo || m.alwaysAllowPerms) && m.toast.text == "YOLO mode" {
+		style = lipgloss.NewStyle().
+			Background(lipgloss.Color(m.theme.Peach)).
+			Foreground(lipgloss.Color(m.theme.Crust)).
+			Bold(true).
+			Padding(0, 1)
+	}
+
+	// The style adds its own padding, so the budget is measured from a rendered
+	// empty toast rather than assumed.
+	overhead := lipgloss.Width(style.Render("  "))
+	budget := m.width - overhead
+	if budget < 1 {
+		budget = 1
+	}
+
+	var rows []string
+	for _, line := range strings.Split(ui.FitWidth(m.toast.text, budget), "\n") {
+		rendered := style.Render(" " + line + " ")
+		pad := (m.width - lipgloss.Width(rendered)) / 2
+		if pad > 0 {
+			rendered = strings.Repeat(" ", pad) + rendered
+		}
+		rows = append(rows, rendered)
+	}
+	return rows
+}
+
+// suggestionRows returns the @file / slash-command suggestion list. An entry
+// too wide for the terminal wraps under itself rather than losing its tail;
+// adjustViewportHeight budgets from these same rows, so a wrapped list still
+// cannot push the prompt off the screen.
+func (m model) suggestionRows() []string {
+	if !m.suggestions.active || len(m.suggestions.items) == 0 {
+		return nil
+	}
+
+	avail := ui.NewLayout(m.width, m.height).ContentWidth()
+	sigil, sigilColor := "/", m.theme.Mauve
+	if m.suggestions.isFiles {
+		sigil, sigilColor = "@", m.theme.Blue
+	}
+	nameStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(sigilColor)).
+		Bold(true).
+		Background(lipgloss.Color(m.theme.Base))
+
+	var rows []string
+	for i, item := range m.suggestions.items {
+		prefix := "  "
+		style := m.theme.Dim
+		selected := i == m.suggestions.selected
+		if selected {
+			prefix = "> "
+			style = m.theme.Header
+		}
+
+		indent := lipgloss.Width(prefix)
+		nameRows := strings.Split(ui.FitWidth(sigil+item.name, avail-indent), "\n")
+		for k, name := range nameRows {
+			row := strings.Repeat(" ", indent)
+			if k == 0 {
+				row = style.Render(prefix)
+			}
+			if selected {
+				row += style.Render(name)
+			} else {
+				row += nameStyle.Render(name)
+			}
+
+			// File suggestions are just paths; only commands carry a
+			// description, and it takes whatever the name left behind.
+			if !m.suggestions.isFiles && k == len(nameRows)-1 && item.description != "" {
+				rest := avail - indent - lipgloss.Width(name)
+				for d, desc := range wrapFirstRest(item.description, rest-2, avail-indent-2) {
+					if d == 0 {
+						row += m.theme.Dim.Render("  " + desc)
+						continue
+					}
+					rows = append(rows, row)
+					row = strings.Repeat(" ", indent+2) + m.theme.Dim.Render(desc)
+				}
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// queuedRows returns the "message queued" notice, wrapped so a long message is
+// previewed whole instead of trailing off.
+func (m model) queuedRows() []string {
+	if m.queuedMessage == "" {
+		return nil
+	}
+	avail := ui.NewLayout(m.width, m.height).ContentWidth()
+	notice := "⏎ \"" + m.queuedMessage + "\" queued — will send after next tool call"
+
+	var rows []string
+	for i, line := range wrapFirstRest(notice, avail-2, avail-4) {
+		indent := "  "
+		if i > 0 {
+			indent = "    "
+		}
+		rows = append(rows, m.theme.QueuedMessage.Render(indent+line))
+	}
+	return rows
+}
+
+// wrapFirstRest wraps text with a different width for the first row than for
+// the ones under it — the shape every indented, prefixed block in the chrome
+// needs.
+func wrapFirstRest(text string, first, rest int) []string {
+	if first < 1 {
+		first = 1
+	}
+	if rest < 1 {
+		rest = 1
+	}
+	rows := strings.Split(ui.FitWidth(text, first), "\n")
+	if len(rows) <= 1 {
+		return rows
+	}
+	tail := strings.Join(rows[1:], " ")
+	return append(rows[:1], strings.Split(ui.FitWidth(tail, rest), "\n")...)
 }
 
 var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
@@ -1094,41 +1315,38 @@ func (m model) spacerParts() (left, right string) {
 		}
 	}
 
-	// One row, always. What the agent is doing right now beats the meters, so a
-	// terminal too narrow for both keeps the left side and drops the right.
+	// What the agent is doing right now beats the meters, so a terminal too
+	// narrow for both keeps the left side and drops the right. The meters are
+	// graphics — a bar cut in half says nothing — so they go whole or not at
+	// all, while the status text on the left wraps instead.
 	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
 		if left != "" {
 			right = ""
 		} else if lipgloss.Width(right) > m.width {
-			right = ansi.Truncate(right, m.width, "")
+			right = ""
 		}
-	}
-	if lipgloss.Width(left) > m.width {
-		left = ansi.Truncate(left, m.width, "")
 	}
 	return left, right
 }
 
-func (m model) renderSpacerLine() string {
+// spacerRows returns the rows of the status line below the transcript. It is
+// normally one row, and more when the working status is too long for the
+// terminal — it wraps rather than losing its tail.
+func (m model) spacerRows() []string {
 	left, right := m.spacerParts()
 	if left == "" && right == "" {
-		return ""
+		return []string{""}
+	}
+
+	if right == "" {
+		return strings.Split(ui.FitWidth(left, m.width), "\n")
 	}
 
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
 	}
-
-	var b strings.Builder
-	if left != "" {
-		b.WriteString(left)
-	}
-	if right != "" {
-		b.WriteString(strings.Repeat(" ", pad))
-		b.WriteString(right)
-	}
-	return b.String()
+	return []string{left + strings.Repeat(" ", pad) + right}
 }
 
 // renderRetryStatus draws the countdown between a failed request and the

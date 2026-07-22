@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -132,8 +133,8 @@ func renderTable(t Theme, block []string, width int) string {
 
 	ncols := len(tbl.header)
 	avail := width - 2
-	if avail < 10 {
-		avail = 10
+	if avail < 1 {
+		avail = 1
 	}
 
 	cols := make([]int, ncols)
@@ -149,29 +150,33 @@ func renderTable(t Theme, block []string, width int) string {
 		}
 	}
 
-	minTotal := 0
-	for _, c := range cols {
-		minTotal += c
+	// The grid itself costs "│ " plus " " per column and a closing "│".
+	chrome := 3*ncols + 1
+	budget := avail - chrome
+	if budget < ncols*minTableColWidth {
+		// Not even a stub of every column fits — a grid here would be borders
+		// and single letters. Render the rows as prose instead.
+		return renderStackedTable(t, tbl, avail)
 	}
-	minTotal += 3*ncols + 1
 
-	surplus := avail - minTotal
-	if surplus > 0 {
-		totalNatural := 0
-		for _, c := range cols {
-			totalNatural += c
+	natural := 0
+	for _, c := range cols {
+		natural += c
+	}
+
+	switch {
+	case natural > budget:
+		shrinkColumns(cols, budget)
+	case natural < budget && natural > 0:
+		surplus := budget - natural
+		allocated := 0
+		for i := range cols {
+			add := surplus * cols[i] / natural
+			cols[i] += add
+			allocated += add
 		}
-		if totalNatural > 0 {
-			allocated := 0
-			for i := range cols {
-				add := surplus * cols[i] / totalNatural
-				cols[i] += add
-				allocated += add
-			}
-			rem := surplus - allocated
-			for i := 0; i < rem; i++ {
-				cols[i]++
-			}
+		for i := 0; i < surplus-allocated; i++ {
+			cols[i]++
 		}
 	}
 
@@ -185,33 +190,99 @@ func renderTable(t Theme, block []string, width int) string {
 	b.WriteString(borderStyle.Render(buildTopBorder(cols)))
 	b.WriteString("\n")
 
-	b.WriteString(prefix)
-	b.WriteString(borderStyle.Render("│"))
-	for i, h := range tbl.header {
-		b.WriteString(" ")
-		b.WriteString(headerStyle.Render(padCell(h, cols[i], tbl.align[i])))
-		b.WriteString(" ")
-		if i < ncols-1 {
-			b.WriteString(borderStyle.Render("│"))
-		}
-	}
-	b.WriteString(borderStyle.Render("│"))
-	b.WriteString("\n")
+	writeTableRow(&b, t, prefix, tbl.header, cols, tbl.align, headerStyle)
 
 	b.WriteString(prefix)
 	b.WriteString(borderStyle.Render(buildSepBorder(cols)))
 	b.WriteString("\n")
 
 	for _, row := range tbl.rows {
+		writeTableRow(&b, t, prefix, row, cols, tbl.align, cellStyle)
+	}
+
+	b.WriteString(prefix)
+	b.WriteString(borderStyle.Render(buildBottomBorder(cols)))
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// minTableColWidth is the narrowest a column is squeezed to before the grid is
+// abandoned in favour of the stacked layout.
+const minTableColWidth = 3
+
+// shrinkColumns scales columns down to budget, taking the cells from the widest
+// columns first so a table of one long prose column and three short ones loses
+// its width where there is width to lose. Nothing is dropped: whatever no
+// longer fits on a cell's row wraps onto the next one.
+func shrinkColumns(cols []int, budget int) {
+	total := 0
+	for _, c := range cols {
+		total += c
+	}
+	if total <= budget || total == 0 {
+		return
+	}
+
+	for i := range cols {
+		scaled := cols[i] * budget / total
+		if scaled < minTableColWidth {
+			scaled = minTableColWidth
+		}
+		cols[i] = scaled
+	}
+
+	// Rounding and the floor can leave the row a few cells over or under.
+	for {
+		total = 0
+		widest := 0
+		for i, c := range cols {
+			total += c
+			if c > cols[widest] {
+				widest = i
+			}
+		}
+		if total <= budget {
+			break
+		}
+		if cols[widest] <= minTableColWidth {
+			return // every column is at the floor; the caller's fallback applies
+		}
+		cols[widest]--
+	}
+	for i := 0; total < budget; i = (i + 1) % len(cols) {
+		cols[i]++
+		total++
+	}
+}
+
+// writeTableRow writes one logical row, wrapping each cell over as many
+// physical rows as it needs and padding the cells that ran out of text.
+func writeTableRow(b *strings.Builder, t Theme, prefix string, cells []string, cols []int, align []string, style lipgloss.Style) {
+	ncols := len(cols)
+	wrapped := make([][]string, ncols)
+	height := 1
+	for i := range wrapped {
+		text := ""
+		if i < len(cells) {
+			text = cells[i]
+		}
+		wrapped[i] = wrapRows(text, cols[i])
+		if len(wrapped[i]) > height {
+			height = len(wrapped[i])
+		}
+	}
+
+	borderStyle := t.TableBorder
+	for line := 0; line < height; line++ {
 		b.WriteString(prefix)
 		b.WriteString(borderStyle.Render("│"))
 		for i := 0; i < ncols; i++ {
-			cellText := ""
-			if i < len(row) {
-				cellText = row[i]
+			text := ""
+			if line < len(wrapped[i]) {
+				text = wrapped[i][line]
 			}
 			b.WriteString(" ")
-			b.WriteString(cellStyle.Render(padCell(cellText, cols[i], tbl.align[i])))
+			b.WriteString(style.Render(padCell(text, cols[i], align[i])))
 			b.WriteString(" ")
 			if i < ncols-1 {
 				b.WriteString(borderStyle.Render("│"))
@@ -220,10 +291,42 @@ func renderTable(t Theme, block []string, width int) string {
 		b.WriteString(borderStyle.Render("│"))
 		b.WriteString("\n")
 	}
+}
 
-	b.WriteString(prefix)
-	b.WriteString(borderStyle.Render(buildBottomBorder(cols)))
-
+// renderStackedTable is the phone-width fallback: one "header: value" line per
+// cell, wrapped, with a blank row between records. Borders would eat more of
+// the screen than the data at these widths.
+func renderStackedTable(t Theme, tbl tableBlock, avail int) string {
+	var b strings.Builder
+	for r, row := range tbl.rows {
+		if r > 0 {
+			b.WriteString("\n")
+		}
+		for i, head := range tbl.header {
+			value := ""
+			if i < len(row) {
+				value = row[i]
+			}
+			if value == "" {
+				continue
+			}
+			label := head
+			if label == "" {
+				label = "—"
+			}
+			// Wrapped to the deepest indent the block uses, so a continuation
+			// row is no wider than the first one.
+			for k, line := range wrapRows(label+": "+value, avail-4) {
+				if k == 0 {
+					b.WriteString("  ")
+				} else {
+					b.WriteString("    ")
+				}
+				b.WriteString(t.TableCell.Render(line))
+				b.WriteString("\n")
+			}
+		}
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 

@@ -80,36 +80,58 @@ func TestCopyZonesAlignWithStatusBar(t *testing.T) {
 	}
 }
 
-// The bottom bar is budgeted as exactly one row by adjustViewportHeight, so at
-// any width it must fit on one — segments get dropped, never wrapped.
-func TestBottomBarFitsOnOneRow(t *testing.T) {
+// The bar wraps onto extra rows rather than cutting a segment in half, but no
+// row of it may ever be wider than the screen, and it stays within the height
+// adjustViewportHeight budgets for it.
+func TestBottomBarFitsWidth(t *testing.T) {
 	for _, width := range []int{20, 30, 40, 50, 60, 80, 120} {
 		m := testChatModelWithStatus()
 		m.width = width
-		row := m.helpWithStatus()
-		if strings.Contains(row, "\n") {
-			t.Errorf("width %d: bottom bar spans multiple rows", width)
+		bar := m.fitBottomBar()
+		for i, row := range bar.rows {
+			if got := ansi.StringWidth(stripANSI(row)); got > width {
+				t.Errorf("width %d: bar row %d is %d cells wide: %q", width, i, got, stripANSI(row))
+			}
 		}
-		if got := ansi.StringWidth(stripANSI(row)); got > width {
-			t.Errorf("width %d: bottom bar is %d cells wide", width, got)
+		if len(bar.rows) > maxBottomBarRows {
+			t.Errorf("width %d: bar took %d rows, more than the %d it is allowed",
+				width, len(bar.rows), maxBottomBarRows)
+		}
+		if strings.Contains(stripANSI(strings.Join(bar.rows, "")), "…") {
+			t.Errorf("width %d: bar truncated a segment instead of wrapping it", width)
 		}
 	}
 }
 
-// The model name is the one thing worth keeping when space runs out.
+// Wrapping buys the bar a lot of room, but a phone-width terminal runs out of
+// it anyway. What survives then is the model name, and what goes first is the
+// version.
 func TestBottomBarKeepsModelName(t *testing.T) {
 	m := testChatModelWithStatus()
+	m.width = 20
+	bar := m.fitBottomBar()
+
+	kept := map[string]bool{}
+	for _, p := range bar.placed {
+		kept[p.seg.text] = true
+	}
+	if !kept[m.modelDisplayName()] {
+		t.Errorf("the model name was dropped at width 20; kept %v", kept)
+	}
+	if kept[VersionString()] {
+		t.Error("the version should be the first thing dropped at width 20")
+	}
+
+	// Down to 30 columns everything still fits somewhere — nothing is dropped.
 	m.width = 30
-	_, helpSegs, statusSegs := m.fitBottomBar()
-	if len(statusSegs) == 0 {
-		t.Fatal("status segments were emptied")
+	kept = map[string]bool{}
+	for _, p := range m.fitBottomBar().placed {
+		kept[p.seg.text] = true
 	}
-	last := statusSegs[len(statusSegs)-1]
-	if last.text != m.modelDisplayName() {
-		t.Errorf("last surviving status segment is %q, want the model name", last.text)
-	}
-	if len(helpSegs) != 0 {
-		t.Errorf("help segments should be dropped first at width 30, got %d", len(helpSegs))
+	for _, want := range []string{VersionString(), m.workspaceRoot, m.sessionName, m.modelDisplayName()} {
+		if !kept[want] {
+			t.Errorf("%q was dropped at width 30 even though the bar could have wrapped it", want)
+		}
 	}
 }
 
@@ -117,22 +139,30 @@ func TestBottomBarKeepsModelName(t *testing.T) {
 // way the renderer fitted them or a click lands on the wrong text.
 func TestCopyZonesFollowDroppedSegments(t *testing.T) {
 	m := testChatModelWithStatus()
-	m.width = 30
-	row := m.helpWithStatus()
+	m.width = 20
+	bar := m.fitBottomBar()
 	lastRow := m.height - 1
 
 	name := m.modelDisplayName()
-	col := cellIndexOf(t, row, name)
-	zone, ok := hitTestCopyZone(m, col, lastRow)
+	nameRow, nameCol := lastRow, 0
+	for i, row := range bar.rows {
+		if strings.Contains(stripANSI(row), name) {
+			nameRow = m.height - len(bar.rows) + i
+			nameCol = cellIndexOf(t, row, name)
+			break
+		}
+	}
+	col := nameCol
+	zone, ok := hitTestCopyZone(m, col, nameRow)
 	if !ok {
 		t.Fatalf("no zone under the model name at column %d", col)
 	}
 	if zone.text != name {
 		t.Errorf("zone under the model name copies %q, want %q", zone.text, name)
 	}
-	// The version was dropped from the row, so nothing may still claim to copy it.
+	// The version was dropped from the bar, so nothing may still claim to copy it.
 	for _, z := range chatCopyZones(m) {
-		if z.row == lastRow && z.text == VersionString() {
+		if z.row >= m.height-len(bar.rows) && z.text == VersionString() {
 			t.Error("a copy zone survives for a segment that was not rendered")
 		}
 	}
@@ -143,7 +173,7 @@ func TestCopyZoneHitsContextBar(t *testing.T) {
 	spacerRow := computeViewportStartRow(m) + m.chatViewport.Height()
 
 	// The spacer row is right-aligned, so the bar occupies the trailing cells.
-	row := stripANSI(m.renderSpacerLine())
+	row := stripANSI(m.spacerRows()[0])
 	bar := stripANSI(m.renderContextBar())
 	if !strings.HasSuffix(row, bar) {
 		t.Fatalf("spacer row %q does not end with the context bar %q", row, bar)

@@ -71,6 +71,33 @@ func WrapScreen(content string, width, height int, baseColor string) string {
 	return b.String()
 }
 
+// FitWidth wraps every line that is wider than width so that content handed to
+// a viewport can never be cut off — or panned across — by it. Words longer than
+// the width (paths, URLs, minified code) are broken rather than left to
+// overhang. Unlike WrapScreen this loses nothing: it spends rows instead.
+func FitWidth(s string, width int) string {
+	if width <= 0 || s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	fitted := false
+	for i, line := range lines {
+		if lipgloss.Width(line) <= width {
+			continue
+		}
+		// Word wrap first so the break lands between words where it can, then
+		// hard wrap what is left: ansi.Wrap keeps the space it broke on, which
+		// is one cell too many, and a word longer than the row has to be cut
+		// somewhere regardless.
+		lines[i] = ansi.Hardwrap(ansi.Wrap(line, width, ""), width, false)
+		fitted = true
+	}
+	if !fitted {
+		return s
+	}
+	return strings.Join(lines, "\n")
+}
+
 // RenderReasoning renders the reasoning toggle and optional expanded content.
 func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, content string, width int) string {
 	header := renderReasoningHeader(t, active, visible, elapsed)
@@ -79,10 +106,9 @@ func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, conte
 		return header
 	}
 
-	boxW := width
-	if boxW < 28 {
-		boxW = 28
-	}
+	// Clamped, not floored: a floor wider than the terminal would overhang the
+	// transcript on a phone-sized screen, which is exactly what it cannot do.
+	boxW := LayoutForContent(width).ContentWidth()
 
 	var body strings.Builder
 	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
