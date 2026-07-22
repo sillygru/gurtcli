@@ -173,6 +173,18 @@ func migrate(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("migrate v6: %w", err)
 		}
+		version = 6
+	}
+
+	if version < 7 {
+		_, err := db.Exec(`
+			ALTER TABLE sessions ADD COLUMN last_message_at TEXT NOT NULL DEFAULT '';
+			UPDATE sessions SET last_message_at = updated_at WHERE last_message_at = '';
+			PRAGMA user_version = 7;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v7: %w", err)
+		}
 	}
 
 	return nil
@@ -200,8 +212,9 @@ type Session struct {
 	// ContextTokens is the prompt size of the last request in this session,
 	// i.e. how full the context window was, as opposed to the lifetime sums
 	// above.
-	ContextTokens      int `json:"context_tokens,omitempty"`
-	ContextCacheTokens int `json:"context_cache_tokens,omitempty"`
+	ContextTokens      int       `json:"context_tokens,omitempty"`
+	ContextCacheTokens int       `json:"context_cache_tokens,omitempty"`
+	LastMessageAt      time.Time `json:"last_message_at,omitempty"`
 }
 
 type Metadata struct {
@@ -209,6 +222,7 @@ type Metadata struct {
 	Name          string    `json:"name"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	LastMessageAt time.Time `json:"last_message_at"`
 	Provider      string    `json:"provider"`
 	Model         string    `json:"model"`
 	WorkspaceRoot string    `json:"workspace_root"`
@@ -265,6 +279,17 @@ func Save(s *Session) error {
 		s.Name = generateName(s.Messages)
 	}
 
+	for i := range s.Messages {
+		if s.Messages[i].CreatedAt.IsZero() {
+			s.Messages[i].CreatedAt = time.Now()
+		}
+	}
+	if len(s.Messages) > 0 {
+		s.LastMessageAt = s.Messages[len(s.Messages)-1].CreatedAt
+	} else if s.LastMessageAt.IsZero() {
+		s.LastMessageAt = s.UpdatedAt
+	}
+
 	msgs, err := json.Marshal(s.Messages)
 	if err != nil {
 		return fmt.Errorf("encoding messages: %w", err)
@@ -276,8 +301,9 @@ func Save(s *Session) error {
 			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
 			 reasoning_mode,
 			 workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
-			 cache_hit_tokens, context_tokens, context_cache_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 cache_hit_tokens, context_tokens, context_cache_tokens,
+			 last_message_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		s.ID, s.Name,
 		s.CreatedAt.UTC().Format(time.RFC3339),
@@ -288,6 +314,7 @@ func Save(s *Session) error {
 		s.WorkspaceRoot, string(msgs),
 		s.InputTokens, s.OutputTokens, s.ReasoningTokens,
 		s.CacheHitTokens, s.ContextTokens, s.ContextCacheTokens,
+		s.LastMessageAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("saving session: %w", err)
@@ -319,12 +346,13 @@ func Load(workspace, id string) (*Session, error) {
 		       COALESCE(reasoning_mode, ''),
 		       workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
 		       COALESCE(cache_hit_tokens, 0),
-		       COALESCE(context_tokens, 0), COALESCE(context_cache_tokens, 0)
+		       COALESCE(context_tokens, 0), COALESCE(context_cache_tokens, 0),
+		       COALESCE(last_message_at, '')
 		FROM sessions WHERE id = ? AND workspace_root = ?
 	`, id, workspace)
 
 	var s Session
-	var createdAt, updatedAt string
+	var createdAt, updatedAt, lastMessageAt string
 	var msgsJSON string
 	var reasoningVisible int
 
@@ -335,6 +363,7 @@ func Load(workspace, id string) (*Session, error) {
 		&reasoningVisible, &s.ReasoningMode, &s.WorkspaceRoot, &msgsJSON,
 		&s.InputTokens, &s.OutputTokens, &s.ReasoningTokens,
 		&s.CacheHitTokens, &s.ContextTokens, &s.ContextCacheTokens,
+		&lastMessageAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("session not found: %s", id)
@@ -351,6 +380,12 @@ func Load(workspace, id string) (*Session, error) {
 	s.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("parsing updated_at: %w", err)
+	}
+	if lastMessageAt != "" {
+		s.LastMessageAt, err = time.Parse(time.RFC3339, lastMessageAt)
+		if err != nil {
+			return nil, fmt.Errorf("parsing last_message_at: %w", err)
+		}
 	}
 
 	if err := json.Unmarshal([]byte(msgsJSON), &s.Messages); err != nil {
@@ -380,9 +415,11 @@ func List(workspace string) ([]Metadata, error) {
 
 	rows, err := db.Query(`
 		SELECT id, name, created_at, updated_at, provider, model,
-		       workspace_root, (SELECT count(*) FROM json_each(messages) WHERE json_extract(value, '$.role') = 'user') AS message_count
+		       workspace_root,
+		       COALESCE(NULLIF(last_message_at, ''), updated_at),
+		       (SELECT count(*) FROM json_each(messages) WHERE json_extract(value, '$.role') = 'user') AS message_count
 		FROM sessions WHERE workspace_root = ?
-		ORDER BY updated_at DESC
+		ORDER BY COALESCE(NULLIF(last_message_at, ''), updated_at) DESC
 	`, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
@@ -392,15 +429,19 @@ func List(workspace string) ([]Metadata, error) {
 	var metas []Metadata
 	for rows.Next() {
 		var m Metadata
-		var createdAt, updatedAt string
+		var createdAt, updatedAt, lastMessageAt string
 		if err := rows.Scan(
 			&m.ID, &m.Name, &createdAt, &updatedAt,
-			&m.Provider, &m.Model, &m.WorkspaceRoot, &m.MessageCount,
+			&m.Provider, &m.Model, &m.WorkspaceRoot,
+			&lastMessageAt, &m.MessageCount,
 		); err != nil {
 			continue
 		}
 		m.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		m.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		if lastMessageAt != "" {
+			m.LastMessageAt, _ = time.Parse(time.RFC3339, lastMessageAt)
+		}
 		metas = append(metas, m)
 	}
 

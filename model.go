@@ -123,7 +123,11 @@ func (s sessionItem) Title() string {
 	return "  " + s.meta.Name
 }
 func (s sessionItem) Description() string {
-	return fmt.Sprintf("%s • %d messages", s.meta.UpdatedAt.Format("Jan 2 15:04"), s.meta.MessageCount)
+	t := s.meta.LastMessageAt
+	if t.IsZero() {
+		t = s.meta.UpdatedAt
+	}
+	return fmt.Sprintf("%s • %d messages", ui.RelativeTime(t), s.meta.MessageCount)
 }
 
 type sessionSaveErrorMsg struct {

@@ -17,6 +17,7 @@ import (
 type Message struct {
 	Role              string        `json:"role"`
 	Content           string        `json:"content"`
+	CreatedAt         time.Time     `json:"created_at,omitempty"`
 	Reasoning         string        `json:"reasoning,omitempty"`
 	ReasoningDuration time.Duration `json:"reasoning_duration,omitempty"`
 	ReasoningVisible  bool          `json:"reasoning_visible,omitempty"`
