@@ -66,35 +66,107 @@ func (m model) View() tea.View {
 	return v
 }
 
+// The setup screens are plain prose and lists, and they are the first thing a
+// new SSH user sees — often on a phone in portrait. None of them can assume the
+// 60-ish columns their strings were written for, so all of them lay their text
+// out through the three helpers below.
+
+// wrapProse wraps a line of explanatory text to the terminal, breaking inside a
+// word when a word is itself wider than the screen (long URLs, key names).
+// These screens are short, so spending extra rows is free; truncating would
+// hide the URL or the error that the row exists to show.
+func (m model) wrapProse(s string) string {
+	return ansi.Wrap(s, ui.NewLayout(m.width, m.height).ContentWidth(), "")
+}
+
+// wrapOption wraps one entry of a cursor-driven list, indenting continuation
+// rows past the "> " marker so the option still reads as one item.
+func (m model) wrapOption(prefix, text string) string {
+	width := ui.NewLayout(m.width, m.height).ContentWidth() - len(prefix)
+	if width < 1 {
+		width = 1
+	}
+	lines := strings.Split(ansi.Wrap(text, width, ""), "\n")
+	for i := range lines {
+		if i == 0 {
+			lines[i] = prefix + lines[i]
+		} else {
+			lines[i] = strings.Repeat(" ", len(prefix)) + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// wrapHelp lays out a "a • b • c" footer, breaking between segments rather than
+// inside them so a hint is never split across two rows.
+func (m model) wrapHelp(s string) string {
+	width := ui.NewLayout(m.width, m.height).ContentWidth()
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+
+	var rows []string
+	row := ""
+	for _, seg := range strings.Split(s, segmentSeparator) {
+		switch {
+		case row == "":
+			row = seg
+		case lipgloss.Width(row)+lipgloss.Width(segmentSeparator)+lipgloss.Width(seg) <= width:
+			row += segmentSeparator + seg
+		default:
+			rows = append(rows, row)
+			row = seg
+		}
+	}
+	if row != "" {
+		rows = append(rows, row)
+	}
+	// A single segment can still be wider than the screen on its own.
+	return ansi.Wrap(strings.Join(rows, "\n"), width, "")
+}
+
+// gap is the blank line the setup screens put between their sections. On a
+// short terminal — a phone in landscape, a split pane — those blank rows are
+// what pushes the options and the prompt off the bottom, so they collapse.
+func (m model) gap() string {
+	if ui.NewLayout(m.width, m.height).IsShort() {
+		return "\n"
+	}
+	return "\n\n"
+}
+
 func (m model) welcomeView() string {
-	return ui.RenderScreenHeader(m.theme, "gurt", "A coding agent in your terminal.") + "\n\n" +
-		m.theme.Dim.Render("  Press enter to start.") + "\n" +
-		ui.RenderFooterHelp(m.theme, "  ctrl+c quit")
+	// Not RenderScreenHeader: it indents the subtitle itself, which would stack
+	// with the indent wrapOption adds and overflow a narrow screen.
+	return m.theme.Brand.Render("  gurt") + "\n" +
+		m.theme.Dim.Render(m.wrapOption("  ", "A coding agent in your terminal.")) + m.gap() +
+		m.theme.Dim.Render(m.wrapOption("  ", "Press enter to start.")) + "\n" +
+		ui.RenderFooterHelp(m.theme, m.wrapOption("  ", "ctrl+c quit"))
 }
 
 func (m model) providerPickView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
 
 	if m.confirmDeleteEndpoint != "" {
-		b.WriteString(m.theme.Error.Render(fmt.Sprintf("Delete saved endpoint %q? (y/n)", m.confirmDeleteEndpoint)))
+		b.WriteString(m.theme.Error.Render(m.wrapProse(fmt.Sprintf("Delete saved endpoint %q? (y/n)", m.confirmDeleteEndpoint))))
 		b.WriteString("\n")
 		return b.String()
 	}
 
 	b.WriteString(m.providerList.View())
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • d delete saved • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter select • d delete saved • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) customModePickView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Custom endpoint mode:"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Custom endpoint mode:")))
+	b.WriteString(m.gap())
 	items := []string{"Use one-time", "Save for later"}
 	for i, item := range items {
 		prefix := "  "
@@ -103,72 +175,73 @@ func (m model) customModePickView() string {
 			prefix = "> "
 			style = m.theme.Header
 		}
-		b.WriteString(style.Render(prefix + item))
+		b.WriteString(style.Render(m.wrapOption(prefix, item)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • esc back • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter select • esc back • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) customURLView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Enter the base URL for your custom provider:"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Enter the base URL for your custom provider:")))
+	b.WriteString(m.gap())
 	b.WriteString(m.urlInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) apiKeyView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render(fmt.Sprintf("Enter your API key for %s:", llm.DisplayName(m.provider))))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse(fmt.Sprintf("Enter your API key for %s:", llm.DisplayName(m.provider)))))
+	b.WriteString(m.gap())
 	if m.customURL != "" {
-		b.WriteString(m.theme.Dim.Render("Endpoint: " + m.customURL))
-		b.WriteString("\n\n")
+		b.WriteString(m.theme.Dim.Render(m.wrapProse("Endpoint: " + m.customURL)))
+		b.WriteString(m.gap())
 	}
 	b.WriteString(m.keyInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) modelFetchView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render(fmt.Sprintf("Fetching models from %s...", llm.DisplayName(m.provider))))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse(fmt.Sprintf("Fetching models from %s...", llm.DisplayName(m.provider)))))
+	b.WriteString(m.gap())
 	b.WriteString(m.spinner.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("ctrl+c quit"))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) modelPickView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
 	b.WriteString(m.modelList.View())
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("Type to filter • ↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("Type to filter • ↑/↓ navigate • enter select • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) reasoningConfigView() string {
 	var b strings.Builder
+	divider := m.theme.Divider.Render(strings.Repeat("─", ui.NewLayout(m.width, m.height).RuleWidth()))
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
 	b.WriteString(m.theme.Header.Render(m.modelName))
 	b.WriteString("\n")
-	b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
-	b.WriteString("\n\n")
+	b.WriteString(divider)
+	b.WriteString(m.gap())
 
 	if len(m.thinkingOptions) > 0 && len(m.effortOptions) > 0 {
 		// Two-field mode: Thinking + Effort (Anthropic)
@@ -186,11 +259,11 @@ func (m model) reasoningConfigView() string {
 			effortLine = fmt.Sprintf("  %s Effort:    %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(effort), m.theme.Dim.Render("← →"))
 		}
 		b.WriteString(effortLine)
-		b.WriteString("\n\n")
+		b.WriteString(m.gap())
 
-		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+		b.WriteString(divider)
 		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • ←/→ change • enter confirm • esc go back"))
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • ←/→ change • enter confirm • esc go back")))
 	} else if len(m.thinkingOptions) > 0 {
 		// Thinking-only mode (no effort levels)
 		think := m.thinkingType
@@ -199,11 +272,11 @@ func (m model) reasoningConfigView() string {
 			thinkLine = fmt.Sprintf("  %s Thinking:  %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(think), m.theme.Dim.Render("← →"))
 		}
 		b.WriteString(thinkLine)
-		b.WriteString("\n\n")
+		b.WriteString(m.gap())
 
-		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+		b.WriteString(divider)
 		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("←/→ change • enter confirm • esc go back"))
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("←/→ change • enter confirm • esc go back")))
 	} else {
 		// Single-field mode: Reasoning effort (OpenAI)
 		effort := m.effortLevel
@@ -212,11 +285,11 @@ func (m model) reasoningConfigView() string {
 			effortLine = fmt.Sprintf("  %s Reasoning: %s %s ", m.theme.Header.Render("▶"), m.theme.Header.Render(effort), m.theme.Dim.Render("← →"))
 		}
 		b.WriteString(effortLine)
-		b.WriteString("\n\n")
+		b.WriteString(m.gap())
 
-		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+		b.WriteString(divider)
 		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("←/→ change • enter confirm • esc go back"))
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("←/→ change • enter confirm • esc go back")))
 	}
 	return b.String()
 }
@@ -224,11 +297,11 @@ func (m model) reasoningConfigView() string {
 func (m model) errorView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
 	b.WriteString(m.theme.Error.Render("Error"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render(m.err.Error()))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse(m.err.Error())))
+	b.WriteString(m.gap())
 	for i, action := range m.errorActions() {
 		prefix := "  "
 		if i == m.errChoice {
@@ -238,25 +311,26 @@ func (m model) errorView() string {
 		if i == m.errChoice {
 			style = m.theme.Header
 		}
-		b.WriteString(style.Render(prefix + action))
+		b.WriteString(style.Render(m.wrapOption(prefix, action)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter select • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) dotenvPromptView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Error.Render("Could not save API key to OS keychain"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render(m.err.Error()))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("The key is active for this session. How should it be saved for future sessions?"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Error.Render(m.wrapProse("Could not save API key to OS keychain")))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse(m.err.Error())))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("The key is active for this session. How should it be saved for future sessions?")))
+	b.WriteString(m.gap())
 	items := []string{
+		"Save to ~/.config/gurtcli/credentials.json (this machine, your user can read it)",
 		"Use key this session only (will need to re-enter next time)",
 		"Save API key to .env file",
 	}
@@ -267,20 +341,20 @@ func (m model) dotenvPromptView() string {
 			prefix = "> "
 			style = m.theme.Header
 		}
-		b.WriteString(style.Render(prefix + item))
+		b.WriteString(style.Render(m.wrapOption(prefix, item)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter select • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) dotenvPickView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Found API key(s) in environment file:"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Found API key(s) in environment file:")))
+	b.WriteString(m.gap())
 	items := append(m.dotenvKeys, "Enter a new API key")
 	for i, item := range items {
 		prefix := "  "
@@ -289,34 +363,34 @@ func (m model) dotenvPickView() string {
 			prefix = "> "
 			style = m.theme.Header
 		}
-		b.WriteString(style.Render(prefix + item))
+		b.WriteString(style.Render(m.wrapOption(prefix, item)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter select • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) dotenvKeyNameView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Save API key to .env file."))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Enter the environment variable name:"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Save API key to .env file.")))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Enter the environment variable name:")))
+	b.WriteString(m.gap())
 	b.WriteString(m.dotenvInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("enter confirm • esc back • ctrl+c quit"))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • esc back • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) dotenvKeyExistsView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render(fmt.Sprintf("Key %q already exists in .env.", m.dotenvKeyName)))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse(fmt.Sprintf("Key %q already exists in .env.", m.dotenvKeyName))))
+	b.WriteString(m.gap())
 	items := []string{
 		"Overwrite existing value",
 		"Load existing value and continue",
@@ -329,35 +403,35 @@ func (m model) dotenvKeyExistsView() string {
 			prefix = "> "
 			style = m.theme.Header
 		}
-		b.WriteString(style.Render(prefix + item))
+		b.WriteString(style.Render(m.wrapOption(prefix, item)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter select • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) customNameView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Name this endpoint to save for later:"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Name this endpoint to save for later:")))
+	b.WriteString(m.gap())
 	b.WriteString(m.nameInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) manualModelView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("Enter the model name:"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapProse("Enter the model name:")))
+	b.WriteString(m.gap())
 	b.WriteString(m.manualInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.theme.Dim.Render("enter confirm • ctrl+c quit"))
+	b.WriteString(m.gap())
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • ctrl+c quit")))
 	return b.String()
 }
 
@@ -444,9 +518,56 @@ func (m model) chatHelpText() (string, bool) {
 	}
 }
 
-func (m model) helpWithStatus(help string) string {
+// fitBottomBar decides what survives on the bottom row at the current width.
+//
+// The row must stay exactly one row tall — adjustViewportHeight budgets for one
+// — so on a narrow terminal segments are dropped rather than allowed to wrap.
+// Least useful goes first: version, then the working directory, then the update
+// notice, then the session name, then the provider. The model name is what
+// people actually need to see, so it survives to the end and is truncated only
+// if even it does not fit.
+//
+// Returns the help text, the help segments it was built from (nil when the help
+// side is a transient hint with nothing worth copying), and the status
+// segments. Both the renderer and the click-to-copy zones read this, so the two
+// cannot disagree about which columns hold what.
+func (m model) fitBottomBar() (help string, helpSegs, statusSegs []segment) {
+	helpText, isDefault := m.chatHelpText()
+	statusSegs = m.statusSegments()
+	if isDefault {
+		helpSegs = m.helpSegments()
+	}
+
+	// One column of separation between the two halves, minimum.
+	fits := func() bool {
+		return lipgloss.Width(helpText)+lipgloss.Width(joinSegments(statusSegs))+1 <= m.width
+	}
+
+	for !fits() && len(helpSegs) > 0 {
+		helpSegs = helpSegs[1:]
+		helpText = joinSegments(helpSegs)
+	}
+	for !fits() && len(statusSegs) > 1 {
+		statusSegs = statusSegs[1:]
+	}
+	if !fits() {
+		// Only the model name is left. Give the whole row to it.
+		helpSegs = nil
+		helpText = ""
+		if len(statusSegs) == 1 && lipgloss.Width(statusSegs[0].display) > m.width {
+			statusSegs[0].display = ansi.Truncate(statusSegs[0].display, m.width, "…")
+		}
+	}
+	return helpText, helpSegs, statusSegs
+}
+
+func (m model) helpWithStatus() string {
+	help, _, statusSegs := m.fitBottomBar()
 	helpRendered := m.theme.Dim.Render(help)
-	statusRendered := m.theme.StatusBar.Render(joinSegments(m.statusSegments()))
+	if help == "" {
+		helpRendered = ""
+	}
+	statusRendered := m.theme.StatusBar.Render(joinSegments(statusSegs))
 	pad := m.width - lipgloss.Width(helpRendered) - lipgloss.Width(statusRendered)
 	if pad < 1 {
 		pad = 1
@@ -457,22 +578,23 @@ func (m model) helpWithStatus(help string) string {
 func (m model) sessionPickView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
 	b.WriteString(m.sessionList.View())
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter switch • esc back • ctrl+c quit"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter switch • esc back • ctrl+c quit")))
 	return b.String()
 }
 
 func (m model) allowManageView() string {
 	var b strings.Builder
+	layout := ui.NewLayout(m.width, m.height)
 	b.WriteString(m.theme.Brand.Render("  gurt"))
-	b.WriteString("\n\n")
+	b.WriteString(m.gap())
 
 	// Tool checker mode
 	if m.allowManageAdding && m.allowManageAddType == "tool" {
 		b.WriteString(m.theme.Header.Render("Toggle Always-Allowed Tools"))
-		b.WriteString("\n\n")
+		b.WriteString(m.gap())
 		for i, name := range m.allowToolCheckItems {
 			checked := false
 			for _, t := range m.alwaysAllowTools {
@@ -491,21 +613,21 @@ func (m model) allowManageView() string {
 				prefix = "> "
 				style = m.theme.Header
 			}
-			b.WriteString(style.Render(prefix + box + " " + name))
+			b.WriteString(style.Render(m.wrapOption(prefix, box+" "+name)))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter/space toggle • esc done"))
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓ navigate • enter/space toggle • esc done")))
 		return b.String()
 	}
 
 	// Command prefix add mode (text input)
 	if m.allowManageAdding && m.allowManageAddType == "command" {
 		b.WriteString(m.theme.Header.Render("Add Command Prefix"))
-		b.WriteString("\n\n")
+		b.WriteString(m.gap())
 		b.WriteString(m.allowManageInput.View())
-		b.WriteString("\n\n")
-		b.WriteString(m.theme.Dim.Render("enter confirm • esc cancel"))
+		b.WriteString(m.gap())
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • esc cancel")))
 		return b.String()
 	}
 
@@ -513,8 +635,8 @@ func (m model) allowManageView() string {
 	cmds := m.alwaysAllowCommandPrefixes
 	if len(cmds) == 0 {
 		b.WriteString(m.theme.Dim.Render("  No command prefixes configured."))
-		b.WriteString("\n\n")
-		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", 40)))
+		b.WriteString(m.gap())
+		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", layout.RuleWidth())))
 	} else {
 		numRows, numCols, colWidth := m.cmdGridDimensions()
 		if numCols < 1 {
@@ -546,14 +668,15 @@ func (m model) allowManageView() string {
 				b.WriteString("\n")
 			}
 		}
+		// The divider spans the grid, but never the edge of the screen.
 		divWidth := numCols * colWidth
-		if divWidth < 40 {
-			divWidth = 40
+		if divWidth > layout.ContentWidth() {
+			divWidth = layout.ContentWidth()
 		}
 		b.WriteString(m.theme.Divider.Render(strings.Repeat("─", divWidth)))
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("↑/↓←/→ navigate • t tool • c command • d/x delete • esc back"))
+	b.WriteString(m.theme.Dim.Render(m.wrapHelp("↑/↓←/→ navigate • t tool • c command • d/x delete • esc back")))
 	return b.String()
 }
 
@@ -567,16 +690,16 @@ func (m model) renderChatInput() string {
 		return m.chatInput.View()
 	}
 
+	inputWidth := ui.NewLayout(m.width, m.height).ChatInputWidth()
+
 	// Empty: show placeholder
 	if val == "" {
 		ph := m.chatInput.Placeholder
 		if ph != "" {
-			return m.theme.Dim.Render("  " + ph)
+			return m.theme.Dim.Render(ansi.Truncate("  "+ph, inputWidth, ""))
 		}
 		return ""
 	}
-
-	inputWidth := ui.NewLayout(m.width, m.height).InputWidth()
 
 	cmdNames := commandNames()
 	baseStyle := m.theme.UserContent
@@ -621,14 +744,31 @@ func (m model) renderChatInput() string {
 	return b.String()
 }
 
+// showsChatTitle reports whether the chat screen can afford its title row. On a
+// short terminal the model name is already in the status bar, so the title and
+// the rule under it are two rows better spent on the transcript.
+func (m model) showsChatTitle() bool {
+	return !ui.NewLayout(m.width, m.height).IsShort()
+}
+
 // chatChromeLines is the number of rows chatView always renders around the
-// transcript viewport: title, top rule, spacer, toast, bottom rule.
-const chatChromeLines = 5
+// transcript viewport: title, top rule, spacer, toast, bottom rule — minus the
+// title and its rule when the terminal is too short for them.
+//
+// chatView, adjustViewportHeight and computeViewportStartRow must all agree
+// with this exactly, or the view overflows the screen and the mouse lands on
+// the wrong row.
+func (m model) chatChromeLines() int {
+	if m.showsChatTitle() {
+		return 5
+	}
+	return 3
+}
 
 // permOverlayMaxHeight is the tallest the permission overlay may grow while
 // still leaving a row of transcript above it.
 func (m model) permOverlayMaxHeight() int {
-	h := m.height - chatChromeLines - 1
+	h := m.height - m.chatChromeLines() - 1
 	if h < 5 {
 		h = 5
 	}
@@ -758,16 +898,18 @@ func (m model) chatView() string {
 			}
 			return "\x1b[2 q\x1b[?25l" + strings.Join(rows, "\n")
 		}
-		m.chatViewport.SetHeight(m.height - chatChromeLines - boxHeight)
+		m.chatViewport.SetHeight(m.height - m.chatChromeLines() - boxHeight)
 	}
 
 	b.WriteString("\x1b[2 q")  // DECSCUSR: non-blinking block cursor
 	b.WriteString("\x1b[?25l") // hide hardware cursor
 
-	b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
-	b.WriteString("\n")
-	b.WriteString(ui.RenderRule(m.theme, layout))
-	b.WriteString("\n")
+	if m.showsChatTitle() {
+		b.WriteString(m.theme.Brand.Render("  " + m.modelDisplayName()))
+		b.WriteString("\n")
+		b.WriteString(ui.RenderRule(m.theme, layout))
+		b.WriteString("\n")
+	}
 
 	b.WriteString(m.chatViewport.View())
 	b.WriteString("\n")
@@ -786,7 +928,15 @@ func (m model) chatView() string {
 					Bold(true).
 					Padding(0, 1)
 			}
-			toastText = style.Render(" " + m.toast.text + " ")
+			// The toast owns one row, so a long message shrinks rather than
+			// wraps. The style adds its own padding, so the budget is measured
+			// from a rendered empty toast rather than assumed.
+			overhead := lipgloss.Width(style.Render("  "))
+			text := m.toast.text
+			if lipgloss.Width(text)+overhead > m.width {
+				text = ansi.Truncate(text, m.width-overhead, "…")
+			}
+			toastText = style.Render(" " + text + " ")
 		}
 		pad := (m.width - lipgloss.Width(toastText)) / 2
 		if pad > 0 {
@@ -828,8 +978,16 @@ func (m model) chatView() string {
 
 		b.WriteString(popup.Render(pc.String()))
 	} else {
-		help, _ := m.chatHelpText()
 		if m.suggestions.active && len(m.suggestions.items) > 0 {
+			// Each suggestion is one row and the list is height-budgeted as one
+			// row per item, so a long name or description has to be cut rather
+			// than allowed to wrap.
+			avail := layout.ContentWidth()
+			sigil, sigilColor := "/", m.theme.Mauve
+			if m.suggestions.isFiles {
+				sigil, sigilColor = "@", m.theme.Blue
+			}
+
 			for i, item := range m.suggestions.items {
 				prefix := "  "
 				style := m.theme.Dim
@@ -837,32 +995,31 @@ func (m model) chatView() string {
 					prefix = "> "
 					style = m.theme.Header
 				}
-				if m.suggestions.isFiles {
-					if i == m.suggestions.selected {
-						b.WriteString(style.Render(prefix + "@" + item.name))
-					} else {
-						b.WriteString(style.Render(prefix))
-						b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("@" + item.name))
-					}
+
+				name := ansi.Truncate(sigil+item.name, avail-len(prefix), "…")
+				if i == m.suggestions.selected {
+					b.WriteString(style.Render(prefix + name))
 				} else {
-					if i == m.suggestions.selected {
-						b.WriteString(style.Render(prefix + "/" + item.name))
-					} else {
-						b.WriteString(style.Render(prefix))
-						b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Mauve)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render("/" + item.name))
+					b.WriteString(style.Render(prefix))
+					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(sigilColor)).Bold(true).Background(lipgloss.Color(m.theme.Base)).Render(name))
+				}
+
+				// File suggestions are just paths; only commands carry a
+				// description, and it takes whatever the name left behind.
+				if !m.suggestions.isFiles {
+					rest := avail - len(prefix) - lipgloss.Width(name)
+					if rest > 4 {
+						b.WriteString(m.theme.Dim.Render(ansi.Truncate("  "+item.description, rest, "…")))
 					}
-					b.WriteString(m.theme.Dim.Render("  " + item.description))
 				}
 				b.WriteString("\n")
 			}
 		}
 
 		if m.queuedMessage != "" {
-			preview := m.queuedMessage
-			if len(preview) > 60 {
-				preview = preview[:60] + "..."
-			}
-			b.WriteString(m.theme.QueuedMessage.Render("  ⏎ \"" + preview + "\" queued — will send after next tool call"))
+			// The notice is one row; the preview shrinks so it stays that way.
+			notice := "  ⏎ \"" + m.queuedMessage + "\" queued — will send after next tool call"
+			b.WriteString(m.theme.QueuedMessage.Render(ansi.Truncate(notice, layout.ContentWidth(), "…")))
 			b.WriteString("\n")
 		}
 
@@ -876,7 +1033,7 @@ func (m model) chatView() string {
 		b.WriteString(promptStyle.Render("  ❯ "))
 		b.WriteString(m.renderChatInput())
 		b.WriteString("\n")
-		b.WriteString(m.helpWithStatus(help))
+		b.WriteString(m.helpWithStatus())
 	}
 
 	return b.String()
@@ -905,11 +1062,13 @@ var workingMessages = []string{
 	"Vibing",
 }
 
-func (m model) renderSpacerLine() string {
+// spacerParts returns the two halves of the row below the transcript, after
+// deciding what fits. renderSpacerLine draws them and appendSpacerZones places
+// the click targets, so both must agree on what was actually dropped.
+func (m model) spacerParts() (left, right string) {
 	ctxBar := m.renderContextBar()
 	debugBar := m.renderDebugBar()
 
-	var left string
 	if m.retry.active {
 		left = m.renderRetryStatus()
 	} else if m.toolExec != nil && m.toolExec.active {
@@ -926,7 +1085,7 @@ func (m model) renderSpacerLine() string {
 		left = m.theme.WorkingStatus.Render(spinner + " " + m.workingMsg)
 	}
 
-	right := ctxBar
+	right = ctxBar
 	if debugBar != "" {
 		if right != "" {
 			right = debugBar + "  " + right
@@ -935,13 +1094,28 @@ func (m model) renderSpacerLine() string {
 		}
 	}
 
+	// One row, always. What the agent is doing right now beats the meters, so a
+	// terminal too narrow for both keeps the left side and drops the right.
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		if left != "" {
+			right = ""
+		} else if lipgloss.Width(right) > m.width {
+			right = ansi.Truncate(right, m.width, "")
+		}
+	}
+	if lipgloss.Width(left) > m.width {
+		left = ansi.Truncate(left, m.width, "")
+	}
+	return left, right
+}
+
+func (m model) renderSpacerLine() string {
+	left, right := m.spacerParts()
 	if left == "" && right == "" {
 		return ""
 	}
 
-	leftWidth := lipgloss.Width(left)
-	rightWidth := lipgloss.Width(right)
-	pad := m.width - leftWidth - rightWidth
+	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
 	}
@@ -1025,8 +1199,17 @@ func (m model) renderContextBar() string {
 		return ""
 	}
 
+	// Below ~30 columns the spacer row belongs to the working spinner; a meter
+	// there would only push it off the screen.
+	if m.width > 0 && m.width < 30 {
+		return ""
+	}
+
 	barWidth := 20
-	if m.width < 60 {
+	switch {
+	case m.width < 45:
+		barWidth = 0 // no room for the graphic; the numbers still fit
+	case m.width < 60:
 		barWidth = 12
 	}
 
@@ -1041,12 +1224,18 @@ func (m model) renderContextBar() string {
 	}
 
 	cacheStr := ""
-	if cachePct > 0 {
+	// The cache percentage is the first thing to go: it is the least actionable
+	// part of the readout and costs a dozen columns.
+	if cachePct > 0 && barWidth > 0 {
 		cacheStr = m.theme.Dim.Render(fmt.Sprintf("· %d%% cached", cachePct))
 	}
 
 	if m.maxInputTokens <= 0 {
-		return m.theme.ContextBar.Render(formatTokens(used) + " " + cacheStr)
+		return m.theme.ContextBar.Render(strings.TrimSpace(formatTokens(used) + " " + cacheStr))
+	}
+
+	if barWidth == 0 {
+		return m.theme.ContextBar.Render(fmt.Sprintf("%s/%s", formatTokens(used), formatTokens(m.maxInputTokens)))
 	}
 
 	pct := float64(used) / float64(m.maxInputTokens)

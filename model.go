@@ -462,22 +462,33 @@ func (m model) cmdGridDimensions() (numRows, numCols, colWidth int) {
 	if colWidth < 14 {
 		colWidth = 14
 	}
+	// Cells are padded out to colWidth, so a column wider than the screen would
+	// overflow every row of the grid.
+	if colWidth > availableWidth {
+		colWidth = availableWidth
+	}
 
 	// How many columns fit horizontally
-	numCols = availableWidth / colWidth
-	if numCols < 1 {
-		numCols = 1
+	maxCols := availableWidth / colWidth
+	if maxCols < 1 {
+		maxCols = 1
 	}
+	numCols = maxCols
 
 	// How many rows needed for all commands
 	numRows = (len(cmds) + numCols - 1) / numCols
 
-	// Cap rows to available terminal height; recalculate columns if needed
+	// Cap rows to available terminal height; recalculate columns if needed.
+	// Widening past maxCols is not an option — the grid would run off the right
+	// edge — so a list too long for the screen scrolls instead.
 	if numRows > availableHeight {
 		numRows = availableHeight
 		numCols = (len(cmds) + numRows - 1) / numRows
 		if numCols < 1 {
 			numCols = 1
+		}
+		if numCols > maxCols {
+			numCols = maxCols
 		}
 	}
 
@@ -779,48 +790,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	sl.SetShowStatusBar(false)
 	sl.DisableQuitKeybindings()
 
-	urlIn := textinput.New()
-	urlIn.Placeholder = "https://api.example.com/v1"
-	urlIn.SetWidth(60)
-	urlIn.CharLimit = 200
-
-	ki := textinput.New()
-	ki.Placeholder = "sk-..."
-	ki.SetWidth(60)
-	ki.CharLimit = 200
-	ki.EchoMode = textinput.EchoPassword
-	ki.EchoCharacter = '•'
-
-	ni := textinput.New()
-	ni.Placeholder = "e.g. My Groq API"
-	ni.SetWidth(60)
-	ni.CharLimit = 100
-
-	mi := textinput.New()
-	mi.Placeholder = "model-name"
-	mi.SetWidth(60)
-	mi.CharLimit = 100
-
-	di := textinput.New()
-	di.Placeholder = "GURT_API_KEY"
-	di.SetWidth(60)
-	di.CharLimit = 200
-
-	ci := textarea.New()
-	ci.Placeholder = "Ask something..."
-	ci.SetWidth(60)
-	ci.CharLimit = 4096
-	ci.ShowLineNumbers = false
-	ci.Prompt = ""
-	ci.DynamicHeight = true
-	ci.MinHeight = 1
-	ci.MaxHeight = 6
-	ci.MaxContentHeight = 1000
-	ci.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "ctrl+j"))
-	taStyles := textarea.DefaultStyles(true)
-	taStyles.Focused.CursorLine = lipgloss.NewStyle()
-	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
-	ci.SetStyles(taStyles)
+	urlIn, ki, ni, mi, di, ci := newTextInputs()
 
 	cv := viewport.New()
 	cv.FillHeight = true
@@ -925,17 +895,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		alwaysAllowExternal = cfg.AlwaysAllowExternal
 	}
 
-	allowIn := textinput.New()
-	allowIn.Placeholder = "command prefix (e.g. npm, git push)"
-	allowIn.SetWidth(60)
-	allowIn.CharLimit = 200
-
-	sudoIn := textinput.New()
-	sudoIn.Placeholder = "enter sudo password"
-	sudoIn.EchoMode = textinput.EchoPassword
-	sudoIn.EchoCharacter = '•'
-	sudoIn.SetWidth(60)
-	sudoIn.CharLimit = 200
+	allowIn, sudoIn := newAuxInputs()
 
 	outputsDir := filepath.Join(wd, ".config", "gurtcli", "session-outputs")
 	if hd, err := os.UserHomeDir(); err == nil {
@@ -1013,6 +973,132 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		m.bufferedInitCmd = chatCmd
 	}
 
+	// Starting directly in an input state (e.g. a config with a provider but no
+	// stored key) must not leave that input blurred and unusable.
+	m = m.focusForState()
+
+	return m
+}
+
+// newTextInputs builds the setup-flow inputs. Kept apart from initialModel so
+// tests can lay out a model without going through provider detection and the
+// keychain — an input built as a zero value has no internal viewport and panics
+// when resized.
+//
+// The widths here are placeholders; resizeInputs fits them to the terminal on
+// the first WindowSizeMsg.
+func newTextInputs() (urlIn, keyIn, nameIn, manualIn, dotenvIn textinput.Model, chatIn textarea.Model) {
+	urlIn = textinput.New()
+	urlIn.Placeholder = "https://api.example.com/v1"
+	urlIn.SetWidth(60)
+	urlIn.CharLimit = 200
+
+	keyIn = textinput.New()
+	keyIn.Placeholder = "sk-..."
+	keyIn.SetWidth(60)
+	keyIn.CharLimit = 200
+	keyIn.EchoMode = textinput.EchoPassword
+	keyIn.EchoCharacter = '•'
+
+	nameIn = textinput.New()
+	nameIn.Placeholder = "e.g. My Groq API"
+	nameIn.SetWidth(60)
+	nameIn.CharLimit = 100
+
+	manualIn = textinput.New()
+	manualIn.Placeholder = "model-name"
+	manualIn.SetWidth(60)
+	manualIn.CharLimit = 100
+
+	dotenvIn = textinput.New()
+	dotenvIn.Placeholder = "GURT_API_KEY"
+	dotenvIn.SetWidth(60)
+	dotenvIn.CharLimit = 200
+
+	chatIn = textarea.New()
+	chatIn.Placeholder = "Ask something..."
+	chatIn.SetWidth(60)
+	chatIn.CharLimit = 4096
+	chatIn.ShowLineNumbers = false
+	chatIn.Prompt = ""
+	chatIn.DynamicHeight = true
+	chatIn.MinHeight = 1
+	chatIn.MaxHeight = 6
+	chatIn.MaxContentHeight = 1000
+	chatIn.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "ctrl+j"))
+	taStyles := textarea.DefaultStyles(true)
+	taStyles.Focused.CursorLine = lipgloss.NewStyle()
+	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
+	chatIn.SetStyles(taStyles)
+
+	return urlIn, keyIn, nameIn, manualIn, dotenvIn, chatIn
+}
+
+// newAuxInputs builds the two inputs that belong to the chat screen rather than
+// to the setup flow: the allowlist editor and the sudo password prompt.
+func newAuxInputs() (allowIn, sudoIn textinput.Model) {
+	allowIn = textinput.New()
+	allowIn.Placeholder = "command prefix (e.g. npm, git push)"
+	allowIn.SetWidth(60)
+	allowIn.CharLimit = 200
+
+	sudoIn = textinput.New()
+	sudoIn.Placeholder = "enter sudo password"
+	sudoIn.EchoMode = textinput.EchoPassword
+	sudoIn.EchoCharacter = '•'
+	sudoIn.SetWidth(60)
+	sudoIn.CharLimit = 200
+
+	return allowIn, sudoIn
+}
+
+// resizeInputs fits every text input to the terminal. All of them but chatInput
+// used to keep their construction-time width of 60 forever, which overflows any
+// terminal narrower than that — including a phone in portrait over SSH.
+func (m model) resizeInputs(layout ui.Layout) model {
+	w := layout.SetupInputWidth()
+	m.urlInput.SetWidth(w)
+	m.keyInput.SetWidth(w)
+	m.nameInput.SetWidth(w)
+	m.manualInput.SetWidth(w)
+	m.dotenvInput.SetWidth(w)
+	m.allowManageInput.SetWidth(w)
+	m.sudoPasswordInput.SetWidth(w)
+	m.chatInput.SetWidth(layout.ChatInputWidth())
+	return m
+}
+
+// focusForState focuses the input the current state expects to receive typing.
+// bubbles' textinput and textarea drop every key when unfocused, so a state
+// entered without this is a dead end the user cannot type their way out of.
+// Idempotent, so it is safe to call on every keypress as a backstop.
+func (m model) focusForState() model {
+	switch m.state {
+	case stateCustomURL:
+		m.urlInput.Focus()
+	case stateAPIKeyInput:
+		m.keyInput.Focus()
+	case stateCustomName:
+		m.nameInput.Focus()
+	case stateManualModel:
+		m.manualInput.Focus()
+	case stateDotenvKeyName:
+		m.dotenvInput.Focus()
+	case stateAllowManage:
+		if m.allowManageAdding && m.allowManageAddType == "command" {
+			m.allowManageInput.Focus()
+		}
+	case stateChat:
+		// The permission overlay owns the keyboard while it is up, and its sudo
+		// phase has its own input; focusing the chat input there would steal keys.
+		if m.pendingPerm != nil {
+			if m.pendingPerm.confirmSudo {
+				m.sudoPasswordInput.Focus()
+			}
+		} else if !m.showThemePicker {
+			m.chatInput.Focus()
+		}
+	}
 	return m
 }
 

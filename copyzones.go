@@ -97,7 +97,11 @@ func appendSpacerZones(m model, zones []copyZone) []copyZone {
 		return zones
 	}
 
-	if status := m.workingStatusText(); status != "" {
+	// Read what the row actually kept: on a narrow terminal the right-hand block
+	// is dropped, and zones for it would sit over blank cells.
+	left, right := m.spacerParts()
+
+	if status := m.workingStatusText(); status != "" && left != "" {
 		zones = append(zones, copyZone{
 			row:   row,
 			start: 0,
@@ -105,6 +109,9 @@ func appendSpacerZones(m model, zones []copyZone) []copyZone {
 			label: "status",
 			text:  status,
 		})
+	}
+	if right == "" {
+		return zones
 	}
 
 	ctxWidth := lipgloss.Width(m.renderContextBar())
@@ -158,19 +165,14 @@ func appendBottomZones(m model, zones []copyZone) []copyZone {
 		}
 	}
 
-	help, isDefault := m.chatHelpText()
-	status := joinSegments(m.statusSegments())
-	if lipgloss.Width(help)+lipgloss.Width(status) >= m.width {
-		// helpWithStatus has run out of room and clamped the gap between the
-		// two; the segment offsets below would be fiction.
-		return zones
-	}
+	// The same fitting the renderer used, so the zones land on the columns that
+	// actually got drawn rather than on segments that were dropped.
+	_, helpSegs, statusSegs := m.fitBottomBar()
+	status := joinSegments(statusSegs)
 
-	if isDefault {
-		zones = appendSegmentZones(zones, helpRow, 0, m.helpSegments())
-	}
+	zones = appendSegmentZones(zones, helpRow, 0, helpSegs)
 	statusStart := m.width - lipgloss.Width(status)
-	return appendSegmentZones(zones, helpRow, statusStart, m.statusSegments())
+	return appendSegmentZones(zones, helpRow, statusStart, statusSegs)
 }
 
 // appendSegmentZones turns a joined run of segments into one zone each, so

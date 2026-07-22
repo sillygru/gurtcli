@@ -207,13 +207,23 @@ func testChatModel() model {
 	vp := viewport.New()
 	vp.SetWidth(76)
 	vp.SetHeight(10)
+	urlIn, keyIn, nameIn, manualIn, dotenvIn, chatIn := newTextInputs()
+	allowIn, sudoIn := newAuxInputs()
 	return model{
-		state:        stateChat,
-		width:        80,
-		height:       20,
-		theme:        ui.DefaultTheme(),
-		chatViewport: vp,
-		modelName:    "test-model",
+		state:             stateChat,
+		width:             80,
+		height:            20,
+		theme:             ui.DefaultTheme(),
+		chatViewport:      vp,
+		modelName:         "test-model",
+		urlInput:          urlIn,
+		keyInput:          keyIn,
+		nameInput:         nameIn,
+		manualInput:       manualIn,
+		dotenvInput:       dotenvIn,
+		chatInput:         chatIn,
+		allowManageInput:  allowIn,
+		sudoPasswordInput: sudoIn,
 	}
 }
 

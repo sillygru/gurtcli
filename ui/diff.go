@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ansiBackground returns the ANSI escape sequence to set the background
@@ -36,6 +37,12 @@ func WrapScreen(content string, width, height int, baseColor string) string {
 	}
 	var b strings.Builder
 	for i, line := range lines {
+		// A line wider than the screen soft-wraps in the terminal, which pushes
+		// every row below it down and scrolls the bottom of the UI away. Cutting
+		// it here means no view can break the layout no matter what it renders.
+		if lipgloss.Width(line) > width {
+			line = ansi.Truncate(line, width, "")
+		}
 		rawWidth := lipgloss.Width(line)
 		// After every ANSI reset inside the line, re-set the background
 		// so styled text always has the base background behind it.
@@ -297,7 +304,7 @@ func RenderEditDiff(t Theme, oldStr, newStr string, width int) string {
 		return ""
 	}
 
-	layout := NewLayout(width+contentMargin, 0)
+	layout := LayoutForContent(width)
 	rows := alignLines(oldLines, newLines)
 
 	if layout.DiffMode() == DiffSideBySide {

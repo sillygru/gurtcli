@@ -65,21 +65,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		h := msg.Height - 10
-		if h < 4 {
-			h = 4
-		}
-		m.providerList.SetSize(msg.Width-4, h)
-		m.modelList.SetSize(msg.Width-4, h)
-		m.sessionList.SetSize(msg.Width-4, h)
+		layout := ui.NewLayout(msg.Width, msg.Height)
+		contentWidth := layout.ContentWidth()
+		h := layout.ListHeight()
+		m.providerList.SetSize(contentWidth, h)
+		m.modelList.SetSize(contentWidth, h)
+		m.sessionList.SetSize(contentWidth, h)
 
 		chatViewHeight := msg.Height - 6
-		if chatViewHeight < 4 {
-			chatViewHeight = 4
+		if chatViewHeight < 1 {
+			chatViewHeight = 1
 		}
-		m.chatViewport.SetWidth(msg.Width - 4)
+		m.chatViewport.SetWidth(contentWidth)
 		m.chatViewport.SetHeight(chatViewHeight)
-		m.chatInput.SetWidth(msg.Width - 4)
+		m = m.resizeInputs(layout)
 		// A resize re-wraps the transcript, so the cells a selection points at
 		// are no longer the ones the user picked.
 		m.selection = textSelection{}
@@ -131,6 +130,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// Cheap and idempotent: guarantees the state's input is live no matter
+		// which path got us here, so no transition can strand the user.
+		m = m.focusForState()
 		if msg.String() == "ctrl+c" {
 			if m.state == stateChat && (m.isStreaming || (m.toolExec != nil && m.toolExec.active)) {
 				m.cancelRequested = true
@@ -950,15 +952,27 @@ func (m model) updateAPIKeyInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.continueAfterAPIKey()
 }
 
+const dotenvPromptOptions = 3
+
 func (m model) updateDotenvPrompt(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "up", "down":
-		m.dotenvCursor = (m.dotenvCursor + 1) % 2
+	case "up":
+		m.dotenvCursor = (m.dotenvCursor - 1 + dotenvPromptOptions) % dotenvPromptOptions
+	case "down":
+		m.dotenvCursor = (m.dotenvCursor + 1) % dotenvPromptOptions
 	case "enter":
 		switch m.dotenvCursor {
 		case 0:
+			if err := config.SetCredFileAPIKey(m.provider, m.customURL, m.savedEndpointName, m.apiKey); err != nil {
+				m.err = err
+				m.errChoice = 0
+				m.state = stateError
+				return m, nil
+			}
 			return m.continueAfterAPIKey()
 		case 1:
+			return m.continueAfterAPIKey()
+		case 2:
 			m.dotenvInput.SetValue("GURT_API_KEY")
 			m.dotenvInput.Focus()
 			m.state = stateDotenvKeyName
@@ -3107,7 +3121,7 @@ func (m model) adjustViewportHeight() model {
 	// title + top divider + spacer + toast + bottom divider; every one of these
 	// occupies a row even when empty, so chatView and this must agree exactly or
 	// the view overflows the screen and scrolls the terminal.
-	fixed := chatChromeLines
+	fixed := m.chatChromeLines()
 	// bottom section
 	switch {
 	case m.pendingPerm != nil:

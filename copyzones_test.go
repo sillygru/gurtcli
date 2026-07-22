@@ -50,8 +50,7 @@ func TestCopyZoneHitsModelNameInHeader(t *testing.T) {
 
 func TestCopyZonesAlignWithStatusBar(t *testing.T) {
 	m := testChatModelWithStatus()
-	help, _ := m.chatHelpText()
-	row := m.helpWithStatus(help)
+	row := m.helpWithStatus()
 	lastRow := m.height - 1
 
 	for _, want := range []struct {
@@ -77,6 +76,64 @@ func TestCopyZonesAlignWithStatusBar(t *testing.T) {
 		end := col + ansi.StringWidth(want.display) - 1
 		if z, ok := hitTestCopyZone(m, end, lastRow); !ok || z.text != want.text {
 			t.Errorf("zone under %q does not cover its last cell", want.display)
+		}
+	}
+}
+
+// The bottom bar is budgeted as exactly one row by adjustViewportHeight, so at
+// any width it must fit on one — segments get dropped, never wrapped.
+func TestBottomBarFitsOnOneRow(t *testing.T) {
+	for _, width := range []int{20, 30, 40, 50, 60, 80, 120} {
+		m := testChatModelWithStatus()
+		m.width = width
+		row := m.helpWithStatus()
+		if strings.Contains(row, "\n") {
+			t.Errorf("width %d: bottom bar spans multiple rows", width)
+		}
+		if got := ansi.StringWidth(stripANSI(row)); got > width {
+			t.Errorf("width %d: bottom bar is %d cells wide", width, got)
+		}
+	}
+}
+
+// The model name is the one thing worth keeping when space runs out.
+func TestBottomBarKeepsModelName(t *testing.T) {
+	m := testChatModelWithStatus()
+	m.width = 30
+	_, helpSegs, statusSegs := m.fitBottomBar()
+	if len(statusSegs) == 0 {
+		t.Fatal("status segments were emptied")
+	}
+	last := statusSegs[len(statusSegs)-1]
+	if last.text != m.modelDisplayName() {
+		t.Errorf("last surviving status segment is %q, want the model name", last.text)
+	}
+	if len(helpSegs) != 0 {
+		t.Errorf("help segments should be dropped first at width 30, got %d", len(helpSegs))
+	}
+}
+
+// Zones are re-derived rather than recorded, so they have to be fitted the same
+// way the renderer fitted them or a click lands on the wrong text.
+func TestCopyZonesFollowDroppedSegments(t *testing.T) {
+	m := testChatModelWithStatus()
+	m.width = 30
+	row := m.helpWithStatus()
+	lastRow := m.height - 1
+
+	name := m.modelDisplayName()
+	col := cellIndexOf(t, row, name)
+	zone, ok := hitTestCopyZone(m, col, lastRow)
+	if !ok {
+		t.Fatalf("no zone under the model name at column %d", col)
+	}
+	if zone.text != name {
+		t.Errorf("zone under the model name copies %q, want %q", zone.text, name)
+	}
+	// The version was dropped from the row, so nothing may still claim to copy it.
+	for _, z := range chatCopyZones(m) {
+		if z.row == lastRow && z.text == VersionString() {
+			t.Error("a copy zone survives for a segment that was not rendered")
 		}
 	}
 }

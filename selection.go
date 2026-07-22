@@ -11,7 +11,6 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sillygru/gurtcli/ui"
@@ -28,13 +27,13 @@ import (
 // computeViewportStartRow returns the terminal row where the viewport
 // content begins, accounting for header and banner wrapping.
 func computeViewportStartRow(m model) int {
-	brandWidth := lipgloss.Width(m.theme.Brand.Render("  " + m.modelDisplayName()))
-	brandRows := 1
-	if m.width > 0 && brandWidth > m.width {
-		brandRows = (brandWidth + m.width - 1) / m.width
+	// A short terminal drops both rows; see chatChromeLines. The title itself is
+	// always exactly one row — WrapScreen truncates anything wider than the
+	// screen, so a long model name can no longer wrap into a second one.
+	if !m.showsChatTitle() {
+		return 0
 	}
-	row := brandRows
-	return row + 1 // divider
+	return 1 + 1 // title + divider
 }
 
 // computeContentPosition converts a terminal mouse position to viewport

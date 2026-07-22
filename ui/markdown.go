@@ -21,11 +21,7 @@ func renderMarkdownContent(t Theme, content string, width int, commands []string
 		return ""
 	}
 	lines := strings.Split(content, "\n")
-	layout := NewLayout(width+contentMargin, 0)
-	wrapWidth := layout.ContentWidth()
-	if wrapWidth < 10 {
-		wrapWidth = 10
-	}
+	wrapWidth := LayoutForContent(width).ContentWidth()
 
 	var b strings.Builder
 	doHL := len(commands) > 0
