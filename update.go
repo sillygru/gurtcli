@@ -102,7 +102,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if m.showThemePicker {
+			if m.showThemePicker || m.showReasoningPicker {
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -283,6 +283,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMouse(msg)
 
 	case chatStreamChunk:
+		// The first answer token is the end of reasoning. In auto mode that is
+		// where the block folds itself away, so the user watches it think and
+		// then gets the answer without the transcript filling up.
+		if m.reasoning.active && m.reasoning.mode == reasoningModeAuto {
+			m.reasoning.duration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
+			m.reasoning.active = false
+			m.reasoning.visible = false
+		}
 		if m.streamingContent == nil {
 			m.streamingContent = new(strings.Builder)
 		}
@@ -311,8 +319,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reasoning.content.WriteString(msg.content)
 		if !m.reasoning.active {
 			m.reasoning.active = true
-			m.reasoning.visible = m.reasoning.defaultVisible
-			m.reasoning.startTime = time.Now()
+			m.reasoning.visible = m.reasoning.mode.visibleWhileActive()
+			// Backdating by what already elapsed keeps the clock running across
+			// a block that resumes after interleaved answer text, instead of
+			// restarting it at zero.
+			m.reasoning.startTime = time.Now().Add(-m.reasoning.duration)
 		}
 		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
 			m.lastStreamRender = time.Now()
@@ -356,6 +367,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.reasoning.active {
 			reasoningDuration = time.Since(m.reasoning.startTime).Round(100 * time.Millisecond)
 		}
+		storedMode := m.reasoning.mode
 		m = m.resetStreamingState()
 
 		if len(msg.toolCalls) > 0 {
@@ -363,6 +375,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if reasoningStr != "" {
 				asm.Reasoning = reasoningStr
 				asm.ReasoningDuration = reasoningDuration
+				asm.ReasoningVisible = storedMode.visibleWhenStored()
 			}
 			asm.ToolCalls = msg.toolCalls
 			m.messages = append(m.messages, asm)
@@ -402,6 +415,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if reasoningStr != "" {
 				msg.Reasoning = reasoningStr
 				msg.ReasoningDuration = reasoningDuration
+				msg.ReasoningVisible = storedMode.visibleWhenStored()
 			}
 			m.messages = append(m.messages, msg)
 			m = m.extendTranscriptCache().trimMessages()
@@ -1118,7 +1132,10 @@ func saveConfig(m model) error {
 	cfg.Model = m.modelName
 	cfg.CustomBaseURL = m.customURL
 	cfg.SavedEndpointName = m.savedEndpointName
-	cfg.ReasoningVisible = m.reasoning.defaultVisible
+	cfg.ReasoningMode = string(m.reasoning.mode)
+	// Kept in sync so a downgrade to a build that predates modes still reads a
+	// sensible on/off value.
+	cfg.ReasoningVisible = m.reasoning.mode.visibleWhenStored()
 	cfg.ThinkingType = m.thinkingType
 	cfg.EffortLevel = m.effortLevel
 	savedTools := make([]string, 0, len(m.alwaysAllowTools))
@@ -1919,6 +1936,46 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.showReasoningPicker {
+		// Unlike the theme picker there is no live preview: re-applying the
+		// mode rewrites every stored block, so it only happens on enter.
+		switch msg.String() {
+		case "up":
+			m.reasoningPickerCursor--
+			if m.reasoningPickerCursor < 0 {
+				m.reasoningPickerCursor = len(reasoningModeRegistry) - 1
+			}
+			return m, nil
+		case "down":
+			m.reasoningPickerCursor++
+			if m.reasoningPickerCursor >= len(reasoningModeRegistry) {
+				m.reasoningPickerCursor = 0
+			}
+			return m, nil
+		case "enter":
+			// Expanding every block makes the transcript taller, which would
+			// otherwise leave someone who was reading the latest message parked
+			// partway up it. Measured before the content changes.
+			atBottom := m.chatViewport.AtBottom()
+			m = m.applyReasoningMode(reasoningModeRegistry[m.reasoningPickerCursor].mode).persistReasoningMode()
+			m.showReasoningPicker = false
+			m.chatInput.Focus()
+			// Height first: the picker's rows go back to the input bar, and the
+			// viewport has to be its final size before the offset is set.
+			m = m.adjustViewportHeight()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			if atBottom {
+				m.chatViewport.GotoBottom()
+			}
+			return m, m.persistSessionCmd()
+		case "esc":
+			m.showReasoningPicker = false
+			m.chatInput.Focus()
+			m = m.adjustViewportHeight()
+			return m, nil
+		}
+	}
+
 	if m.suggestions.active && len(m.suggestions.items) > 0 && !m.isStreaming && m.pendingPerm == nil {
 		switch msg.String() {
 		case "up":
@@ -1968,7 +2025,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// "dirty"), arrows only move the cursor within the textarea.
 	val := m.chatInput.Value()
 	clean := val == "" || val == m.historyLoadedValue
-	if clean && !m.suggestions.active && !m.showThemePicker && m.pendingPerm == nil {
+	if clean && !m.suggestions.active && !m.showThemePicker && !m.showReasoningPicker && m.pendingPerm == nil {
 		switch msg.String() {
 		case "up":
 			if len(m.history) > 0 && m.historyIndex < len(m.history)-1 {
@@ -2006,7 +2063,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if isCommand {
 				cmd := strings.TrimPrefix(strings.Fields(input)[0], "/")
 				switch cmd {
-				case "show-reasoning", "theme", "version", "help", "telemetry", "reasoning", "effort", "allow", "auth":
+				case "show-reasoning", "show-thinking", "theme", "version", "help", "telemetry", "reasoning", "effort", "allow", "auth":
 					return m.handleSlashCommand(input)
 				}
 			} else {
@@ -2044,7 +2101,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 		m.workingSpinnerIdx = 0
-		m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+		m.reasoning = reasoningState{mode: m.reasoning.mode}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
 		m.stickToBottom = true
@@ -2609,6 +2666,42 @@ func copiedLabel(text string) string {
 	return "Copied to clipboard"
 }
 
+// applyReasoningMode switches the thinking display mode and re-applies it to
+// every block already in the transcript, which is what "always expanded" and
+// "always collapsed" have to mean. Blocks toggled by hand afterwards keep the
+// user's choice until the mode changes again. Writing the mode to disk is the
+// caller's job — see persistReasoningMode.
+func (m model) applyReasoningMode(mode reasoningMode) model {
+	m.reasoning.mode = mode
+	if m.reasoning.active {
+		m.reasoning.visible = mode.visibleWhileActive()
+	} else {
+		m.reasoning.visible = mode.visibleWhenStored()
+	}
+	for i := range m.messages {
+		if m.messages[i].Reasoning != "" {
+			m.messages[i].ReasoningVisible = mode.visibleWhenStored()
+		}
+	}
+	// Finalized messages are cached, so the re-applied state is invisible
+	// without this.
+	return m.invalidateTranscriptCache()
+}
+
+// persistReasoningMode writes the current mode to the config file. A display
+// preference that fails to save is worth saying out loud but not worth tearing
+// the session down over — the mode still applies for the rest of this run.
+func (m model) persistReasoningMode() model {
+	if err := saveConfig(m); err != nil {
+		m.messages = append(m.messages, llm.Message{
+			Role:     "assistant",
+			Internal: true,
+			Content:  fmt.Sprintf("_Thinking display applied, but saving it failed: %v_", err),
+		})
+	}
+	return m
+}
+
 // findMarker scans lines in [contentLine-radius, contentLine+radius] for any
 // of the given markers, returning the first matching line index, or -1.
 func findMarker(lines []string, contentLine, radius int, markers ...string) int {
@@ -2638,6 +2731,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	streamingSafe := map[string]bool{
 		"show-reasoning": true,
+		"show-thinking":  true,
 		"theme":          true,
 		"version":        true,
 		"help":           true,
@@ -2683,32 +2777,45 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "exit":
 		return m, tea.Quit
 
-	case "show-reasoning":
-		oldVisible := m.reasoning.visible
-		newVisible := !oldVisible
-		if len(parts) > 1 {
-			switch strings.ToLower(parts[1]) {
-			case "true", "yes":
-				newVisible = true
-			case "false", "no":
-				newVisible = false
+	case "show-reasoning", "show-thinking":
+		// No argument opens the picker; an argument sets the mode outright so
+		// the command stays scriptable.
+		if len(parts) < 2 {
+			m.showReasoningPicker = true
+			m.reasoningPickerCursor = 0
+			for i, entry := range reasoningModeRegistry {
+				if entry.mode == m.reasoning.mode {
+					m.reasoningPickerCursor = i
+					break
+				}
 			}
+			m.chatInput.Blur()
+			m = m.adjustViewportHeight()
+			return m, nil
 		}
-		m.reasoning.visible = newVisible
-		m.reasoning.defaultVisible = newVisible
-		saveConfig(m)
-		for i := range m.messages {
-			if m.messages[i].Reasoning != "" {
-				m.messages[i].ReasoningVisible = newVisible
+
+		oldMode := m.reasoning.mode
+		newMode, ok := lookupReasoningMode(parts[1])
+		if !ok {
+			names := make([]string, 0, len(reasoningModeRegistry))
+			for _, entry := range reasoningModeRegistry {
+				names = append(names, string(entry.mode))
 			}
+			m.messages = append(m.messages, llm.Message{
+				Role:     "assistant",
+				Internal: true,
+				Content: fmt.Sprintf("_Unknown thinking display %q. Usage: /%s [%s]_",
+					parts[1], cmd, strings.Join(names, "|")),
+			})
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			m.chatViewport.GotoBottom()
+			return m, nil
 		}
-		m = m.invalidateTranscriptCache()
+		m = m.applyReasoningMode(newMode).persistReasoningMode()
 		m.messages = append(m.messages, llm.Message{
 			Role:     "assistant",
 			Internal: true,
-			Content: fmt.Sprintf("Reasoning changed to %s (was %s)",
-				map[bool]string{true: "visible", false: "hidden"}[newVisible],
-				map[bool]string{true: "visible", false: "hidden"}[oldVisible]),
+			Content:  fmt.Sprintf("Thinking display: %s (was %s)", newMode, oldMode),
 		})
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
@@ -3128,6 +3235,8 @@ func (m model) adjustViewportHeight() model {
 		fixed += m.permOverlayHeight()
 	case m.showThemePicker:
 		fixed += m.themePickerOverlayHeight()
+	case m.showReasoningPicker:
+		fixed += m.reasoningPickerOverlayHeight()
 	default:
 		fixed += m.chatInput.Height() + len(m.fitBottomBar().rows)
 		fixed += len(m.suggestionRows())
@@ -3192,6 +3301,10 @@ func (m model) themePickerOverlayHeight() int {
 	return strings.Count(popup.Render(pc.String()), "\n") + 1
 }
 
+func (m model) reasoningPickerOverlayHeight() int {
+	return strings.Count(m.renderReasoningPicker(), "\n") + 1
+}
+
 const (
 	// maxRetryAttempts bounds how many times a failed chat request is
 	// repeated before the error surfaces in the transcript.
@@ -3207,7 +3320,7 @@ const (
 // and the spinner tick keep working while the countdown runs.
 func (m model) scheduleRetry(err error) (tea.Model, tea.Cmd) {
 	m.streamingContent = nil
-	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.isStreaming = true
 	m.workingMsg = ""
 	m.workingSpinnerIdx = 0
@@ -3413,7 +3526,7 @@ func (m model) resetStreamingState() model {
 	// Bump the token so any retry already scheduled by tea.Tick is ignored
 	// when it fires.
 	m.retry = retryState{token: m.retry.token + 1}
-	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.stickToBottom = true
 	return m
 }
@@ -3436,7 +3549,7 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m.isStreaming = true
 	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
 	m.workingSpinnerIdx = 0
-	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
 	m.stickToBottom = true

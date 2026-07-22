@@ -1097,6 +1097,8 @@ func (m model) chatView() string {
 		pc.WriteString(m.theme.Dim.Render("↑/↓ navigate • enter select • esc dismiss"))
 
 		b.WriteString(popup.Render(pc.String()))
+	} else if m.showReasoningPicker {
+		b.WriteString(m.renderReasoningPicker())
 	} else {
 		for _, row := range m.suggestionRows() {
 			b.WriteString(row)
@@ -1122,6 +1124,83 @@ func (m model) chatView() string {
 	}
 
 	return b.String()
+}
+
+// renderReasoningPicker draws the thinking-display mode popup. Both the view
+// and adjustViewportHeight go through here so the row count they each work out
+// can never drift apart.
+func (m model) renderReasoningPicker() string {
+	boxW := ui.NewLayout(m.width, m.height).PopupWidth()
+	popup := lipgloss.NewStyle().
+		Background(lipgloss.Color(m.theme.Base)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.theme.Mauve)).
+		Width(boxW).
+		Padding(1, 2)
+
+	// The popup's own horizontal padding is not available to its text.
+	const popupPadding = 4
+	avail := boxW - popupPadding
+	if avail < 1 {
+		avail = 1
+	}
+
+	nameW := 0
+	for _, entry := range reasoningModeRegistry {
+		if w := lipgloss.Width(string(entry.mode)); w > nameW {
+			nameW = w
+		}
+	}
+
+	// A description that wraps hangs under itself rather than under the cursor
+	// column, so the mode names stay the leftmost thing in the list. On a
+	// terminal too narrow for that to leave usable room, the wrap goes flush.
+	hang := strings.Repeat(" ", nameW+4)
+	if len(hang) > avail/2 {
+		hang = ""
+	}
+
+	var pc strings.Builder
+	pc.WriteString(m.theme.Header.Render("Thinking Display"))
+	pc.WriteString("\n\n")
+	for i, entry := range reasoningModeRegistry {
+		prefix := "  "
+		style := m.theme.Dim
+		if i == m.reasoningPickerCursor {
+			prefix = "> "
+			style = m.theme.Header
+		}
+		name := fmt.Sprintf("%-*s", nameW, string(entry.mode))
+		head := prefix + name + "  "
+
+		// minDescWidth is the narrowest a description can be and still read as
+		// prose rather than one word per line. Below it the mode name is the
+		// whole row — the names are self-explanatory enough to stand alone.
+		const minDescWidth = 8
+		descAvail := avail - lipgloss.Width(head)
+		if descAvail < minDescWidth {
+			pc.WriteString(style.Render(ui.FitWidth(prefix+string(entry.mode), avail)))
+			pc.WriteString("\n")
+			continue
+		}
+
+		// Styled per fragment so a row that wraps on a narrow terminal keeps its
+		// colour on every line instead of only the first.
+		desc := strings.Split(ui.FitWidth(entry.desc, descAvail), "\n")
+		pc.WriteString(style.Render(head + desc[0]))
+		pc.WriteString("\n")
+		for _, line := range desc[1:] {
+			pc.WriteString(style.Render(hang + line))
+			pc.WriteString("\n")
+		}
+	}
+	pc.WriteString("\n")
+	for _, line := range strings.Split(ui.FitWidth("↑/↓ navigate • enter select • esc dismiss", avail), "\n") {
+		pc.WriteString(m.theme.Dim.Render(line))
+		pc.WriteString("\n")
+	}
+
+	return popup.Render(strings.TrimRight(pc.String(), "\n"))
 }
 
 // toastRows returns the rows the toast occupies. There is always at least one,

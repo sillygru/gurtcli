@@ -197,12 +197,70 @@ type toastTimeoutMsg struct {
 }
 
 type reasoningState struct {
-	content        *strings.Builder
-	startTime      time.Time
-	visible        bool
-	active         bool
-	duration       time.Duration
-	defaultVisible bool
+	content   *strings.Builder
+	startTime time.Time
+	visible   bool
+	active    bool
+	duration  time.Duration
+	mode      reasoningMode
+}
+
+// reasoningMode decides whether a thinking block starts open. It only sets the
+// default: a block the user clicks keeps whatever they chose until the mode is
+// changed again.
+type reasoningMode string
+
+const (
+	reasoningModeExpanded  reasoningMode = "expanded"
+	reasoningModeCollapsed reasoningMode = "collapsed"
+	reasoningModeAuto      reasoningMode = "auto"
+)
+
+// reasoningModeRegistry is the display order for the picker and the set of
+// names /show-reasoning accepts as an argument.
+var reasoningModeRegistry = []struct {
+	mode reasoningMode
+	desc string
+}{
+	{reasoningModeExpanded, "always open unless collapsed by hand"},
+	{reasoningModeCollapsed, "always closed unless expanded by hand"},
+	{reasoningModeAuto, "open while thinking, then collapse"},
+}
+
+// visibleWhileActive reports whether the live block is open while the model is
+// still producing reasoning.
+func (r reasoningMode) visibleWhileActive() bool { return r != reasoningModeCollapsed }
+
+// visibleWhenStored reports whether a block stays open once its turn has ended.
+// Auto is deliberately false: that is the auto-collapse.
+func (r reasoningMode) visibleWhenStored() bool { return r == reasoningModeExpanded }
+
+// lookupReasoningMode resolves a mode name, accepting the on/off words the
+// command took before modes existed. The bool reports whether anything matched,
+// so a typo can be rejected instead of silently changing the setting.
+func lookupReasoningMode(s string) (reasoningMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case string(reasoningModeExpanded), "true", "yes", "on", "visible":
+		return reasoningModeExpanded, true
+	case string(reasoningModeCollapsed), "false", "no", "off", "hidden":
+		return reasoningModeCollapsed, true
+	case string(reasoningModeAuto):
+		return reasoningModeAuto, true
+	}
+	return "", false
+}
+
+// parseReasoningMode resolves a stored mode name. An empty or unrecognized
+// value predates modes, so it falls back to the boolean that used to carry this
+// setting — which is how existing configs and sessions migrate silently.
+func parseReasoningMode(s string, legacyVisible bool) reasoningMode {
+	if mode, ok := lookupReasoningMode(s); ok {
+		return mode
+	}
+	if legacyVisible {
+		return reasoningModeExpanded
+	}
+	return reasoningModeCollapsed
 }
 
 type pendingPerm struct {
@@ -399,6 +457,9 @@ type model struct {
 	themePickerOrigTheme ui.Theme
 	themePickerOrigName  string
 
+	showReasoningPicker   bool
+	reasoningPickerCursor int
+
 	sessionID        string
 	sessionName      string
 	sessionCreatedAt time.Time
@@ -500,7 +561,7 @@ func (m model) enterChatState() (model, tea.Cmd) {
 		m = m.initNewSession()
 	}
 	m.chatInput.Focus()
-	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible}
+	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.streamingContent = nil
 	if m.maxInputTokens == 0 {
 		for _, mdl := range m.models {
@@ -554,7 +615,10 @@ func (m model) continueAfterAPIKey() (tea.Model, tea.Cmd) {
 		cfg.Model = m.modelName
 		cfg.CustomBaseURL = m.customURL
 		cfg.SavedEndpointName = m.savedEndpointName
-		cfg.ReasoningVisible = m.reasoning.defaultVisible
+		cfg.ReasoningMode = string(m.reasoning.mode)
+		// Kept in sync so a downgrade to a build that predates modes still reads
+		// a sensible on/off value.
+		cfg.ReasoningVisible = m.reasoning.mode.visibleWhenStored()
 		cfg.ThinkingType = m.thinkingType
 		cfg.EffortLevel = m.effortLevel
 
@@ -647,7 +711,8 @@ var slashCommands = []slashCommand{
 	{name: "model", description: "Change model for current provider"},
 	{name: "new", description: "Start a new session"},
 	{name: "provider", description: "Change provider and model"},
-	{name: "show-reasoning", description: "Toggle reasoning visibility"},
+	{name: "show-reasoning", description: "Set how thinking blocks are displayed"},
+	{name: "show-thinking", description: "Alias for /show-reasoning"},
 	{name: "session", description: "Switch to a saved session"},
 	{name: "reasoning", description: "Set thinking type or reasoning effort"},
 	{name: "effort", description: "Set effort level (low/medium/high/xhigh/max)"},
@@ -963,8 +1028,8 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	m.historyIndex = -1
 
 	if cfg != nil && !reconfigure {
-		m.reasoning.defaultVisible = cfg.ReasoningVisible
-		m.reasoning.visible = cfg.ReasoningVisible
+		m.reasoning.mode = parseReasoningMode(cfg.ReasoningMode, cfg.ReasoningVisible)
+		m.reasoning.visible = m.reasoning.mode.visibleWhileActive()
 		m.thinkingType = cfg.ThinkingType
 		m.effortLevel = cfg.EffortLevel
 	}
@@ -1100,7 +1165,7 @@ func (m model) focusForState() model {
 			if m.pendingPerm.confirmSudo {
 				m.sudoPasswordInput.Focus()
 			}
-		} else if !m.showThemePicker {
+		} else if !m.showThemePicker && !m.showReasoningPicker {
 			m.chatInput.Focus()
 		}
 	}
@@ -1132,7 +1197,8 @@ func (m model) toSession() *sessions.Session {
 		SavedEndpointName:  m.savedEndpointName,
 		ThinkingType:       m.thinkingType,
 		EffortLevel:        m.effortLevel,
-		ReasoningVisible:   m.reasoning.defaultVisible,
+		ReasoningMode:      string(m.reasoning.mode),
+		ReasoningVisible:   m.reasoning.mode.visibleWhenStored(),
 		WorkspaceRoot:      m.workspaceRoot,
 		Messages:           msgs,
 		InputTokens:        m.inputTokens,
@@ -1158,8 +1224,6 @@ func (m model) applySession(s *sessions.Session) model {
 	m.savedEndpointName = s.SavedEndpointName
 	m.thinkingType = s.ThinkingType
 	m.effortLevel = s.EffortLevel
-	m.reasoning.defaultVisible = s.ReasoningVisible
-	m.reasoning.visible = s.ReasoningVisible
 	m.toolCallCycle = 0
 	m.pendingPerm = nil
 	m.permCursor = 0
@@ -1167,7 +1231,8 @@ func (m model) applySession(s *sessions.Session) model {
 	m.queuedMessage = ""
 	m.isStreaming = false
 	m.streamingContent = nil
-	m.reasoning = reasoningState{defaultVisible: s.ReasoningVisible, visible: s.ReasoningVisible}
+	mode := parseReasoningMode(s.ReasoningMode, s.ReasoningVisible)
+	m.reasoning = reasoningState{mode: mode, visible: mode.visibleWhileActive()}
 	m.inputTokens = s.InputTokens
 	m.outputTokens = s.OutputTokens
 	m.reasoningOutputTokens = s.ReasoningTokens
@@ -1190,7 +1255,7 @@ func (m model) resetToNewSession() model {
 	m.queuedMessage = ""
 	m.isStreaming = false
 	m.streamingContent = nil
-	m.reasoning = reasoningState{defaultVisible: m.reasoning.defaultVisible, visible: m.reasoning.defaultVisible}
+	m.reasoning = reasoningState{mode: m.reasoning.mode, visible: m.reasoning.mode.visibleWhileActive()}
 	m.inputTokens = 0
 	m.contextInputTokens = 0
 	m.contextCacheTokens = 0

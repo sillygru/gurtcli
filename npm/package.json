@@ -1,6 +1,6 @@
 {
   "name": "gurtcli",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "A coding agent in your terminal. Type what you want. It does the rest.",
   "bin": {
     "gurtcli": "./cli.js"

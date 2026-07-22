@@ -27,6 +27,7 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 		Model:            "gpt-5.5",
 		WorkspaceRoot:    workspace,
 		ReasoningVisible: true,
+		ReasoningMode:    "auto",
 		InputTokens:      142,
 		OutputTokens:     57,
 		Messages: []llm.Message{
@@ -54,6 +55,9 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 	}
 	if loaded.OutputTokens != 57 {
 		t.Fatalf("output_tokens: got %d want 57", loaded.OutputTokens)
+	}
+	if loaded.ReasoningMode != "auto" {
+		t.Fatalf("reasoning_mode: got %q want %q", loaded.ReasoningMode, "auto")
 	}
 
 	metas, err := List(workspace)

@@ -98,6 +98,11 @@ func FitWidth(s string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// reasoningGutter is the indent and rule drawn to the left of every line of an
+// expanded thinking block. It stands in for the border the block used to have:
+// enough to mark the block's extent, light enough to stay out of the way.
+const reasoningGutter = "  │ "
+
 // RenderReasoning renders the reasoning toggle and optional expanded content.
 func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, content string, width int) string {
 	header := renderReasoningHeader(t, active, visible, elapsed)
@@ -108,17 +113,27 @@ func RenderReasoning(t Theme, active, visible bool, elapsed time.Duration, conte
 
 	// Clamped, not floored: a floor wider than the terminal would overhang the
 	// transcript on a phone-sized screen, which is exactly what it cannot do.
-	boxW := LayoutForContent(width).ContentWidth()
-
-	var body strings.Builder
-	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-		body.WriteString("  ")
-		body.WriteString(t.ReasoningText.Render(line))
-		body.WriteString("\n")
+	// The body has to be wrapped here rather than left to the FitWidth backstop
+	// in the transcript builder, because that backstop would break lines
+	// without re-emitting the gutter.
+	avail := LayoutForContent(width).ContentWidth() - lipgloss.Width(reasoningGutter)
+	if avail < 1 {
+		avail = 1
 	}
 
-	inner := header + "\n" + strings.TrimRight(body.String(), "\n")
-	return t.ReasoningBox.Width(boxW).Render(inner)
+	var body strings.Builder
+	for _, src := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
+		for _, line := range strings.Split(FitWidth(src, avail), "\n") {
+			body.WriteString("  ")
+			body.WriteString(t.ReasoningGutter.Render("│"))
+			body.WriteString(" ")
+			body.WriteString(t.ReasoningText.Render(line))
+			body.WriteString("\n")
+		}
+	}
+
+	// The trailing blank line stands in for the bottom margin the box supplied.
+	return header + "\n" + body.String()
 }
 
 // RenderReasoningStored renders a collapsed reasoning indicator for finalized messages.

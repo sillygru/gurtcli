@@ -64,7 +64,7 @@ func chatCopyZones(m model) []copyZone {
 	switch {
 	case m.pendingPerm != nil:
 		zones = appendPermZones(m, zones)
-	case m.showThemePicker:
+	case m.showThemePicker, m.showReasoningPicker:
 		// The picker owns its rows and is keyboard-driven.
 	default:
 		zones = appendBottomZones(m, zones)

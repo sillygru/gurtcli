@@ -162,6 +162,17 @@ func migrate(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("migrate v5: %w", err)
 		}
+		version = 5
+	}
+
+	if version < 6 {
+		_, err := db.Exec(`
+			ALTER TABLE sessions ADD COLUMN reasoning_mode TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 6;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v6: %w", err)
+		}
 	}
 
 	return nil
@@ -179,6 +190,7 @@ type Session struct {
 	ThinkingType      string        `json:"thinking_type,omitempty"`
 	EffortLevel       string        `json:"effort_level,omitempty"`
 	ReasoningVisible  bool          `json:"reasoning_visible,omitempty"`
+	ReasoningMode     string        `json:"reasoning_mode,omitempty"`
 	WorkspaceRoot     string        `json:"workspace_root"`
 	Messages          []llm.Message `json:"messages"`
 	InputTokens       int           `json:"input_tokens,omitempty"`
@@ -262,16 +274,17 @@ func Save(s *Session) error {
 		INSERT OR REPLACE INTO sessions
 			(id, name, created_at, updated_at, provider, model, custom_url,
 			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
+			 reasoning_mode,
 			 workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
 			 cache_hit_tokens, context_tokens, context_cache_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		s.ID, s.Name,
 		s.CreatedAt.UTC().Format(time.RFC3339),
 		s.UpdatedAt.UTC().Format(time.RFC3339),
 		s.Provider, s.Model, s.CustomURL,
 		s.SavedEndpointName, s.ThinkingType, s.EffortLevel,
-		boolToInt(s.ReasoningVisible),
+		boolToInt(s.ReasoningVisible), s.ReasoningMode,
 		s.WorkspaceRoot, string(msgs),
 		s.InputTokens, s.OutputTokens, s.ReasoningTokens,
 		s.CacheHitTokens, s.ContextTokens, s.ContextCacheTokens,
@@ -303,6 +316,7 @@ func Load(workspace, id string) (*Session, error) {
 	row := db.QueryRow(`
 		SELECT id, name, created_at, updated_at, provider, model, custom_url,
 		       saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
+		       COALESCE(reasoning_mode, ''),
 		       workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
 		       COALESCE(cache_hit_tokens, 0),
 		       COALESCE(context_tokens, 0), COALESCE(context_cache_tokens, 0)
@@ -318,7 +332,7 @@ func Load(workspace, id string) (*Session, error) {
 		&s.ID, &s.Name, &createdAt, &updatedAt,
 		&s.Provider, &s.Model, &s.CustomURL,
 		&s.SavedEndpointName, &s.ThinkingType, &s.EffortLevel,
-		&reasoningVisible, &s.WorkspaceRoot, &msgsJSON,
+		&reasoningVisible, &s.ReasoningMode, &s.WorkspaceRoot, &msgsJSON,
 		&s.InputTokens, &s.OutputTokens, &s.ReasoningTokens,
 		&s.CacheHitTokens, &s.ContextTokens, &s.ContextCacheTokens,
 	); err != nil {

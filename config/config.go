@@ -61,7 +61,10 @@ type Config struct {
 	CustomBaseURL      string          `json:"custom_base_url,omitempty"`
 	SavedEndpointName  string          `json:"saved_endpoint_name,omitempty"`
 	SavedEndpoints     []SavedEndpoint `json:"saved_endpoints,omitempty"`
+	// ReasoningVisible predates ReasoningMode and is still written so an older
+	// binary reading this file keeps working; ReasoningMode wins when set.
 	ReasoningVisible   bool            `json:"reasoning_visible,omitempty"`
+	ReasoningMode      string          `json:"reasoning_mode,omitempty"`
 	ThinkingType       string          `json:"thinking_type,omitempty"`
 	EffortLevel        string          `json:"effort_level,omitempty"`
 	MaxTokens          int             `json:"max_tokens,omitempty"`

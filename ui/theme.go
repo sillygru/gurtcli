@@ -65,7 +65,7 @@ type Theme struct {
 	DiffPanelLabel   lipgloss.Style
 	DiffEmptyLine    lipgloss.Style
 	ReasoningHeader  lipgloss.Style
-	ReasoningBox     lipgloss.Style
+	ReasoningGutter  lipgloss.Style
 	ReasoningText    lipgloss.Style
 	PermPrompt       lipgloss.Style
 	PermKey          lipgloss.Style
@@ -167,7 +167,6 @@ func DefaultTheme() Theme {
 func buildTheme(p Palette) Theme {
 	base := lipgloss.Color(p.Base)
 	surf0 := lipgloss.Color(p.Surface0)
-	bg := func() lipgloss.Style { return lipgloss.NewStyle().Background(base) }
 	fg := func(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Background(base).Foreground(c) }
 	fgSurf := func(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Background(surf0).Foreground(c) }
 
@@ -181,12 +180,10 @@ func buildTheme(p Palette) Theme {
 		Error:            fg(lipgloss.Color(p.Red)).Bold(true),
 		ReasoningToggle:  fg(lipgloss.Color(p.Subtext)).Italic(true),
 		ReasoningHeader:  fg(lipgloss.Color(p.Lavender)).Bold(true),
-		ReasoningBox: bg().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(p.Surface2)).
-			Padding(0, 1).
-			Margin(0, 0, 1, 0),
-		ReasoningText:    fg(lipgloss.Color(p.Overlay0)).Padding(0, 1),
+		// Surface2 is what the block's border used to be drawn in, so the rule
+		// reads as the same faint structure without boxing the content.
+		ReasoningGutter:  fg(lipgloss.Color(p.Surface2)),
+		ReasoningText:    fg(lipgloss.Color(p.Overlay0)),
 		ReasoningContent: fg(lipgloss.Color(p.Overlay0)).Padding(0, 2),
 		Divider:          fg(lipgloss.Color(p.Surface2)),
 		Rule: lipgloss.NewStyle().
