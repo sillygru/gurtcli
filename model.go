@@ -382,6 +382,7 @@ type model struct {
 	permScroll                  int
 	permScrollTotal             int
 	sudoPasswordInput           textinput.Model
+	permPatternInput            textinput.Model
 
 	provider  string
 	modelName string
@@ -969,7 +970,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		alwaysAllowExternal = cfg.AlwaysAllowExternal
 	}
 
-	allowIn, sudoIn := newAuxInputs()
+	allowIn, sudoIn, permPatternIn := newAuxInputs()
 
 	outputsDir := filepath.Join(wd, ".config", "gurtcli", "session-outputs")
 	if hd, err := os.UserHomeDir(); err == nil {
@@ -1007,6 +1008,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		permScroll:                  0,
 		permScrollTotal:             0,
 		sudoPasswordInput:           sudoIn,
+		permPatternInput:            permPatternIn,
 		providerList:                pl,
 		providerDel:                 &pd,
 		modelList:                   ml,
@@ -1108,11 +1110,11 @@ func newTextInputs() (urlIn, keyIn, nameIn, manualIn, dotenvIn textinput.Model, 
 	return urlIn, keyIn, nameIn, manualIn, dotenvIn, chatIn
 }
 
-// newAuxInputs builds the two inputs that belong to the chat screen rather than
-// to the setup flow: the allowlist editor and the sudo password prompt.
-func newAuxInputs() (allowIn, sudoIn textinput.Model) {
+// newAuxInputs builds the inputs that belong to the chat screen rather than
+// to the setup flow: the allowlist editor, the sudo password prompt, and permission pattern input.
+func newAuxInputs() (allowIn, sudoIn, permPatternIn textinput.Model) {
 	allowIn = textinput.New()
-	allowIn.Placeholder = "command prefix (e.g. npm, git push)"
+	allowIn.Placeholder = "command pattern (e.g. git commit *, git status)"
 	allowIn.SetWidth(60)
 	allowIn.CharLimit = 200
 
@@ -1123,7 +1125,12 @@ func newAuxInputs() (allowIn, sudoIn textinput.Model) {
 	sudoIn.SetWidth(60)
 	sudoIn.CharLimit = 200
 
-	return allowIn, sudoIn
+	permPatternIn = textinput.New()
+	permPatternIn.Placeholder = "pattern (e.g. git commit *)"
+	permPatternIn.SetWidth(40)
+	permPatternIn.CharLimit = 200
+
+	return allowIn, sudoIn, permPatternIn
 }
 
 // resizeInputs fits every text input to the terminal. All of them but chatInput

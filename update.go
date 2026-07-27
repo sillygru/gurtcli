@@ -1695,11 +1695,21 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.permCursor < 0 {
 				m.permCursor = optionCount - 1
 			}
+			if tc.Function.Name == "run_bash" && (m.permCursor == 1 || m.permCursor == 2) {
+				m.permPatternInput.Focus()
+			} else {
+				m.permPatternInput.Blur()
+			}
 			return m, nil
 		case "down":
 			m.permCursor++
 			if m.permCursor >= optionCount {
 				m.permCursor = 0
+			}
+			if tc.Function.Name == "run_bash" && (m.permCursor == 1 || m.permCursor == 2) {
+				m.permPatternInput.Focus()
+			} else {
+				m.permPatternInput.Blur()
 			}
 			return m, nil
 		case "pgup":
@@ -1709,6 +1719,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.pendingPerm = nil
 			m.permCursor = 0
+			m.permPatternInput.Blur()
 			m.chatInput.Focus()
 			m = m.adjustViewportHeight()
 			return m, nil
@@ -1719,6 +1730,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			cursor := m.permCursor
 			m.pendingPerm = nil
 			m.permCursor = 0
+			m.permPatternInput.Blur()
 			m.chatInput.Focus()
 			m = m.adjustViewportHeight()
 
@@ -1794,11 +1806,9 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				switch name {
 				case "run_bash":
-					if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-						prefix := tools.BashCommandPrefix(cmd)
-						if prefix != "" {
-							m.allowedBashPrefixesSession[prefix] = true
-						}
+					pat := strings.TrimSpace(m.permPatternInput.Value())
+					if pat != "" {
+						m.allowedBashPrefixesSession[pat] = true
 					}
 					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
@@ -1820,7 +1830,8 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			case 2:
 				switch name {
 				case "run_bash":
-					return m.allowBashPrefix(tc, remaining)
+					pat := strings.TrimSpace(m.permPatternInput.Value())
+					return m.allowBashPattern(pat, tc, remaining)
 				case "edit_file", "write_file", "delete_file":
 					m.alwaysAllowPerms = true
 					m.toastSeq++
@@ -1849,6 +1860,11 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return deny()
 			}
 			return m, nil
+		}
+		if tc.Function.Name == "run_bash" && (m.permCursor == 1 || m.permCursor == 2) {
+			var cmd tea.Cmd
+			m.permPatternInput, cmd = m.permPatternInput.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -2237,32 +2253,39 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 	})
 }
 
-// allowBashPrefix adds the command prefix from a run_bash tool call to the
+// allowBashPattern adds the command pattern from a run_bash tool call to the
 // always-allowed list, persists it to config, queues the tool, and processes
 // remaining tool calls.
-func (m model) allowBashPrefix(tc llm.ToolCall, remaining []llm.ToolCall) (tea.Model, tea.Cmd) {
-	cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments))
-	if err == nil {
-		prefix := tools.BashCommandPrefix(cmd)
-		if prefix != "" {
-			m.allowedBashPrefixes[prefix] = true
-			if cfg, err := config.Load(); err == nil && cfg != nil {
-				already := false
-				for _, p := range cfg.AllowedBashPrefixes {
-					if p == prefix {
-						already = true
-						break
-					}
+func (m model) allowBashPattern(pat string, tc llm.ToolCall, remaining []llm.ToolCall) (tea.Model, tea.Cmd) {
+	pat = strings.TrimSpace(pat)
+	if pat != "" {
+		m.allowedBashPrefixes[pat] = true
+		already := false
+		for _, p := range m.alwaysAllowCommandPrefixes {
+			if p == pat {
+				already = true
+				break
+			}
+		}
+		if !already {
+			m.alwaysAllowCommandPrefixes = append(m.alwaysAllowCommandPrefixes, pat)
+		}
+		if cfg, err := config.Load(); err == nil && cfg != nil {
+			alreadyInCfg := false
+			for _, p := range cfg.AllowedBashPrefixes {
+				if p == pat {
+					alreadyInCfg = true
+					break
 				}
-				if !already {
-					cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, prefix)
-					config.Save(cfg)
-				}
-			} else if err == nil {
-				cfg = &config.Config{}
-				cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, prefix)
+			}
+			if !alreadyInCfg {
+				cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, pat)
 				config.Save(cfg)
 			}
+		} else if err == nil {
+			cfg = &config.Config{}
+			cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, pat)
+			config.Save(cfg)
 		}
 	}
 	m.toolQueue = append(m.toolQueue, tc)
@@ -2323,15 +2346,15 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 				}
 
 				matched := false
-				for prefix := range m.allowedBashPrefixesSession {
-					if strings.HasPrefix(cmd, prefix) {
+				for pat := range m.allowedBashPrefixesSession {
+					if tools.MatchCommandPattern(pat, cmd) {
 						matched = true
 						break
 					}
 				}
 				if !matched {
-					for _, prefix := range m.alwaysAllowCommandPrefixes {
-						if strings.HasPrefix(cmd, prefix) {
+					for _, pat := range m.alwaysAllowCommandPrefixes {
+						if tools.MatchCommandPattern(pat, cmd) {
 							matched = true
 							break
 						}
@@ -2379,13 +2402,13 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 							externalPath: filePath,
 						}
 						m.permScroll = 0
-					m.chatViewport.SetContent(buildChatContentHighlighted(m))
-					if m.stickToBottom {
-						m.chatViewport.GotoBottom()
-					}
-					m.chatInput.Blur()
-					m = m.adjustViewportHeight()
-					return m, m.persistSessionCmd()
+						m.chatViewport.SetContent(buildChatContentHighlighted(m))
+						if m.stickToBottom {
+							m.chatViewport.GotoBottom()
+						}
+						m.chatInput.Blur()
+						m = m.adjustViewportHeight()
+						return m, m.persistSessionCmd()
 					}
 				}
 			}
@@ -2395,6 +2418,16 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 			m.pendingPerm = &pendingPerm{
 				toolCall:  tc,
 				remaining: tcs[i+1:],
+			}
+			if tc.Function.Name == "run_bash" {
+				if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+					m.permPatternInput.SetValue(tools.DefaultCommandPattern(cmd))
+				}
+				m.permCursor = 1
+				m.permPatternInput.Focus()
+			} else {
+				m.permCursor = 0
+				m.permPatternInput.Blur()
 			}
 			m.permScroll = 0
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))

@@ -313,14 +313,89 @@ func IsSudoCommand(command string) bool {
 // DefaultSafeBashPrefixes returns the built-in set of safe (read-only) command prefixes.
 func DefaultSafeBashPrefixes() []string {
 	return []string{
-		"cat", "ls", "grep", "find", "head", "tail", "echo", "pwd",
-		"which", "whoami", "date", "env", "printenv", "wc", "sort",
-		"uniq", "cut", "tr", "diff", "cmp", "file", "stat", "du", "df",
-		"ps", "type", "man", "whatis", "apropos", "strings", "od",
-		"xxd", "hexdump", "base64", "cksum", "tree", "dirname",
-		"basename", "realpath", "readlink", "printf", "yes", "cal",
+		"cat *", "ls *", "grep *", "find *", "head *", "tail *", "echo *", "pwd *",
+		"which *", "whoami *", "date *", "env *", "printenv *", "wc *", "sort *",
+		"uniq *", "cut *", "tr *", "diff *", "cmp *", "file *", "stat *", "du *", "df *",
+		"ps *", "type *", "man *", "whatis *", "apropos *", "strings *", "od *",
+		"xxd *", "hexdump *", "base64 *", "cksum *", "tree *", "dirname *",
+		"basename *", "realpath *", "readlink *", "printf *", "yes *", "cal *",
 	}
 }
+
+// MatchCommandPattern tests whether command matches the given pattern.
+// If pattern contains '*', '*' matches any sequence of characters (wildcard/prefix matching).
+// If pattern has no '*', it requires an exact string match.
+func MatchCommandPattern(pattern, command string) bool {
+	pattern = strings.TrimSpace(pattern)
+	command = strings.TrimSpace(command)
+	if pattern == "" || command == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == command
+	}
+
+	if pattern == "*" {
+		return true
+	}
+
+	if strings.HasSuffix(pattern, "*") {
+		prefix := strings.TrimSpace(strings.TrimSuffix(pattern, "*"))
+		if prefix == "" {
+			return true
+		}
+		if command == prefix {
+			return true
+		}
+		if strings.HasPrefix(command, prefix+" ") || strings.HasPrefix(command, prefix) {
+			return true
+		}
+	}
+
+	return matchGlob(pattern, command)
+}
+
+func matchGlob(pattern, str string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == str
+	}
+	if !strings.HasPrefix(str, parts[0]) {
+		return false
+	}
+	str = str[len(parts[0]):]
+	for i := 1; i < len(parts)-1; i++ {
+		idx := strings.Index(str, parts[i])
+		if idx == -1 {
+			return false
+		}
+		str = str[idx+len(parts[i]):]
+	}
+	return strings.HasSuffix(str, parts[len(parts)-1])
+}
+
+// DefaultCommandPattern constructs a default editable wildcard pattern from a shell command.
+// E.g., "git commit -m \"foo\"" -> "git commit *"
+func DefaultCommandPattern(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	words := strings.Fields(command)
+	if len(words) == 0 {
+		return ""
+	}
+	if len(words) == 1 {
+		return words[0] + " *"
+	}
+	// If second word starts with '-', e.g. "ls -la", return first word + " *"
+	if strings.HasPrefix(words[1], "-") {
+		return words[0] + " *"
+	}
+	// Return first 2 words + " *"
+	return words[0] + " " + words[1] + " *"
+}
+
 
 // BashCommandPrefix extracts the first word from a command string,
 // stopping at the first space or shell operator (&&, ||, ;, |)

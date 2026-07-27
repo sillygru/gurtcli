@@ -343,6 +343,8 @@ type PermPrompt struct {
 	Cursor int
 	// BashPrefix is the command prefix to display in bash-related options, if any.
 	BashPrefix string
+	// PatternInputView is the active text input view for bash command patterns.
+	PatternInputView string
 	// ExternalPath is the external file path being accessed, if any (triggers
 	// the external access prompt).
 	ExternalPath string
@@ -465,6 +467,13 @@ func RenderPermissionPrompt(t Theme, p PermPrompt) (string, int) {
 	b.WriteString(t.PermPrompt.Render("  Allow this action?"))
 	b.WriteString("\n" + gap)
 	for i, opt := range options {
+		if tc.Function.Name == "run_bash" && p.PatternInputView != "" && i == cursor {
+			if i == 1 {
+				opt = "Allow " + p.PatternInputView + " for this session"
+			} else if i == 2 {
+				opt = "Always allow " + p.PatternInputView
+			}
+		}
 		prefix := "  "
 		style := t.Dim
 		if i == cursor {

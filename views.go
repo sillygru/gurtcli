@@ -969,9 +969,14 @@ func (m model) permBox(maxHeight int, compact bool) (string, int, int, int) {
 
 	tc := m.pendingPerm.toolCall
 	bashPrefix := ""
+	patternInputView := ""
 	if tc.Function.Name == "run_bash" {
-		if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-			bashPrefix = tools.BashCommandPrefix(cmd)
+		bashPrefix = m.permPatternInput.Value()
+		patternInputView = m.permPatternInput.View()
+		if bashPrefix == "" {
+			if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
+				bashPrefix = tools.DefaultCommandPattern(cmd)
+			}
 		}
 	}
 
@@ -985,19 +990,24 @@ func (m model) permBox(maxHeight int, compact bool) (string, int, int, int) {
 	total := 0
 	for i := 0; i < 8; i++ {
 		content, totalLines := ui.RenderPermissionPrompt(m.theme, ui.PermPrompt{
-			Call:         tc,
-			Width:        innerWidth,
-			Cursor:       m.permCursor,
-			BashPrefix:   bashPrefix,
-			ExternalPath: m.pendingPerm.externalPath,
-			Sudo:         m.pendingPerm.sudo,
-			ScrollOffset: m.permScroll,
-			MaxBodyLines: maxBody,
-			Compact:      compact,
-			HideBody:     maxBody == 0,
+			Call:             tc,
+			Width:            innerWidth,
+			Cursor:           m.permCursor,
+			BashPrefix:       bashPrefix,
+			PatternInputView: patternInputView,
+			ExternalPath:     m.pendingPerm.externalPath,
+			Sudo:             m.pendingPerm.sudo,
+			ScrollOffset:     m.permScroll,
+			MaxBodyLines:     maxBody,
+			Compact:          compact,
+			HideBody:         maxBody == 0,
 		})
 		if !compact {
-			content += "\n" + m.theme.Dim.Render("  ↑/↓ navigate • enter select • pgup/pgdn scroll")
+			if tc.Function.Name == "run_bash" && (m.permCursor == 1 || m.permCursor == 2) {
+				content += "\n" + m.theme.Dim.Render("  ↑/↓ navigate • type to edit pattern • enter select • pgup/pgdn scroll")
+			} else {
+				content += "\n" + m.theme.Dim.Render("  ↑/↓ navigate • enter select • pgup/pgdn scroll")
+			}
 		}
 		box = boxStyle.Render(content)
 		height = lipgloss.Height(box)

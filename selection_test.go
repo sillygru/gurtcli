@@ -208,7 +208,7 @@ func testChatModel() model {
 	vp.SetWidth(76)
 	vp.SetHeight(10)
 	urlIn, keyIn, nameIn, manualIn, dotenvIn, chatIn := newTextInputs()
-	allowIn, sudoIn := newAuxInputs()
+	allowIn, sudoIn, permPatternIn := newAuxInputs()
 	return model{
 		state:             stateChat,
 		width:             80,
@@ -224,6 +224,7 @@ func testChatModel() model {
 		chatInput:         chatIn,
 		allowManageInput:  allowIn,
 		sudoPasswordInput: sudoIn,
+		permPatternInput:  permPatternIn,
 	}
 }
 

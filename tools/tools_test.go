@@ -154,3 +154,56 @@ func TestEscapeShellArg(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchCommandPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		cmd     string
+		want    bool
+	}{
+		{name: "exact match success", pattern: "git commit", cmd: "git commit", want: true},
+		{name: "exact match reject args", pattern: "git commit", cmd: "git commit -m \"foo\"", want: false},
+		{name: "wildcard prefix match success", pattern: "git commit *", cmd: "git commit -m \"foo\"", want: true},
+		{name: "wildcard prefix match exact cmd", pattern: "git commit *", cmd: "git commit", want: true},
+		{name: "wildcard prefix match reject non-matching", pattern: "git commit *", cmd: "git push origin main", want: false},
+		{name: "wildcard prefix no space", pattern: "git commit*", cmd: "git commit-tree", want: true},
+		{name: "single word wildcard match", pattern: "git *", cmd: "git status", want: true},
+		{name: "single word wildcard reject", pattern: "git *", cmd: "npm test", want: false},
+		{name: "middle wildcard match", pattern: "npm run * --force", cmd: "npm run build --force", want: true},
+		{name: "empty inputs", pattern: "", cmd: "git commit", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchCommandPattern(tt.pattern, tt.cmd)
+			if got != tt.want {
+				t.Errorf("MatchCommandPattern(%q, %q) = %v, want %v", tt.pattern, tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultCommandPattern(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{name: "git commit with flags", cmd: "git commit -m \"initial\"", want: "git commit *"},
+		{name: "npm run dev", cmd: "npm run dev", want: "npm run *"},
+		{name: "single word command", cmd: "ls", want: "ls *"},
+		{name: "command with flag as 2nd word", cmd: "ls -la", want: "ls *"},
+		{name: "empty string", cmd: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DefaultCommandPattern(tt.cmd)
+			if got != tt.want {
+				t.Errorf("DefaultCommandPattern(%q) = %q, want %q", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
