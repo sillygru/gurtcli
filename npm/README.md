@@ -9,7 +9,27 @@ gurtcli
 
 Done. That's the entire install and setup.
 
-> **Windows users — [download the binary](https://github.com/sillygru/gurtcli/releases) instead. npm has issues on Windows.**
+> **Permission issues?** `npm install -g` writes to `/usr/local/lib/node_modules/` by default, which requires root permissions on most systems. If you get a `EACCES` error, use one of the alternatives below.
+
+### No npm? No problem
+
+**macOS / Linux (curl | sh):**
+```bash
+curl -fsSL https://github.com/sillygru/gurtcli/releases/latest/download/install.sh | bash
+gurtcli
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://github.com/sillygru/gurtcli/releases/latest/download/install.ps1 | iex
+gurtcli
+```
+
+**Go users:**
+```bash
+go install github.com/sillygru/gurtcli@latest
+gurtcli
+```
 
 ## What it is
 
@@ -26,11 +46,6 @@ A chat loop that can touch your filesystem. That's it.
 Adding features is easy. The hard part is stopping.
 
 ## Quick start
-
-```bash
-npm install -g gurtcli
-gurtcli
-```
 
 First run walks you through picking a provider and entering an API key (saved to your OS keychain). After that you're in the chat.
 

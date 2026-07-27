@@ -3,13 +3,33 @@
 Type what you want. It does the rest.
 
 ```bash
-npm install -g gurtcli
+curl -fsSL https://github.com/sillygru/gurtcli/releases/latest/download/install.sh | bash
 gurtcli
 ```
 
 Done. That's the entire install and setup.
 
-> **Windows users — [download the binary](https://github.com/sillygru/gurtcli/releases) instead. npm has issues on Windows.**
+### Other install methods
+
+**Go users:**
+```bash
+go install github.com/sillygru/gurtcli@latest
+gurtcli
+```
+
+**npm (may need prefix setup — see note below):**
+```bash
+npm install -g gurtcli
+gurtcli
+```
+
+> **Note for npm users:** `npm install -g` writes to `/usr/local/lib/node_modules/` by default, which requires root permissions on most systems. If you get a `EACCES` error, use the `curl` install above instead, or set up npm's global prefix: `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to your PATH.
+
+**Windows (PowerShell):**
+```powershell
+irm https://github.com/sillygru/gurtcli/releases/latest/download/install.ps1 | iex
+gurtcli
+```
 
 ## What it is
 
@@ -26,11 +46,6 @@ A chat loop that can touch your filesystem. That's it.
 Adding features is easy. The hard part is stopping.
 
 ## Quick start
-
-```bash
-npm install -g gurtcli
-gurtcli
-```
 
 First run walks you through picking a provider and entering an API key (saved to your OS keychain). After that you're in the chat.
 
@@ -102,26 +117,6 @@ When your model supports it:
 Navigate with `↑`/`↓`, change values with `←`/`→`, confirm with `enter`.
 Change mid-session with `/reasoning <type>` and `/effort <level>`.
 Toggle visibility inline with `/show-reasoning` or click `[▼]` / `[▶]`.
-
-## Copying with the mouse
-
-Anything on screen can be lifted out with the mouse — no `ctrl+shift` gymnastics, and the highlight always shows exactly what will land on the clipboard.
-
-In the transcript:
-
-- **Drag** — select a span of text
-- **Double click** — the word under the cursor (identifiers, paths and flags count as one word)
-- **Triple click** — the whole line, or the whole code block when you click inside one
-
-Everywhere else, one click copies the element you clicked, as plain text:
-
-- The **model name** in the title bar and the status bar
-- The **context meter** — copied as prose (`Context: 18K tokens / 200K (9%) · 50% cached · <model>`), not the bar glyphs
-- The **session name**, **provider**, **version** and **working directory** in the bottom bar
-- The **command or path** a permission prompt is asking about
-- A **queued message** waiting to be sent
-
-`ctrl+a` copies the input field. Over ssh the clipboard is set with OSC 52, so the text reaches the terminal you are sitting at rather than the host gurt runs on.
 
 ## Permissions
 
