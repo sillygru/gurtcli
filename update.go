@@ -1146,6 +1146,7 @@ func saveConfig(m model) error {
 	}
 	cfg.AlwaysAllowTools = savedTools
 	cfg.AlwaysAllowCommandPrefixes = m.alwaysAllowCommandPrefixes
+	cfg.AllowedBashPrefixes = m.alwaysAllowCommandPrefixes
 	cfg.AlwaysAllowExternal = m.alwaysAllowExternal
 	cfg.TelemetryEnabled = &m.telemetryEnabled
 	cfg.Theme = m.themeName
@@ -2293,20 +2294,32 @@ func (m model) allowBashPattern(pat string, tc llm.ToolCall, remaining []llm.Too
 			m.alwaysAllowCommandPrefixes = append(m.alwaysAllowCommandPrefixes, pat)
 		}
 		if cfg, err := config.Load(); err == nil && cfg != nil {
-			alreadyInCfg := false
-			for _, p := range cfg.AllowedBashPrefixes {
+			alreadyInCmds := false
+			for _, p := range cfg.AlwaysAllowCommandPrefixes {
 				if p == pat {
-					alreadyInCfg = true
+					alreadyInCmds = true
 					break
 				}
 			}
-			if !alreadyInCfg {
-				cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, pat)
-				config.Save(cfg)
+			if !alreadyInCmds {
+				cfg.AlwaysAllowCommandPrefixes = append(cfg.AlwaysAllowCommandPrefixes, pat)
 			}
+			alreadyInAllowed := false
+			for _, p := range cfg.AllowedBashPrefixes {
+				if p == pat {
+					alreadyInAllowed = true
+					break
+				}
+			}
+			if !alreadyInAllowed {
+				cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, pat)
+			}
+			config.Save(cfg)
 		} else if err == nil {
-			cfg = &config.Config{}
-			cfg.AllowedBashPrefixes = append(cfg.AllowedBashPrefixes, pat)
+			cfg = &config.Config{
+				AlwaysAllowCommandPrefixes: []string{pat},
+				AllowedBashPrefixes:        []string{pat},
+			}
 			config.Save(cfg)
 		}
 	}
@@ -2395,6 +2408,14 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 					if tools.MatchCommandPattern(pat, effectiveCmd) {
 						matched = true
 						break
+					}
+				}
+				if !matched {
+					for pat := range m.allowedBashPrefixes {
+						if tools.MatchCommandPattern(pat, effectiveCmd) {
+							matched = true
+							break
+						}
 					}
 				}
 				if !matched {

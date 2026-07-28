@@ -949,12 +949,6 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	}
 
 	allowedBashPrefixes := make(map[string]bool)
-	if cfg != nil {
-		for _, p := range cfg.AllowedBashPrefixes {
-			allowedBashPrefixes[p] = true
-		}
-	}
-
 	alwaysAllowTools := []string{}
 	alwaysAllowCommandPrefixes := []string{}
 	if cfg == nil {
@@ -965,7 +959,22 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 				alwaysAllowTools = append(alwaysAllowTools, t)
 			}
 		}
-		alwaysAllowCommandPrefixes = append(alwaysAllowCommandPrefixes, cfg.AlwaysAllowCommandPrefixes...)
+		seen := make(map[string]bool)
+		for _, p := range cfg.AlwaysAllowCommandPrefixes {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				alwaysAllowCommandPrefixes = append(alwaysAllowCommandPrefixes, p)
+			}
+		}
+		for _, p := range cfg.AllowedBashPrefixes {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				alwaysAllowCommandPrefixes = append(alwaysAllowCommandPrefixes, p)
+			}
+		}
+	}
+	for _, p := range alwaysAllowCommandPrefixes {
+		allowedBashPrefixes[p] = true
 	}
 
 	alwaysAllowExternal := false
