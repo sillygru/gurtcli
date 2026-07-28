@@ -534,6 +534,110 @@ func EffectiveBashCommand(workspaceRoot, cmd string) (effectiveCmd string, cdDir
 }
 
 
+// tokenizeCommand splits a shell command into tokens, respecting single and double quotes.
+func tokenizeCommand(cmd string) []string {
+	var tokens []string
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+		switch {
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+		case !inSingle && !inDouble:
+			if ch == ' ' || ch == '\t' {
+				if buf.Len() > 0 {
+					tokens = append(tokens, buf.String())
+					buf.Reset()
+				}
+				continue
+			}
+		}
+		buf.WriteByte(ch)
+	}
+	if buf.Len() > 0 {
+		tokens = append(tokens, buf.String())
+	}
+	return tokens
+}
+
+// CommandsWithPathArg returns the set of command names that are known to take
+// file/directory path arguments. Only commands in this set are checked for
+// external path access, to avoid false positives (e.g. "echo /tmp").
+func CommandsWithPathArg() map[string]bool {
+	return map[string]bool{
+		"find": true, "ls": true, "cat": true, "head": true, "tail": true,
+		"tree": true, "du": true, "stat": true, "file": true, "wc": true,
+		"sort": true, "uniq": true, "strings": true, "od": true, "xxd": true,
+		"hexdump": true, "base64": true, "cksum": true, "realpath": true,
+		"readlink": true, "rm": true, "mkdir": true, "touch": true, "rmdir": true,
+		"cp": true, "mv": true, "ln": true, "diff": true, "cmp": true,
+		"source": true, ".": true,
+		"grep": true, "egrep": true, "fgrep": true, "rgrep": true,
+		"sed": true, "awk": true, "gawk": true, "mawk": true, "nawk": true,
+		"chmod": true, "chown": true, "chgrp": true,
+	}
+}
+
+// ExtractPathArgFromCommand extracts the first absolute path-like argument from
+// a command that is a known path-taking command. It returns the path, whether
+// it is outside the workspace, and whether a path argument was found.
+//
+// Unlike the cd check (which parses the cd target explicitly), this looks for
+// the first token that looks like a path (starts with /, ~, ./ or ../) after
+// skipping the command name and any flags. Flags (tokens starting with "-") are
+// skipped, and shell operators stop the search.
+func ExtractPathArgFromCommand(workspaceRoot, cmd string) (path string, isOutside bool, found bool) {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return "", false, false
+	}
+
+	tokens := tokenizeCommand(trimmed)
+	if len(tokens) < 2 {
+		return "", false, false
+	}
+
+	cmdName := tokens[0]
+	if !CommandsWithPathArg()[cmdName] {
+		return "", false, false
+	}
+
+	// Look for the first path-like argument after the command name.
+	for i := 1; i < len(tokens); i++ {
+		token := tokens[i]
+
+		// Stop at shell operators.
+		if token == "&&" || token == "||" || token == ";" || token == "|" {
+			break
+		}
+
+		// Skip flags.
+		if strings.HasPrefix(token, "-") {
+			continue
+		}
+
+		if isPathLike(token) {
+			isOutside = IsPathOutsideWorkspace(workspaceRoot, token)
+			return token, isOutside, true
+		}
+	}
+
+	return "", false, false
+}
+
+// isPathLike returns true if the token looks like a filesystem path:
+// starts with /, ~, ./ or ../
+func isPathLike(s string) bool {
+	return strings.HasPrefix(s, "/") ||
+		strings.HasPrefix(s, "~") ||
+		strings.HasPrefix(s, "./") ||
+		strings.HasPrefix(s, "../")
+}
+
 // ExtractBashCommand parses a run_bash tool call arguments and returns the command string.
 func ExtractBashCommand(args json.RawMessage) (string, error) {
 	var a RunBashArgs

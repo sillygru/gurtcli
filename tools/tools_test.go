@@ -292,4 +292,257 @@ func TestEffectiveBashCommand(t *testing.T) {
 	}
 }
 
+func TestTokenizeCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want []string
+	}{
+		{name: "simple command", cmd: "ls -la /tmp", want: []string{"ls", "-la", "/tmp"}},
+		{name: "single quoted arg", cmd: `grep 'foo bar' /tmp/file`, want: []string{"grep", "'foo bar'", "/tmp/file"}},
+		{name: "double quoted arg", cmd: `echo "hello world"`, want: []string{"echo", `"hello world"`}},
+		{name: "mixed quotes", cmd: `find /path -name "*.go"`, want: []string{"find", "/path", "-name", `"*.go"`}},
+		{name: "empty", cmd: "", want: nil},
+		{name: "whitespace", cmd: "   ", want: nil},
+		{name: "single token", cmd: "ls", want: []string{"ls"}},
+		{name: "trailing spaces", cmd: "  cat /etc/passwd  ", want: []string{"cat", "/etc/passwd"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tokenizeCommand(tt.cmd)
+			if len(got) != len(tt.want) {
+				t.Errorf("tokenizeCommand(%q) = %v (len=%d), want %v (len=%d)", tt.cmd, got, len(got), tt.want, len(tt.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("tokenizeCommand(%q)[%d] = %q, want %q", tt.cmd, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestIsPathLike(t *testing.T) {
+	tests := []struct {
+		s    string
+		want bool
+	}{
+		{s: "/tmp", want: true},
+		{s: "/home/user/file.txt", want: true},
+		{s: "~/documents", want: true},
+		{s: "./relative", want: true},
+		{s: "../parent", want: true},
+		{s: "file.txt", want: false},
+		{s: "myfile", want: false},
+		{s: "-n", want: false},
+		{s: "--recursive", want: false},
+		{s: "pattern", want: false},
+		{s: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.s, func(t *testing.T) {
+			got := isPathLike(tt.s)
+			if got != tt.want {
+				t.Errorf("isPathLike(%q) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractPathArgFromCommand(t *testing.T) {
+	ws := t.TempDir()
+	insidePath := ws + "/inside"
+
+	tests := []struct {
+		name          string
+		cmd           string
+		wantPath      string
+		wantIsOutside bool
+		wantFound     bool
+	}{
+		{
+			name:          "find with external path",
+			cmd:           "find /tmp -name foo",
+			wantPath:      "/tmp",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "find with external path no flags",
+			cmd:           "find /tmp",
+			wantPath:      "/tmp",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "ls with external path",
+			cmd:           "ls -la /tmp",
+			wantPath:      "/tmp",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "cat with external file",
+			cmd:           "cat /etc/passwd",
+			wantPath:      "/etc/passwd",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "grep skips pattern and takes path",
+			cmd:           "grep -r pattern /tmp",
+			wantPath:      "/tmp",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "grep with flags before pattern",
+			cmd:           "grep -r -n pattern /tmp/file",
+			wantPath:      "/tmp/file",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "chmod skips mode and takes path",
+			cmd:           "chmod 755 /some/script.sh",
+			wantPath:      "/some/script.sh",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "chown skips user and takes path",
+			cmd:           "chown user:group /some/file",
+			wantPath:      "/some/file",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "inside workspace path returns found but not outside",
+			cmd:           "ls " + insidePath,
+			wantPath:      insidePath,
+			wantIsOutside: false,
+			wantFound:     true,
+		},
+		{
+			name:          "not a path command",
+			cmd:           "echo hello",
+			wantPath:      "",
+			wantIsOutside: false,
+			wantFound:     false,
+		},
+		{
+			name:          "no path argument",
+			cmd:           "ls",
+			wantPath:      "",
+			wantIsOutside: false,
+			wantFound:     false,
+		},
+		{
+			name:          "not a path-like argument",
+			cmd:           "find foo",
+			wantPath:      "",
+			wantIsOutside: false,
+			wantFound:     false,
+		},
+		{
+			name:          "empty command",
+			cmd:           "",
+			wantPath:      "",
+			wantIsOutside: false,
+			wantFound:     false,
+		},
+		{
+			name:          "tree with external path",
+			cmd:           "tree /tmp",
+			wantPath:      "/tmp",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "head with external file",
+			cmd:           "head -n 20 /var/log/syslog",
+			wantPath:      "/var/log/syslog",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "tail with external file",
+			cmd:           "tail -f /var/log/syslog",
+			wantPath:      "/var/log/syslog",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "rm on external path",
+			cmd:           "rm -rf /tmp/cache",
+			wantPath:      "/tmp/cache",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "cp with external source",
+			cmd:           "cp /tmp/source /tmp/dest",
+			wantPath:      "/tmp/source",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "diff with external left",
+			cmd:           "diff /tmp/a /tmp/b",
+			wantPath:      "/tmp/a",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "sed with external file",
+			cmd:           "sed -i 's/foo/bar/g' /tmp/file.txt",
+			wantPath:      "/tmp/file.txt",
+			wantIsOutside: true,
+			wantFound:     true,
+		},
+		{
+			name:          "relative path ./ is found",
+			cmd:           "cat ./somefile",
+			wantPath:      "./somefile",
+			wantIsOutside: IsPathOutsideWorkspace(ws, "./somefile"),
+			wantFound:     true,
+		},
+		{
+			name:          "home dir ~ path is found",
+			cmd:           "cat ~/.bashrc",
+			wantPath:      "~/.bashrc",
+			wantIsOutside: false, // ~ is not expanded, so it's treated as relative to workspace
+			wantFound:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath, gotIsOutside, gotFound := ExtractPathArgFromCommand(ws, tt.cmd)
+			if gotPath != tt.wantPath || gotIsOutside != tt.wantIsOutside || gotFound != tt.wantFound {
+				t.Errorf("ExtractPathArgFromCommand(%q, %q) = (%q, %v, %v), want (%q, %v, %v)",
+					ws, tt.cmd, gotPath, gotIsOutside, gotFound, tt.wantPath, tt.wantIsOutside, tt.wantFound)
+			}
+		})
+	}
+}
+
+func TestCommandsWithPathArg(t *testing.T) {
+	cmds := CommandsWithPathArg()
+	if len(cmds) == 0 {
+		t.Fatal("CommandsWithPathArg() returned empty map")
+	}
+
+	// Verify key commands are present.
+	expected := []string{"find", "ls", "cat", "grep", "sed", "rm", "cp", "mv", "chmod", "chown"}
+	for _, e := range expected {
+		if !cmds[e] {
+			t.Errorf("CommandsWithPathArg() missing expected command %q", e)
+		}
+	}
+}
+
 

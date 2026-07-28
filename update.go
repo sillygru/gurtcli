@@ -2403,6 +2403,29 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 					}
 				}
 
+				// Check if the command targets an external path directly (e.g. find /tmp, ls /outside).
+				if !isOutside && !m.alwaysAllowExternal && !m.allowAllExternal {
+					if extPath, extIsOutside, found := tools.ExtractPathArgFromCommand(m.workspaceRoot, effectiveCmd); found && extIsOutside {
+						cleanPath := filepath.Clean(extPath)
+						if !m.allowedExternalPathsSession[filepath.Dir(cleanPath)] {
+							m.pendingPerm = &pendingPerm{
+								toolCall:     tc,
+								origToolCall: tc,
+								remaining:    tcs[i:],
+								externalPath: extPath,
+							}
+							m.permScroll = 0
+							m.chatViewport.SetContent(buildChatContentHighlighted(m))
+							if m.stickToBottom {
+								m.chatViewport.GotoBottom()
+							}
+							m.chatInput.Blur()
+							m = m.adjustViewportHeight()
+							return m, m.persistSessionCmd()
+						}
+					}
+				}
+
 				matched := false
 				for pat := range m.allowedBashPrefixesSession {
 					if tools.MatchCommandPattern(pat, effectiveCmd) {
