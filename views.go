@@ -975,7 +975,8 @@ func (m model) permBox(maxHeight int, compact bool) (string, int, int, int) {
 		patternInputView = m.permPatternInput.View()
 		if bashPrefix == "" {
 			if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-				bashPrefix = tools.DefaultCommandPattern(cmd)
+				effectiveCmd, _, _, _ := tools.EffectiveBashCommand(m.workspaceRoot, cmd)
+				bashPrefix = tools.DefaultCommandPattern(effectiveCmd)
 			}
 		}
 	}

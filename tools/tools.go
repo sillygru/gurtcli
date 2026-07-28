@@ -429,6 +429,111 @@ done:
 	return strings.TrimSpace(buf.String())
 }
 
+// SplitCdCommand parses a command string to check if it starts with a "cd" command.
+// If it starts with "cd", it returns the targeted directory path, the remaining subcommand
+// after any shell chaining operators (&&, ;, ||, &, |, \n), and hasCd = true.
+func SplitCdCommand(cmd string) (cdDir string, restCmd string, hasCd bool) {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return "", "", false
+	}
+
+	if trimmed != "cd" && !strings.HasPrefix(trimmed, "cd ") && !strings.HasPrefix(trimmed, "cd\t") && !strings.HasPrefix(trimmed, "cd\n") {
+		return "", "", false
+	}
+
+	hasCd = true
+	rest := strings.TrimSpace(trimmed[2:])
+	if rest == "" {
+		return "", "", true
+	}
+
+	var dirBuf strings.Builder
+	idx := 0
+
+	if rest[0] == '\'' {
+		idx = 1
+		for idx < len(rest) {
+			if rest[idx] == '\'' {
+				idx++
+				break
+			}
+			dirBuf.WriteByte(rest[idx])
+			idx++
+		}
+	} else if rest[0] == '"' {
+		idx = 1
+		for idx < len(rest) {
+			if rest[idx] == '"' {
+				idx++
+				break
+			}
+			dirBuf.WriteByte(rest[idx])
+			idx++
+		}
+	} else {
+		for idx < len(rest) {
+			ch := rest[idx]
+			if ch == ' ' || ch == '\t' || ch == '\n' || ch == ';' || ch == '|' || ch == '&' {
+				break
+			}
+			dirBuf.WriteByte(ch)
+			idx++
+		}
+	}
+
+	cdDir = dirBuf.String()
+
+	for idx < len(rest) && (rest[idx] == ' ' || rest[idx] == '\t') {
+		idx++
+	}
+
+	if idx >= len(rest) {
+		return cdDir, "", true
+	}
+
+	rem := rest[idx:]
+	if strings.HasPrefix(rem, "&&") {
+		restCmd = strings.TrimSpace(rem[2:])
+	} else if strings.HasPrefix(rem, "||") {
+		restCmd = strings.TrimSpace(rem[2:])
+	} else if strings.HasPrefix(rem, ";") {
+		restCmd = strings.TrimSpace(rem[1:])
+	} else if strings.HasPrefix(rem, "&") {
+		restCmd = strings.TrimSpace(rem[1:])
+	} else if strings.HasPrefix(rem, "|") {
+		restCmd = strings.TrimSpace(rem[1:])
+	} else if strings.HasPrefix(rem, "\n") {
+		restCmd = strings.TrimSpace(rem[1:])
+	} else {
+		restCmd = strings.TrimSpace(rem)
+	}
+
+	return cdDir, restCmd, true
+}
+
+// EffectiveBashCommand returns the subcommand to check/display for permission prompts when a command starts with cd,
+// along with the cd target directory, whether that target directory is outside the workspace, and whether the command had a cd prefix.
+func EffectiveBashCommand(workspaceRoot, cmd string) (effectiveCmd string, cdDir string, isOutside bool, hasCd bool) {
+	cdDir, restCmd, hasCd := SplitCdCommand(cmd)
+	if !hasCd {
+		return cmd, "", false, false
+	}
+
+	if cdDir != "" {
+		isOutside = IsPathOutsideWorkspace(workspaceRoot, cdDir)
+	}
+
+	if restCmd != "" {
+		effectiveCmd = restCmd
+	} else {
+		effectiveCmd = cmd
+	}
+
+	return effectiveCmd, cdDir, isOutside, true
+}
+
+
 // ExtractBashCommand parses a run_bash tool call arguments and returns the command string.
 func ExtractBashCommand(args json.RawMessage) (string, error) {
 	var a RunBashArgs

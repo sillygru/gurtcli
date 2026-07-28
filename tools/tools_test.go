@@ -207,3 +207,89 @@ func TestDefaultCommandPattern(t *testing.T) {
 	}
 }
 
+func TestSplitCdCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		cmd         string
+		wantCdDir   string
+		wantRestCmd string
+		wantHasCd   bool
+	}{
+		{
+			name:        "cd with && and subcommand",
+			cmd:         "cd /path/to/dir && npm test",
+			wantCdDir:   "/path/to/dir",
+			wantRestCmd: "npm test",
+			wantHasCd:   true,
+		},
+		{
+			name:        "cd with trailing slash and semicolon",
+			cmd:         "cd /path/to/dir/ ; git status",
+			wantCdDir:   "/path/to/dir/",
+			wantRestCmd: "git status",
+			wantHasCd:   true,
+		},
+		{
+			name:        "cd with single quoted path",
+			cmd:         "cd '/path/with space' && go test ./...",
+			wantCdDir:   "/path/with space",
+			wantRestCmd: "go test ./...",
+			wantHasCd:   true,
+		},
+		{
+			name:        "cd with double quoted path",
+			cmd:         `cd "/path/with space" && go test ./...`,
+			wantCdDir:   "/path/with space",
+			wantRestCmd: "go test ./...",
+			wantHasCd:   true,
+		},
+		{
+			name:        "cd without subcommand",
+			cmd:         "cd /path/to/dir",
+			wantCdDir:   "/path/to/dir",
+			wantRestCmd: "",
+			wantHasCd:   true,
+		},
+		{
+			name:        "cd alone",
+			cmd:         "cd",
+			wantCdDir:   "",
+			wantRestCmd: "",
+			wantHasCd:   true,
+		},
+		{
+			name:        "not a cd command",
+			cmd:         "ls -la",
+			wantCdDir:   "",
+			wantRestCmd: "",
+			wantHasCd:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCdDir, gotRestCmd, gotHasCd := SplitCdCommand(tt.cmd)
+			if gotCdDir != tt.wantCdDir || gotRestCmd != tt.wantRestCmd || gotHasCd != tt.wantHasCd {
+				t.Errorf("SplitCdCommand(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tt.cmd, gotCdDir, gotRestCmd, gotHasCd, tt.wantCdDir, tt.wantRestCmd, tt.wantHasCd)
+			}
+		})
+	}
+}
+
+func TestEffectiveBashCommand(t *testing.T) {
+	ws := t.TempDir()
+
+	eff, cdDir, isOutside, hasCd := EffectiveBashCommand(ws, "cd "+ws+" && npm test")
+	if eff != "npm test" || !hasCd || isOutside || cdDir != ws {
+		t.Errorf("EffectiveBashCommand(current) = (%q, %q, %v, %v), want (\"npm test\", %q, false, true)", eff, cdDir, isOutside, hasCd, ws)
+	}
+
+	extDir := "/tmp/some_outside_dir_12345"
+	effExt, cdDirExt, isOutsideExt, hasCdExt := EffectiveBashCommand(ws, "cd "+extDir+" && git status")
+	if effExt != "git status" || !hasCdExt || !isOutsideExt || cdDirExt != extDir {
+		t.Errorf("EffectiveBashCommand(outside) = (%q, %q, %v, %v), want (\"git status\", %q, true, true)", effExt, cdDirExt, isOutsideExt, hasCdExt, extDir)
+	}
+}
+
+

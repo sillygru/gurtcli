@@ -1724,6 +1724,10 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m = m.adjustViewportHeight()
 			return m, nil
 		case "enter":
+			tc := m.pendingPerm.toolCall
+			if m.pendingPerm.origToolCall.ID != "" {
+				tc = m.pendingPerm.origToolCall
+			}
 			remaining := m.pendingPerm.remaining
 			externalPath := m.pendingPerm.externalPath
 			isSudo := m.pendingPerm.sudo
@@ -1749,22 +1753,37 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 			// External path permission prompt.
 			if externalPath != "" {
-				fileDir := filepath.Dir(externalPath)
+				fileDir := externalPath
+				if fi, err := os.Stat(externalPath); err == nil && !fi.IsDir() {
+					fileDir = filepath.Dir(externalPath)
+				}
 				if !filepath.IsAbs(fileDir) {
 					fileDir = filepath.Join(m.workspaceRoot, fileDir)
 				}
+				cleanDir := filepath.Clean(fileDir)
+
 				switch cursor {
 				case 0: // Allow this operation
+					if name == "run_bash" {
+						m.allowedExternalPathsSession[cleanDir] = true
+						return m.processToolCalls(remaining)
+					}
 					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case 1: // Allow this directory for session
-					m.allowedExternalPathsSession[filepath.Clean(fileDir)] = true
+					m.allowedExternalPathsSession[cleanDir] = true
+					if name == "run_bash" {
+						return m.processToolCalls(remaining)
+					}
 					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case 2: // Allow every directory for this session
 					m.allowAllExternal = true
 					m.toastSeq++
 					m.toast = &toastMsg{text: "Allowing all external dirs for session", id: m.toastSeq}
+					if name == "run_bash" {
+						return m.processToolCalls(remaining)
+					}
 					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case 3: // Always allow external (forever)
@@ -1772,6 +1791,9 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.toastSeq++
 					m.toast = &toastMsg{text: "Always allowing external dirs", id: m.toastSeq}
 					saveConfig(m)
+					if name == "run_bash" {
+						return m.processToolCalls(remaining)
+					}
 					m.toolQueue = append(m.toolQueue, tc)
 					return m.processToolCalls(remaining)
 				case 4: // No
@@ -2345,16 +2367,39 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 					return m, m.persistSessionCmd()
 				}
 
+				effectiveCmd, cdDir, isOutside, _ := tools.EffectiveBashCommand(m.workspaceRoot, cmd)
+
+				// If command starts with cd to a directory outside workspace root, check outside directory perms first.
+				if isOutside && !m.alwaysAllowExternal && !m.allowAllExternal {
+					cleanCdDir := filepath.Clean(cdDir)
+					if !m.allowedExternalPathsSession[cleanCdDir] {
+						m.pendingPerm = &pendingPerm{
+							toolCall:     tc,
+							origToolCall: tc,
+							remaining:    tcs[i:], // re-evaluate tc after external path is allowed
+							externalPath: cdDir,
+						}
+						m.permScroll = 0
+						m.chatViewport.SetContent(buildChatContentHighlighted(m))
+						if m.stickToBottom {
+							m.chatViewport.GotoBottom()
+						}
+						m.chatInput.Blur()
+						m = m.adjustViewportHeight()
+						return m, m.persistSessionCmd()
+					}
+				}
+
 				matched := false
 				for pat := range m.allowedBashPrefixesSession {
-					if tools.MatchCommandPattern(pat, cmd) {
+					if tools.MatchCommandPattern(pat, effectiveCmd) {
 						matched = true
 						break
 					}
 				}
 				if !matched {
 					for _, pat := range m.alwaysAllowCommandPrefixes {
-						if tools.MatchCommandPattern(pat, cmd) {
+						if tools.MatchCommandPattern(pat, effectiveCmd) {
 							matched = true
 							break
 						}
@@ -2415,19 +2460,31 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 		}
 
 		if tools.IsDestructive(tc.Function.Name) && !m.yolo && !m.alwaysAllowPerms {
-			m.pendingPerm = &pendingPerm{
-				toolCall:  tc,
-				remaining: tcs[i+1:],
-			}
+			displayTc := tc
 			if tc.Function.Name == "run_bash" {
 				if cmd, err := tools.ExtractBashCommand(json.RawMessage(tc.Function.Arguments)); err == nil {
-					m.permPatternInput.SetValue(tools.DefaultCommandPattern(cmd))
+					effectiveCmd, _, _, hasCd := tools.EffectiveBashCommand(m.workspaceRoot, cmd)
+					if hasCd && effectiveCmd != cmd {
+						var args tools.RunBashArgs
+						args.Command = effectiveCmd
+						args.Title, _ = tools.ExtractBashTitle(json.RawMessage(tc.Function.Arguments))
+						args.Timeout = 30000
+						if rawArgs, err := json.Marshal(args); err == nil {
+							displayTc.Function.Arguments = string(rawArgs)
+						}
+					}
+					m.permPatternInput.SetValue(tools.DefaultCommandPattern(effectiveCmd))
 				}
 				m.permCursor = 1
 				m.permPatternInput.Focus()
 			} else {
 				m.permCursor = 0
 				m.permPatternInput.Blur()
+			}
+			m.pendingPerm = &pendingPerm{
+				toolCall:     displayTc,
+				origToolCall: tc,
+				remaining:    tcs[i+1:],
 			}
 			m.permScroll = 0
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))

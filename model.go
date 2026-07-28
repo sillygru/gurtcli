@@ -269,12 +269,14 @@ func parseReasoningMode(s string, legacyVisible bool) reasoningMode {
 
 type pendingPerm struct {
 	toolCall     llm.ToolCall
+	origToolCall llm.ToolCall // original tool call before display modifications
 	remaining    []llm.ToolCall
 	externalPath string // set when the prompt is about an external path
 	sudo         bool   // true when the command starts with sudo and needs password
 	sudoPassword string // populated after user enters password; cleared after use
 	confirmSudo  bool   // true after user has confirmed the sudo prompt (entering password phase)
 }
+
 
 type streamState struct {
 	cancel context.CancelFunc
