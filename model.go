@@ -725,6 +725,7 @@ var slashCommands = []slashCommand{
 	{name: "allow", description: "Manage always-allowed tools and commands"},
 	{name: "theme", description: "Change the color theme"},
 	{name: "telemetry", description: "Toggle anonymous usage telemetry"},
+	{name: "title", description: "Regenerate session title from first message"},
 	{name: "version", description: "Show current version and check for updates"},
 }
 

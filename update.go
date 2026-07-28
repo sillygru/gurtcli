@@ -2079,7 +2079,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if isCommand {
 				cmd := strings.TrimPrefix(strings.Fields(input)[0], "/")
 				switch cmd {
-				case "show-reasoning", "show-thinking", "theme", "version", "help", "telemetry", "reasoning", "effort", "allow", "auth":
+				case "show-reasoning", "show-thinking", "theme", "title", "version", "help", "telemetry", "reasoning", "effort", "allow", "auth":
 					return m.handleSlashCommand(input)
 				}
 			} else {
@@ -2766,6 +2766,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		"show-reasoning": true,
 		"show-thinking":  true,
 		"theme":          true,
+		"title":          true,
 		"version":        true,
 		"help":           true,
 		"telemetry":      true,
@@ -3162,6 +3163,11 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(checkAndUpdateCmd(), workingTickCmd())
 		}
 		return m, tea.Batch(performUpdateCmd(m.latestVersion), workingTickCmd())
+
+	case "title":
+		m.sessionName = ""
+		m.windowTitle = "gurt"
+		return m, generateTitleCmd(m)
 
 	case "version":
 		m.isStreaming = true
