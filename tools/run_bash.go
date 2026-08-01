@@ -16,15 +16,18 @@ const (
 	DefaultTimeout = 30000
 	MaxTimeout     = 300000 // 5 minutes
 
-	maxOutputLen = 5000
+	DefaultMaxOutputChars = 20000
 )
 
-func RunBash(ctx context.Context, command string, timeout int, sessionID, outputsDir string) (string, error) {
+func RunBash(ctx context.Context, command string, timeout int, maxOutputChars int, sessionID, outputsDir string) (string, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 	if timeout > MaxTimeout {
 		timeout = MaxTimeout
+	}
+	if maxOutputChars <= 0 {
+		maxOutputChars = DefaultMaxOutputChars
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
@@ -63,18 +66,35 @@ func RunBash(ctx context.Context, command string, timeout int, sessionID, output
 
 	result := b.String()
 
-	if len(result) > maxOutputLen && sessionID != "" && outputsDir != "" {
+	if len(result) > maxOutputChars && sessionID != "" && outputsDir != "" {
 		savedPath, saveErr := saveLargeOutput(result, sessionID, outputsDir)
 		if saveErr == nil {
-			truncated := result[:maxOutputLen]
+			truncated := utf8Tail(result, maxOutputChars)
 			result = fmt.Sprintf(
-				"Output > %d characters, saved to %s (use read_file to load it)\n\n%s",
-				maxOutputLen, savedPath, truncated,
+				"Output > %d characters, saved to %s (use read_file to load it). Showing the tail:\n\n%s",
+				maxOutputChars, savedPath, truncated,
 			)
 		}
 	}
 
 	return result, nil
+}
+
+// utf8Tail returns the last n bytes of s, shifted forward so the slice starts
+// on a UTF-8 rune boundary (byte slicing can otherwise split a multi-byte
+// rune, leaving invalid bytes in the model-visible output).
+func utf8Tail(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n >= len(s) {
+		return s
+	}
+	start := len(s) - n
+	for start < len(s) && s[start]&0xC0 == 0x80 {
+		start++
+	}
+	return s[start:]
 }
 
 func saveLargeOutput(content, sessionID, outputsDir string) (string, error) {

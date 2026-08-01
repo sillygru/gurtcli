@@ -26,7 +26,7 @@ Bad commit example (file-path noise, too granular):
   - llm/models_test.go: add test cases for o1/o3/o4 model IDs
   - model.go: prefetch LLM details, refactor fetch concurrency, add generateTitleCmd, show effort only for Anthropic, improve /thinking and /effort to use model capabilities
   - update.go: session title generation via small model, inject Date into system prompt, debug logging for model filtering
-  - prompts/system.md: add {{.Date}} template variable
+  - prompts/system.md: keep template variables in sync with renderSystemPrompt (OS, Arch, Workspace, CWD, Model)
 
 Bad commit example (empty description):
 - title: "Bump version to v0.9.1" (21 chars)

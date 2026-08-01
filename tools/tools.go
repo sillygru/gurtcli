@@ -15,6 +15,7 @@ type Options struct {
 	AllowedExternalDirs []string
 	SessionID           string
 	SessionOutputsDir   string
+	MaxOutputChars      int
 }
 
 // safePath resolves path relative to workspace root and verifies it stays within.
@@ -129,13 +130,20 @@ func EscapeShellArg(s string) string {
 	return "'" + escaped + "'"
 }
 
-func Definitions() []llm.Tool {
+// Definitions returns the tool schemas exposed to the model. maxOutputChars is
+// the configured run_bash output budget and is interpolated into the tool's
+// description so the model knows the actual limit (mirrors opencode's
+// dynamic ${maxBytes} interpolation).
+func Definitions(maxOutputChars int) []llm.Tool {
+	if maxOutputChars <= 0 {
+		maxOutputChars = DefaultMaxOutputChars
+	}
 	return []llm.Tool{
 		{
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "read_file",
-				Description: "Read the contents of a file. Supports optional line offset and limit for reading specific sections.",
+				Description: "Read a file and return its content with line numbers, prefixed by a header showing the total line count. Use offset and limit to read specific sections of large files instead of loading the whole thing.",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
@@ -151,7 +159,7 @@ func Definitions() []llm.Tool {
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "write_file",
-				Description: "Create a new file or overwrite an existing file with the given content. Creates parent directories if they don't exist.",
+				Description: "Create a new file or overwrite an existing file entirely with the given content. Creates parent directories if they don't exist. Use this for new files or substantial changes; prefer edit_file for small targeted changes.",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
@@ -166,7 +174,7 @@ func Definitions() []llm.Tool {
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "edit_file",
-				Description: "Replace an exact string match in a file with new text. Fails if the old string is not found or if it matches more than once. Prefer this over write_file for targeted changes.",
+				Description: "Replace an exact string match in a file with new text. Fails cleanly if the old string is not found or matches more than once; when it appears multiple times, include surrounding context to make the match unique. Prefer this over write_file for targeted changes.",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
@@ -196,7 +204,7 @@ func Definitions() []llm.Tool {
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "run_bash",
-				Description: "Execute a shell command and return its output. Captures both stdout and stderr. Use this to build, test, lint, or run shell utilities.",
+				Description: fmt.Sprintf("Execute a shell command via sh -c and return its output. Captures both stdout and stderr. Timeout defaults to 30000ms (max 300000ms). Output larger than %d characters keeps the tail (errors and summaries usually sit at the end) and saves the full output to a file whose path is returned — use read_file to load the rest. Failures are returned as 'Error: ...' text. Use this to build, test, lint, or run shell utilities.", maxOutputChars),
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
@@ -286,7 +294,7 @@ func Execute(ctx context.Context, name string, args json.RawMessage, opts Option
 		if timeout > MaxTimeout {
 			timeout = MaxTimeout
 		}
-		return RunBash(ctx, a.Command, timeout, opts.SessionID, opts.SessionOutputsDir)
+		return RunBash(ctx, a.Command, timeout, opts.MaxOutputChars, opts.SessionID, opts.SessionOutputsDir)
 
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)

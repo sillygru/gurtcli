@@ -473,6 +473,51 @@ func Delete(workspace, id string) error {
 	return nil
 }
 
+// PromptHistory returns all user message texts from sessions matching the
+// given workspace root, in chronological order (oldest first). This is used
+// to backfill arrow-up history from past sessions.
+func PromptHistory(workspace string) ([]string, error) {
+	var prompts []string
+	err := Query(func(db *sql.DB) error {
+		rows, err := db.Query(`
+			SELECT messages FROM sessions
+			WHERE workspace_root = ?
+			ORDER BY COALESCE(NULLIF(last_message_at, ''), updated_at) ASC
+		`, workspace)
+		if err != nil {
+			return fmt.Errorf("querying prompt history: %w", err)
+		}
+		defer rows.Close()
+
+		seen := make(map[string]bool)
+		for rows.Next() {
+			var msgsJSON string
+			if err := rows.Scan(&msgsJSON); err != nil {
+				continue
+			}
+			var msgs []llm.Message
+			if err := json.Unmarshal([]byte(msgsJSON), &msgs); err != nil {
+				continue
+			}
+			for _, msg := range msgs {
+				if msg.Role == "user" && msg.Content != "" {
+					content := StripDatePrefix(msg.Content)
+					// Deduplicate: identical prompts may appear across sessions.
+					if !seen[content] {
+						seen[content] = true
+						prompts = append(prompts, content)
+					}
+				}
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return prompts, nil
+}
+
 func EnsureDB() (*sql.DB, error) {
 	mu.Lock()
 	defer mu.Unlock()

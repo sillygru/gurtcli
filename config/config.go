@@ -77,6 +77,10 @@ type Config struct {
 
 	UpdateVersion    string `json:"update_version,omitempty"`
 	DotenvKeyName    string `json:"dotenv_key_name,omitempty"`
+	// BashOutputLimit caps the run_bash output returned to the model in
+	// characters (tail is kept, full output saved to a file). Zero means the
+	// built-in default (tools.DefaultMaxOutputChars).
+	BashOutputLimit int `json:"bash_output_limit,omitempty"`
 }
 
 func Dir() (string, error) {

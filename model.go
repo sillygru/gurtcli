@@ -18,7 +18,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/sillygru/gurtcli/config"
-	"github.com/sillygru/gurtcli/history"
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
 	"github.com/sillygru/gurtcli/telemetry"
@@ -361,6 +360,7 @@ type model struct {
 	height                      int
 	workspaceRoot               string
 	cwdDisplay                  string
+	bashOutputLimit             int
 	alwaysAllowPerms            bool
 	allowEdits                  bool
 	allowDeletions              bool
@@ -989,6 +989,11 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		outputsDir = filepath.Join(hd, ".config", "gurtcli", "session-outputs")
 	}
 
+	bashOutputLimit := tools.DefaultMaxOutputChars
+	if cfg != nil && cfg.BashOutputLimit > 0 {
+		bashOutputLimit = cfg.BashOutputLimit
+	}
+
 	m := model{
 		state:                       startState,
 		telemetryEnabled:            telemetryEnabled,
@@ -1007,6 +1012,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		dotenvKeys:                  envKeys,
 		workspaceRoot:               wd,
 		cwdDisplay:                  cwdDisplay,
+		bashOutputLimit:             bashOutputLimit,
 		allowedBashPrefixes:         allowedBashPrefixes,
 		allowedBashPrefixesSession:  make(map[string]bool),
 		alwaysAllowTools:            alwaysAllowTools,
@@ -1041,7 +1047,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 		windowTitle:                 "gurt",
 	}
 
-	h, _ := history.Load()
+	h, _ := sessions.PromptHistory(m.workspaceRoot)
 	m.history = h
 	m.historyIndex = -1
 

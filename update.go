@@ -297,11 +297,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamingContent.WriteString(msg.content)
 		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
 			m.lastStreamRender = time.Now()
-			if len(m.messages) != m.stableMsgCount || m.stableContent == "" {
-				m.stableContent = buildChatContent(m)
-				m.stableMsgCount = len(m.messages)
-			}
-			content := m.stableContent + renderStreamingPart(m)
+			// buildChatContent already includes renderStreamingPart, so we
+			// must not append it again — doing so would render the streaming
+			// content (reasoning + text) twice, producing a duplicate
+			// thinking block header.
+			m.stableContent = buildChatContent(m)
+			m.stableMsgCount = len(m.messages)
+			content := m.stableContent
 			if m.selection.active || m.selection.exists {
 				content = applySelectionHighlight(content, m.selection)
 			}
@@ -327,11 +329,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
 			m.lastStreamRender = time.Now()
-			if len(m.messages) != m.stableMsgCount || m.stableContent == "" {
-				m.stableContent = buildChatContent(m)
-				m.stableMsgCount = len(m.messages)
-			}
-			content := m.stableContent + renderStreamingPart(m)
+			// buildChatContent already includes renderStreamingPart, so we
+			// must not append it again — doing so would render the streaming
+			// content (reasoning + text) twice, producing a duplicate
+			// thinking block header.
+			m.stableContent = buildChatContent(m)
+			m.stableMsgCount = len(m.messages)
+			content := m.stableContent
 			if m.selection.active || m.selection.exists {
 				content = applySelectionHighlight(content, m.selection)
 			}
@@ -2109,7 +2113,6 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.history = history.Add(m.history, input)
 				m.historyIndex = -1
 				m.historyDraft = ""
-				history.Save(m.history)
 			}
 			m.queuedMessage = input
 			m.chatInput.Reset()
@@ -2128,7 +2131,6 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.history = history.Add(m.history, input)
 		m.historyIndex = -1
 		m.historyDraft = ""
-		history.Save(m.history)
 
 		today := time.Now().Format("January 2, 2006")
 		if today != m.lastDateMessage {
@@ -2257,6 +2259,7 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 		AllowedExternalDirs: allowedDirs,
 		SessionID:           m.sessionID,
 		SessionOutputsDir:   m.sessionOutputsDir,
+		MaxOutputChars:      m.bashOutputLimit,
 	}
 
 	return m, tea.Batch(func() tea.Msg {
@@ -3563,7 +3566,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 			Model:           m.modelName,
 			Messages:        msgs,
 			SystemPrompt:    systemPrompt,
-			Tools:           tools.Definitions(),
+			Tools:           tools.Definitions(m.bashOutputLimit),
 			Thinking:        thinkingCfg,
 			MaxTokens:       maxTokens,
 			ReasoningEffort: reasoningEffort,

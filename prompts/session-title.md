@@ -23,6 +23,7 @@ Requirements:
 - Avoid repetitive title patterns by varying your wording.
 - Do not phrase the title as a question.
 - Never include words like "summary", "summarizing", "title", or "generating".
+- Do not use emojis, quotes, or any punctuation that could break a filename — the title is used as a session name.
 - If the message is very short or purely conversational (for example: "hi", "thanks", "lol"), produce a simple title that reflects the interaction instead of repeating the message.
 - Always produce a meaningful title, regardless of how little information is provided.
 </guidelines>

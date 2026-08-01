@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-var Version = "1.5.4"
+var Version = "1.5.5"
 var CommitCount = "0"
 var TelemetrySecret = ""
 
