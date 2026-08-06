@@ -50,7 +50,18 @@ $ChecksumsPath = Join-Path $TmpDir "checksums.txt"
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 
 Write-Host "Downloading $ArchiveName..."
-Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ArchivePath -UseBasicParsing
+$Attempt = 0
+do {
+    $Attempt++
+    try {
+        Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ArchivePath -UseBasicParsing -ErrorAction Stop
+        break
+    } catch {
+        if ($Attempt -ge 3) { throw }
+        Write-Host "  Download failed (attempt $Attempt/3), retrying in $([math]::Pow(2, $Attempt - 1))s..."
+        Start-Sleep -Seconds ([math]::Pow(2, $Attempt - 1))
+    }
+} while ($true)
 
 Write-Host "Verifying checksum..."
 try {

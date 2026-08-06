@@ -17,14 +17,6 @@ go install github.com/sillygru/gurtcli@latest
 gurtcli
 ```
 
-**npm (may need prefix setup — see note below):**
-```bash
-npm install -g gurtcli
-gurtcli
-```
-
-> **Note for npm users:** `npm install -g` writes to `/usr/local/lib/node_modules/` by default, which requires root permissions on most systems. If you get a `EACCES` error, use the `curl` install above instead, or set up npm's global prefix: `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to your PATH.
-
 **Windows (PowerShell):**
 ```powershell
 irm https://github.com/sillygru/gurtcli/releases/latest/download/install.ps1 | iex

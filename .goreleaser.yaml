@@ -37,6 +37,11 @@ archives:
       - LICENSE
       - README.md
 
+release:
+  extra_files:
+    - glob: ./scripts/install.sh
+    - glob: ./scripts/install.ps1
+
 checksum:
   name_template: "checksums.txt"
 
