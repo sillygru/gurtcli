@@ -215,6 +215,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsFetchedMsg:
 		if msg.err != nil {
+			if msg.background {
+				// A background refresh (e.g. while resuming into chat) must not
+				// kill the session: model metadata is a bonus, not a blocker.
+				return m, nil
+			}
 			m.err = msg.err
 			m.errChoice = 0
 			m.state = stateError
@@ -267,10 +272,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				models[i], models[j] = models[j], models[i]
 			}
 		}
-		m.models = models
 		items := make([]list.Item, len(models))
 		for i, model := range models {
 			items[i] = modelItem{info: model, provider: m.provider}
+		}
+		m.models = models
+		if msg.background {
+			for _, model := range models {
+				if model.ID == m.modelName {
+					if model.MaxInputTokens > 0 {
+						m.maxInputTokens = model.MaxInputTokens
+					}
+					break
+				}
+			}
+			return m, nil
 		}
 		m.modelList.SetItems(items)
 		m.state = stateModelPick

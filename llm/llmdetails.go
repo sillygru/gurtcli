@@ -118,28 +118,111 @@ func parseLLMDetails(data []byte) (map[string]ModelInfo, error) {
 	return result, nil
 }
 
-// EnrichModels fills in details from llmdetails.json only when the API response
-// does not already provide them. API values take priority over the static file.
+// EnrichModels fills in whatever the models API did not provide from
+// llmdetails.json. The API response is prioritized: its context window, max
+// tokens, display name, and any capability/level it reports are kept, and the
+// static file only fills fields the API left zero or empty.
 func EnrichModels(apiModels []ModelInfo, details map[string]ModelInfo, provider string) []ModelInfo {
 	enriched := make([]ModelInfo, len(apiModels))
-	matched := 0
 	for i, m := range apiModels {
 		enriched[i] = m
-		if d, ok := details[m.ID]; ok {
-			enriched[i].Capabilities = d.Capabilities
-			if enriched[i].MaxInputTokens == 0 && d.MaxInputTokens > 0 {
-				enriched[i].MaxInputTokens = d.MaxInputTokens
-			}
-			if enriched[i].MaxTokens == 0 && d.MaxTokens > 0 {
-				enriched[i].MaxTokens = d.MaxTokens
-			}
-			if enriched[i].DisplayName == "" && d.DisplayName != "" {
-				enriched[i].DisplayName = d.DisplayName
-			}
-			matched++
+		d, ok := details[m.ID]
+		if !ok && m.Slug != "" {
+			d, ok = details[m.Slug]
 		}
+		if !ok {
+			continue
+		}
+		enriched[i] = mergeModelInfo(m, d)
 	}
 	return enriched
+}
+
+// mergeModelInfo returns the API model with every field the API left empty
+// filled from the llmdetails.json entry.
+func mergeModelInfo(api, fallback ModelInfo) ModelInfo {
+	if api.DisplayName == "" {
+		api.DisplayName = fallback.DisplayName
+	}
+	if api.Slug == "" {
+		api.Slug = fallback.Slug
+	}
+	if api.MaxInputTokens <= 0 {
+		api.MaxInputTokens = fallback.MaxInputTokens
+	}
+	if api.MaxTokens <= 0 {
+		api.MaxTokens = fallback.MaxTokens
+	}
+	api.Capabilities = mergeCapabilities(api.Capabilities, fallback.Capabilities)
+	return api
+}
+
+// mergeCapabilities combines two capability sets with the API response taking
+// priority. A dimension the API reports (non-empty thinking/effort/context
+// levels) is kept as-is; a dimension the API leaves at its zero value is filled
+// from llmdetails.json. Simple booleans are ORed because an API response never
+// marks a capability as explicitly unsupported — only as present or absent.
+//
+// The result is round-tripped through the same JSON shape the models
+// API/llmdetails.json use so the levels arrays and the derived structured
+// fields (Thinking.Types, Effort.Minimal..Max) never disagree.
+func mergeCapabilities(apiCaps, detailCaps ModelCapabilities) ModelCapabilities {
+	payload := map[string]interface{}{
+		"batch":              apiCaps.Batch.Supported || detailCaps.Batch.Supported,
+		"citations":          apiCaps.Citations.Supported || detailCaps.Citations.Supported,
+		"code_execution":     apiCaps.CodeExecution.Supported || detailCaps.CodeExecution.Supported,
+		"image_input":        apiCaps.ImageInput.Supported || detailCaps.ImageInput.Supported,
+		"pdf_input":          apiCaps.PDFInput.Supported || detailCaps.PDFInput.Supported,
+		"structured_outputs": apiCaps.StructuredOutputs.Supported || detailCaps.StructuredOutputs.Supported,
+	}
+
+	thinking := apiCaps.ThinkingLevels
+	if len(thinking) == 0 {
+		thinking = detailCaps.ThinkingLevels
+	}
+	effort := apiCaps.EffortLevels
+	if len(effort) == 0 {
+		effort = detailCaps.EffortLevels
+	}
+	context := apiCaps.contextManagementTokens()
+	if len(context) == 0 {
+		context = detailCaps.contextManagementTokens()
+	}
+	if len(thinking) > 0 {
+		payload["thinking"] = thinking
+	}
+	if len(effort) > 0 {
+		payload["effort"] = effort
+	}
+	if len(context) > 0 {
+		payload["context_management"] = context
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return detailCaps
+	}
+	var merged ModelCapabilities
+	if err := json.Unmarshal(data, &merged); err != nil {
+		return detailCaps
+	}
+	return merged
+}
+
+// contextManagementTokens returns the context_management capabilities as the
+// token list used by llmdetails.json and the models API.
+func (c ModelCapabilities) contextManagementTokens() []string {
+	var tokens []string
+	if c.ContextManagement.ClearToolUses20250919.Supported {
+		tokens = append(tokens, "clear_tool_uses_20250919")
+	}
+	if c.ContextManagement.ClearThinking20251015.Supported {
+		tokens = append(tokens, "clear_thinking_20251015")
+	}
+	if c.ContextManagement.Compact20260112.Supported {
+		tokens = append(tokens, "compact_20260112")
+	}
+	return tokens
 }
 
 func hasNoneThinking(levels []string) bool {

@@ -136,6 +136,10 @@ type sessionSaveErrorMsg struct {
 type modelsFetchedMsg struct {
 	models []llm.ModelInfo
 	err    error
+	// background is set when models were fetched outside the model-pick flow
+	// (e.g. while resuming straight into chat). A background fetch refreshes
+	// model metadata without navigating the user to the picker.
+	background bool
 }
 
 type llmDetailsLoadedMsg struct {
@@ -1350,6 +1354,11 @@ func (m model) Init() tea.Cmd {
 	}
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
+	} else if m.state == stateChat && m.provider != "" && m.apiKey != "" {
+		// Resuming into a saved session still refreshes model metadata from
+		// the models API so context windows and capabilities reflect the live
+		// source rather than only llmdetails.json.
+		cmds = append(cmds, m.fetchModelsCmd())
 	}
 	if m.bufferedInitCmd != nil {
 		cmds = append(cmds, m.bufferedInitCmd)
@@ -1390,18 +1399,19 @@ func toastTimeoutCmd(id int) tea.Cmd {
 }
 
 func (m model) fetchModelsCmd() tea.Cmd {
+	background := m.state != stateModelFetch
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
 		models, err := llm.FetchModels(ctx, m.provider, m.apiKey, m.customURL)
 		if err != nil {
-			return modelsFetchedMsg{err: err}
+			return modelsFetchedMsg{err: err, background: background}
 		}
 
 		if m.llmDetailsReady && len(m.llmDetails) > 0 {
 			models = llm.EnrichModels(models, m.llmDetails, m.provider)
-			return modelsFetchedMsg{models: models}
+			return modelsFetchedMsg{models: models, background: background}
 		}
 
 		details, err := llm.FetchLLMDetails(ctx, m.forceLocal)
@@ -1409,6 +1419,6 @@ func (m model) fetchModelsCmd() tea.Cmd {
 			models = llm.EnrichModels(models, details, m.provider)
 		}
 
-		return modelsFetchedMsg{models: models}
+		return modelsFetchedMsg{models: models, background: background}
 	}
 }

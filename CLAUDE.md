@@ -21,7 +21,7 @@ Useful flags while developing: `--debug` (debug log + resource monitor), `--forc
 
 ## Release process
 
-`bump-version-prompt.md` is the authoritative checklist. In short: bump the version in **both** `version.go` and `npm/package.json`, commit (title <40 chars, description summarizing every change by feature, not by file path), `git push origin main`, then `git push origin <tag>` separately — the tag push is what triggers the release workflow. `Version`, `CommitCount`, and `TelemetrySecret` in `version.go` are overwritten at release time via ldflags.
+`bump-version-prompt.md` is the authoritative checklist. In short: bump the version in `version.go`, commit (title <40 chars, description summarizing every change by feature, not by file path), `git push origin main`, then `git push origin <tag>` separately — the tag push is what triggers the release workflow. `Version`, `CommitCount`, and `TelemetrySecret` in `version.go` are overwritten at release time via ldflags.
 
 ## Architecture
 
