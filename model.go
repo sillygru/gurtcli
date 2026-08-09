@@ -169,7 +169,9 @@ type retryFireMsg struct {
 }
 
 type chatStreamUsage struct {
-	inputTokens       int
+	// The raw per-request input is deliberately not carried here: the handler
+	// accumulates promptTotalTokens (the normalized full prompt, cached
+	// portions included), so the raw count would be dead weight.
 	outputTokens      int
 	reasoningTokens   int
 	cacheHitTokens    int
@@ -296,9 +298,6 @@ type retryState struct {
 	// token invalidates a scheduled retryFireMsg after the user cancels or
 	// re-arms the wait, so a stale tick can't resurrect a dead request.
 	token int
-	// needsOK is set when the provider asked for a wait longer than
-	// longRetryWaitThreshold; the retry only fires after the user confirms.
-	needsOK bool
 	// rateLimit distinguishes a usage-limit rejection from a generic failure.
 	rateLimit bool
 }
@@ -481,6 +480,7 @@ type model struct {
 	outputTokens          int
 	reasoningOutputTokens int
 	cacheHitTokens        int
+	cacheWriteTokens      int
 
 	// Context-window state describes the *last* request only, not session
 	// totals: how much history was actually sent to the model.
@@ -1238,6 +1238,7 @@ func (m model) toSession() *sessions.Session {
 		OutputTokens:       m.outputTokens,
 		ReasoningTokens:    m.reasoningOutputTokens,
 		CacheHitTokens:     m.cacheHitTokens,
+		CacheWriteTokens:   m.cacheWriteTokens,
 		ContextTokens:      m.contextInputTokens + m.contextOutputTokens,
 		ContextCacheTokens: m.contextCacheTokens,
 	}
@@ -1270,6 +1271,7 @@ func (m model) applySession(s *sessions.Session) model {
 	m.outputTokens = s.OutputTokens
 	m.reasoningOutputTokens = s.ReasoningTokens
 	m.cacheHitTokens = s.CacheHitTokens
+	m.cacheWriteTokens = s.CacheWriteTokens
 	// Sessions saved before context tracking existed report 0 here; the bar
 	// stays hidden until the next request reports a real prompt size.
 	m.contextInputTokens = s.ContextTokens
@@ -1299,6 +1301,7 @@ func (m model) resetToNewSession() model {
 	m.filesCached = false
 	m.lastDateMessage = ""
 	m.cacheHitTokens = 0
+	m.cacheWriteTokens = 0
 	m.cachedSystemPrompt = ""
 	m = m.invalidateTranscriptCache()
 	return m.initNewSession()

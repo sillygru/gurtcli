@@ -187,6 +187,17 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	if version < 8 {
+		_, err := db.Exec(`
+			ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+			PRAGMA user_version = 8;
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate v8: %w", err)
+		}
+		version = 8
+	}
+
 	return nil
 }
 
@@ -209,6 +220,7 @@ type Session struct {
 	OutputTokens      int           `json:"output_tokens,omitempty"`
 	ReasoningTokens   int           `json:"reasoning_tokens,omitempty"`
 	CacheHitTokens    int           `json:"cache_hit_tokens,omitempty"`
+	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`
 	// ContextTokens is the prompt size of the last request in this session,
 	// i.e. how full the context window was, as opposed to the lifetime sums
 	// above.
@@ -301,9 +313,9 @@ func Save(s *Session) error {
 			 saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
 			 reasoning_mode,
 			 workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
-			 cache_hit_tokens, context_tokens, context_cache_tokens,
+			 cache_hit_tokens, cache_write_tokens, context_tokens, context_cache_tokens,
 			 last_message_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		s.ID, s.Name,
 		s.CreatedAt.UTC().Format(time.RFC3339),
@@ -313,7 +325,7 @@ func Save(s *Session) error {
 		boolToInt(s.ReasoningVisible), s.ReasoningMode,
 		s.WorkspaceRoot, string(msgs),
 		s.InputTokens, s.OutputTokens, s.ReasoningTokens,
-		s.CacheHitTokens, s.ContextTokens, s.ContextCacheTokens,
+		s.CacheHitTokens, s.CacheWriteTokens, s.ContextTokens, s.ContextCacheTokens,
 		s.LastMessageAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -345,7 +357,7 @@ func Load(workspace, id string) (*Session, error) {
 		       saved_endpoint_name, thinking_type, effort_level, reasoning_visible,
 		       COALESCE(reasoning_mode, ''),
 		       workspace_root, messages, input_tokens, output_tokens, reasoning_tokens,
-		       COALESCE(cache_hit_tokens, 0),
+		       COALESCE(cache_hit_tokens, 0), COALESCE(cache_write_tokens, 0),
 		       COALESCE(context_tokens, 0), COALESCE(context_cache_tokens, 0),
 		       COALESCE(last_message_at, '')
 		FROM sessions WHERE id = ? AND workspace_root = ?
@@ -362,7 +374,7 @@ func Load(workspace, id string) (*Session, error) {
 		&s.SavedEndpointName, &s.ThinkingType, &s.EffortLevel,
 		&reasoningVisible, &s.ReasoningMode, &s.WorkspaceRoot, &msgsJSON,
 		&s.InputTokens, &s.OutputTokens, &s.ReasoningTokens,
-		&s.CacheHitTokens, &s.ContextTokens, &s.ContextCacheTokens,
+		&s.CacheHitTokens, &s.CacheWriteTokens, &s.ContextTokens, &s.ContextCacheTokens,
 		&lastMessageAt,
 	); err != nil {
 		if err == sql.ErrNoRows {

@@ -42,19 +42,19 @@ func TestMigrateV4ToLatest(t *testing.T) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	if v != 7 {
-		t.Fatalf("user_version = %d, want 7", v)
+	if v != 8 {
+		t.Fatalf("user_version = %d, want 8", v)
 	}
 
 	// Existing row survives, new columns take their defaults.
 	var name, mode, lastMsgAt string
-	var in, ctx, ctxCache int
-	if err := db.QueryRow(`SELECT name, input_tokens, context_tokens, context_cache_tokens, reasoning_mode, last_message_at FROM sessions WHERE id='old1'`).
-		Scan(&name, &in, &ctx, &ctxCache, &mode, &lastMsgAt); err != nil {
+	var in, ctx, ctxCache, cacheWrite int
+	if err := db.QueryRow(`SELECT name, input_tokens, context_tokens, context_cache_tokens, reasoning_mode, last_message_at, cache_write_tokens FROM sessions WHERE id='old1'`).
+		Scan(&name, &in, &ctx, &ctxCache, &mode, &lastMsgAt, &cacheWrite); err != nil {
 		t.Fatal(err)
 	}
-	if name != "legacy" || in != 999 || ctx != 0 || ctxCache != 0 || mode != "" {
-		t.Fatalf("got %q %d %d %d %q", name, in, ctx, ctxCache, mode)
+	if name != "legacy" || in != 999 || ctx != 0 || ctxCache != 0 || mode != "" || cacheWrite != 0 {
+		t.Fatalf("got %q %d %d %d %q %d", name, in, ctx, ctxCache, mode, cacheWrite)
 	}
 
 	// Migrating again is a no-op, not an error.
@@ -102,8 +102,8 @@ func TestMigrateV5ToV6(t *testing.T) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	if v != 7 {
-		t.Fatalf("user_version = %d, want 7", v)
+	if v != 8 {
+		t.Fatalf("user_version = %d, want 8", v)
 	}
 
 	// The empty mode is what makes the old boolean the fallback on load.

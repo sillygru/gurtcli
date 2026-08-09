@@ -1461,11 +1461,6 @@ func (m model) renderRetryStatus() string {
 		label = "Rate limited"
 	}
 
-	if m.retry.needsOK {
-		lead := m.theme.Error.Render(fmt.Sprintf("✗ %s — resets in %s", label, formatRetryWait(m.retry.delay)))
-		return lead + m.theme.Dim.Render("  enter/r to wait it out • esc to cancel")
-	}
-
 	remaining := time.Until(m.retry.until)
 	if remaining < 0 {
 		remaining = 0

@@ -30,6 +30,8 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 		ReasoningMode:    "auto",
 		InputTokens:      142,
 		OutputTokens:     57,
+		CacheHitTokens:   120,
+		CacheWriteTokens: 22,
 		Messages: []llm.Message{
 			{Role: "user", Content: "Hello world"},
 			{Role: "assistant", Content: "Hi there"},
@@ -55,6 +57,12 @@ func TestSaveLoadListRoundTrip(t *testing.T) {
 	}
 	if loaded.OutputTokens != 57 {
 		t.Fatalf("output_tokens: got %d want 57", loaded.OutputTokens)
+	}
+	if loaded.CacheHitTokens != 120 {
+		t.Fatalf("cache_hit_tokens: got %d want 120", loaded.CacheHitTokens)
+	}
+	if loaded.CacheWriteTokens != 22 {
+		t.Fatalf("cache_write_tokens: got %d want 22", loaded.CacheWriteTokens)
 	}
 	if loaded.ReasoningMode != "auto" {
 		t.Fatalf("reasoning_mode: got %q want %q", loaded.ReasoningMode, "auto")

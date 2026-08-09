@@ -459,14 +459,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cost accounting. The context counters are a snapshot of the most
 		// recent request, which is what the context bar shows.
 		if msg.promptTotalTokens > 0 {
+			// promptTotalTokens is the full prompt size of the request,
+			// already normalized across the two OpenAI cache conventions and
+			// including Anthropic's cache reads and writes. Accumulating it
+			// keeps the lifetime input sum equal to the total prompt
+			// footprint regardless of how the endpoint reported the split,
+			// so the cached portions are never dropped or double-counted.
+			m.inputTokens += msg.promptTotalTokens
 			m.contextInputTokens = msg.promptTotalTokens
 			m.contextCacheTokens = msg.cacheHitTokens
 			// A new prompt supersedes the previous turn's response, which is
 			// already folded into this request's history.
 			m.contextOutputTokens = 0
-		}
-		if msg.inputTokens > 0 {
-			m.inputTokens += msg.inputTokens
 		}
 		if msg.outputTokens > 0 {
 			m.outputTokens += msg.outputTokens
@@ -477,6 +481,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.cacheHitTokens > 0 {
 			m.cacheHitTokens += msg.cacheHitTokens
+		}
+		if msg.cacheWriteTokens > 0 {
+			m.cacheWriteTokens += msg.cacheWriteTokens
 		}
 		return m, nil
 
@@ -504,7 +511,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.executeNextTool()
 
 	case retryFireMsg:
-		if !m.retry.active || m.retry.needsOK || msg.token != m.retry.token {
+		if !m.retry.active || msg.token != m.retry.token {
 			return m, nil
 		}
 		m.retry.active = false
@@ -1925,18 +1932,6 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
-	}
-
-	// A retry whose wait exceeds longRetryWaitThreshold parks until the user
-	// says to sit it out.
-	if m.retry.active && m.retry.needsOK {
-		switch msg.String() {
-		case "enter", "r":
-			m.retry.needsOK = false
-			m.retry.token++
-			m.retry.until = time.Now().Add(m.retry.delay)
-			return m, tea.Batch(retryFireCmd(m.retry.delay, m.retry.token), workingTickCmd())
-		}
 	}
 
 	if msg.String() == "esc" && (m.isStreaming || (m.toolExec != nil && m.toolExec.active)) {
@@ -3515,10 +3510,6 @@ const (
 	// maxRetryAttempts bounds how many times a failed chat request is
 	// repeated before the error surfaces in the transcript.
 	maxRetryAttempts = 8
-	// longRetryWaitThreshold is the point past which a wait is no longer
-	// automatic. Usage-limit resets can be hours out, and silently parking the
-	// TUI that long is worse than asking.
-	longRetryWaitThreshold = 5 * time.Minute
 )
 
 // scheduleRetry arms a retry after a failed request, discarding whatever the
@@ -3546,7 +3537,6 @@ func (m model) scheduleRetry(err error) (tea.Model, tea.Cmd) {
 		until:     time.Now().Add(delay),
 		err:       err,
 		token:     m.retry.token + 1,
-		needsOK:   delay > longRetryWaitThreshold,
 		rateLimit: llm.IsRateLimit(err),
 	}
 
@@ -3556,9 +3546,6 @@ func (m model) scheduleRetry(err error) (tea.Model, tea.Cmd) {
 		m.chatViewport.GotoBottom()
 	}
 
-	if m.retry.needsOK {
-		return m, workingTickCmd()
-	}
 	return m, tea.Batch(retryFireCmd(delay, m.retry.token), workingTickCmd())
 }
 
@@ -3686,7 +3673,7 @@ func startChatStreamCmd(m model) tea.Cmd {
 					case llm.StreamReasoning:
 						globalProgram.Send(chatStreamReasoning{content: event.Content})
 					case llm.StreamUsage:
-						globalProgram.Send(chatStreamUsage{inputTokens: event.InputTokens, outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens, cacheHitTokens: event.CacheHitTokens, cacheWriteTokens: event.CacheWriteTokens, promptTotalTokens: event.PromptTotalTokens})
+						globalProgram.Send(chatStreamUsage{outputTokens: event.OutputTokens, reasoningTokens: event.ReasoningTokens, cacheHitTokens: event.CacheHitTokens, cacheWriteTokens: event.CacheWriteTokens, promptTotalTokens: event.PromptTotalTokens})
 					case llm.StreamToolCalls:
 						pendingToolCalls = event.ToolCalls
 					case llm.StreamDone:

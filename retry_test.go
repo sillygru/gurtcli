@@ -120,34 +120,51 @@ func TestRetryHonorsProviderResetTime(t *testing.T) {
 	if !got.retry.rateLimit {
 		t.Error("429 should be flagged as a rate limit")
 	}
-	if got.retry.needsOK {
-		t.Error("a 46s wait is below the confirm threshold")
-	}
 }
 
-// Multi-hour resets park until the user confirms rather than silently hanging.
-func TestLongResetWaitsForConfirmation(t *testing.T) {
-	m := retryModel()
-	err := &llm.APIError{StatusCode: 429, Body: "usage limit", RetryAfter: 5 * time.Hour, HasHint: true}
-
-	next, _ := m.Update(chatStreamError{err: err})
-	m = next.(model)
-
-	if !m.retry.needsOK {
-		t.Fatal("a 5h wait should require confirmation")
+// Long resets wait themselves out automatically, rate-limited or not; there
+// is no prompt to sit it out.
+func TestLongResetAutoWaits(t *testing.T) {
+	longWaits := []struct {
+		name  string
+		err   error
+		label string
+	}{
+		{"rate limited", &llm.APIError{StatusCode: 429, Body: "usage limit", RetryAfter: 5 * time.Hour, HasHint: true}, "Rate limited"},
+		{"generic", &llm.APIError{StatusCode: 503, Body: "unavailable", RetryAfter: 5 * time.Hour, HasHint: true}, "Failed"},
 	}
+	for _, tt := range longWaits {
+		t.Run(tt.name, func(t *testing.T) {
+			m := retryModel()
+			next, _ := m.Update(chatStreamError{err: tt.err})
+			m = next.(model)
 
-	status := m.renderRetryStatus()
-	for _, want := range []string{"Rate limited", "5h", "enter/r", "esc"} {
-		if !strings.Contains(status, want) {
-			t.Errorf("status line %q missing %q", status, want)
-		}
-	}
+			if !m.retry.active {
+				t.Fatal("expected a retry to be armed")
+			}
+			if m.retry.delay != 5*time.Hour+time.Second {
+				t.Errorf("delay = %v, want the full reset + margin", m.retry.delay)
+			}
 
-	// A stale fire must not start the request while it is still parked.
-	next, _ = m.Update(retryFireMsg{token: m.retry.token})
-	if !next.(model).retry.needsOK {
-		t.Error("retry fired despite awaiting confirmation")
+			status := m.renderRetryStatus()
+			for _, want := range []string{tt.label, "retrying in", "5h"} {
+				if !strings.Contains(status, want) {
+					t.Errorf("status line %q missing %q", status, want)
+				}
+			}
+			for _, banned := range []string{"enter/r", "esc"} {
+				if strings.Contains(status, banned) {
+					t.Errorf("status line %q should not offer %q", status, banned)
+				}
+			}
+
+			// The wait elapses on its own: a fire with the current token restarts.
+			next, cmd := m.Update(retryFireMsg{token: m.retry.token})
+			if cmd == nil {
+				t.Error("an auto-waited reset should restart the request when its fire elapses")
+			}
+			_ = next
+		})
 	}
 }
 

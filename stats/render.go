@@ -100,27 +100,43 @@ func renderTokenUsage(w io.Writer, s *Stats, inner int) {
 	if outputText < 0 {
 		outputText = 0
 	}
+	// Newly recorded rows always have input >= cache hits (the input total is
+	// the full prompt, cached portions included). The fallback covers sessions
+	// written before that normalization: endpoints that excluded cache reads
+	// left cache_hit larger than the stored input, so add them back.
 	totalInput := s.InputTokens
 	if s.CacheHitTokens > s.InputTokens {
 		totalInput = s.InputTokens + s.CacheHitTokens
 	}
 	total := totalInput + s.OutputTokens
 
-	rows := []struct {
+	type tokenRow struct {
 		label string
 		value int
 		color string
 		denom int
-	}{
+	}
+	rows := []tokenRow{
 		{"Input", totalInput, green, total},
 		{"Cached", s.CacheHitTokens, overlay0, totalInput},
-		{"Reasoning", s.ReasoningTokens, mauve, total},
-		{"Output", outputText, blue, total},
 	}
+	// Cache writes are Anthropic-only (cache_creation_input_tokens) and are
+	// part of the input total, so the row is a breakdown, not an addition.
+	if s.CacheWriteTokens > 0 {
+		rows = append(rows, tokenRow{"Cache write", s.CacheWriteTokens, overlay0, totalInput})
+	}
+	rows = append(rows,
+		tokenRow{"Reasoning", s.ReasoningTokens, mauve, total},
+		tokenRow{"Output", outputText, blue, total},
+	)
 
 	// Append "*" to the Reasoning label if the count is estimated.
 	if s.ReasoningEstimated {
-		rows[2].label = "Reasoning*"
+		for i := range rows {
+			if rows[i].label == "Reasoning" {
+				rows[i].label = "Reasoning*"
+			}
+		}
 	}
 
 	maxLabel := 0
