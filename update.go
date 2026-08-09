@@ -507,7 +507,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.retry.active = false
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		return m, tea.Batch(startChatStreamCmd(m), workingTickCmd())
 
 	case workingTickMsg:
@@ -520,6 +520,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isStreaming || m.toolExec.active {
 			if m.workingSpinnerIdx%40 == 0 {
 				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
+			}
+			// Refresh the transcript while a shell command runs so the spinner
+			// woven into its tool card advances. The finalized prefix comes
+			// from the render cache, so this is cheap; only the tail that holds
+			// the pending tool call is rebuilt.
+			if m.toolExec.active && m.toolExec.toolName == "run_bash" && m.toolExec.toolID != "" {
+				m.stableContent = buildChatContent(m)
+				m.stableMsgCount = len(m.messages)
+				content := m.stableContent
+				if m.selection.active || m.selection.exists {
+					content = applySelectionHighlight(content, m.selection)
+				}
+				m.chatViewport.SetContent(content)
+				if m.stickToBottom {
+					m.chatViewport.GotoBottom()
+				}
 			}
 			return m, workingTickCmd()
 		}
@@ -606,7 +622,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updatePerformResult:
 		m.isStreaming = false
 		m.workingMsg = ""
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		if msg.upToDate {
 			m.messages = append(m.messages, llm.Message{
 				Role:     "assistant",
@@ -648,7 +664,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case versionCheckResult:
 		m.isStreaming = false
 		m.workingMsg = ""
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		var b strings.Builder
 		b.WriteString(VersionString())
 		b.WriteString("\n")
@@ -2157,7 +2173,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.extendTranscriptCache().trimMessages()
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		m.reasoning = reasoningState{mode: m.reasoning.mode}
 		m.chatViewport.SetContent(buildChatContentHighlighted(m))
 		m.chatViewport.GotoBottom()
@@ -2234,7 +2250,7 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 		}
 		m.isStreaming = true
 		m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		m = m.adjustViewportHeight()
 		return m, tea.Batch(m.persistSessionCmd(), startChatStreamCmd(m), workingTickCmd())
 	}
@@ -2244,14 +2260,18 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 
 	m.toolExec.active = true
 	m.toolExec.toolName = tc.Function.Name
+	m.toolExec.toolID = tc.ID
 	m.toolExec.title = ""
 	m.toolExec.label = tools.ToolFriendlyLabel(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 	if tc.Function.Name == "run_bash" {
-		if title, err := tools.ExtractBashTitle(json.RawMessage(tc.Function.Arguments)); err == nil {
+		if title, err := tools.ExtractBashTitle(json.RawMessage(tc.Function.Arguments)); err == nil && title != "" {
 			m.toolExec.title = title
+			// The command's own title reads better than the generic label, and
+			// it is what the spacer spinner shows while the shell runs.
+			m.toolExec.label = title
 		}
 	}
-	m.workingSpinnerIdx = 0
+	m = m.startWorkingAnim()
 	m = m.adjustViewportHeight()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3278,7 +3298,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "update":
 		m.isStreaming = true
 		m.workingMsg = "Downloading update..."
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		if m.latestVersion == "" {
 			return m, tea.Batch(checkAndUpdateCmd(), workingTickCmd())
 		}
@@ -3292,7 +3312,7 @@ func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "version":
 		m.isStreaming = true
 		m.workingMsg = "Checking for updates..."
-		m.workingSpinnerIdx = 0
+		m = m.startWorkingAnim()
 		return m, tea.Batch(checkVersionCmd(), workingTickCmd())
 
 	default:
@@ -3482,7 +3502,7 @@ func (m model) scheduleRetry(err error) (tea.Model, tea.Cmd) {
 	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.isStreaming = true
 	m.workingMsg = ""
-	m.workingSpinnerIdx = 0
+	m = m.startWorkingAnim()
 	if m.streamState != nil {
 		m.streamState.cancel = nil
 	}
@@ -3674,10 +3694,11 @@ func (m model) resetStreamingState() model {
 	m.streamingContent = nil
 	m.isStreaming = false
 	m.workingMsg = ""
-	m.workingSpinnerIdx = 0
+	m = m.startWorkingAnim()
 	m.toolExec.active = false
 	m.toolExec.title = ""
 	m.toolExec.label = ""
+	m.toolExec.toolID = ""
 	m.toolExec.cancel = nil
 	m.toolQueue = nil
 	m.toolCallCycle = 0
@@ -3688,6 +3709,30 @@ func (m model) resetStreamingState() model {
 	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.stickToBottom = true
 	return m
+}
+
+// startWorkingAnim resets the working spinner's frame counter and anchors its
+// wall-clock start. Spinner glyphs are derived from elapsed time since this
+// anchor, so the animation runs at a fixed rate no matter how fast or slow
+// tokens arrive from the model.
+func (m model) startWorkingAnim() model {
+	m.workingSpinnerIdx = 0
+	m.workingAnimStart = time.Now()
+	return m
+}
+
+// workingFrameIdx returns the index of the current spinner glyph for real
+// elapsed time since the animation started. Unlike a tick-driven counter it is
+// exact even when messages (stream chunks, other timers) delay tick delivery.
+func (m model) workingFrameIdx() int {
+	if m.workingAnimStart.IsZero() {
+		return 0
+	}
+	elapsed := time.Since(m.workingAnimStart)
+	if elapsed < 0 {
+		return 0
+	}
+	return int(elapsed/workingSpinnerStep) % len(workingSpinnerFrames)
 }
 
 func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
@@ -3707,7 +3752,7 @@ func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	m = m.extendTranscriptCache().trimMessages()
 	m.isStreaming = true
 	m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-	m.workingSpinnerIdx = 0
+	m = m.startWorkingAnim()
 	m.reasoning = reasoningState{mode: m.reasoning.mode}
 	m.chatViewport.SetContent(buildChatContentHighlighted(m))
 	m.chatViewport.GotoBottom()
@@ -3727,7 +3772,7 @@ func resourceMonitorTickCmd() tea.Cmd {
 }
 
 func workingTickCmd() tea.Cmd {
-	return tea.Tick(450*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(workingSpinnerStep, func(t time.Time) tea.Msg {
 		return workingTickMsg{}
 	})
 }
@@ -3979,7 +4024,11 @@ func renderMessageRange(m model, from, to int) string {
 						}
 					}
 					if !found {
-						b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width()))
+						var busyGlyph string
+						if m.toolExec != nil && m.toolExec.active && m.toolExec.toolName == "run_bash" && m.toolExec.toolID == tc.ID {
+							busyGlyph = workingSpinnerFrames[m.workingFrameIdx()]
+						}
+						b.WriteString(ui.RenderToolCall(m.theme, tc, m.chatViewport.Width(), busyGlyph))
 						b.WriteString("\n")
 					}
 				}

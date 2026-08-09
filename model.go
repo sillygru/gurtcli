@@ -280,7 +280,6 @@ type pendingPerm struct {
 	confirmSudo  bool   // true after user has confirmed the sudo prompt (entering password phase)
 }
 
-
 type streamState struct {
 	cancel context.CancelFunc
 }
@@ -308,6 +307,7 @@ type toolExecState struct {
 	cancel   context.CancelFunc
 	active   bool
 	toolName string
+	toolID   string
 	title    string
 	label    string
 }
@@ -429,44 +429,44 @@ type model struct {
 	dotenvInput  textinput.Model
 	spinner      spinner.Model
 
-	messages             []llm.Message
-	chatInput            textarea.Model
-	chatViewport         viewport.Model
-	stableContent        string
-	stableMsgCount       int
-	msgRenders           []*string
-	isStreaming          bool
-	stickToBottom        bool
-	streamingContent     *strings.Builder
-	lastStreamRender     time.Time
-	reasoning            reasoningState
-	streamState          *streamState
-	retry                retryState
-	toolExec             *toolExecState
-	toolQueue            []llm.ToolCall
-	cancelRequested      bool
-	queuedMessage        string
-	selection            textSelection
-	lastClick            clickTracker
-	toast                *toastMsg
-	toastSeq             int
-	suggestions          suggestionState
-	fileList             []string
-	filesCached          bool
-	lastDateMessage      string
+	messages               []llm.Message
+	chatInput              textarea.Model
+	chatViewport           viewport.Model
+	stableContent          string
+	stableMsgCount         int
+	msgRenders             []*string
+	isStreaming            bool
+	stickToBottom          bool
+	streamingContent       *strings.Builder
+	lastStreamRender       time.Time
+	reasoning              reasoningState
+	streamState            *streamState
+	retry                  retryState
+	toolExec               *toolExecState
+	toolQueue              []llm.ToolCall
+	cancelRequested        bool
+	queuedMessage          string
+	selection              textSelection
+	lastClick              clickTracker
+	toast                  *toastMsg
+	toastSeq               int
+	suggestions            suggestionState
+	fileList               []string
+	filesCached            bool
+	lastDateMessage        string
 	cachedSystemPrompt     string
 	transcriptCacheContent string
 	transcriptCacheUpTo    int
 	transcriptCachedKey    string
 	history                []string
-	historyIndex         int
-	historyDraft         string
-	historyLoadedValue   string
-	windowTitle          string
-	showThemePicker      bool
-	themePickerCursor    int
-	themePickerOrigTheme ui.Theme
-	themePickerOrigName  string
+	historyIndex           int
+	historyDraft           string
+	historyLoadedValue     string
+	windowTitle            string
+	showThemePicker        bool
+	themePickerCursor      int
+	themePickerOrigTheme   ui.Theme
+	themePickerOrigName    string
 
 	showReasoningPicker   bool
 	reasoningPickerCursor int
@@ -490,6 +490,7 @@ type model struct {
 	workingMsg          string
 	workingMsgIndex     int
 	workingSpinnerIdx   int
+	workingAnimStart    time.Time
 
 	telemetryEnabled   bool
 	updateAvailable    bool

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -35,7 +34,7 @@ func RunBash(ctx context.Context, command string, timeout int, maxOutputChars in
 
 	var stdout, stderr bytes.Buffer
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd := newBashCommand(ctx, command)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 

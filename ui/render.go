@@ -52,7 +52,7 @@ func RenderUnifiedToolCard(t Theme, tc llm.ToolCall, resultContent string, width
 		}
 	}
 
-	header := renderToolHeader(t, accent)
+	header := renderToolHeader(t, accent, "")
 	content := header
 	if body.Len() > 0 {
 		content += "\n" + body.String()
@@ -110,8 +110,10 @@ func renderReadFileLine(t Theme, args map[string]interface{}, resultContent stri
 	return b.String()
 }
 
-// RenderToolCall renders a tool invocation as a bordered card.
-func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
+// RenderToolCall renders a tool invocation as a bordered card. busyGlyph, when
+// non-empty, replaces the accent icon in the header — the transcript uses it to
+// weave the working spinner into a run_bash card while the command runs.
+func RenderToolCall(t Theme, tc llm.ToolCall, width int, busyGlyph string) string {
 	accent := t.ToolAccentFor(tc.Function.Name)
 	args := parseToolArgs(tc.Function.Arguments)
 
@@ -133,7 +135,7 @@ func RenderToolCall(t Theme, tc llm.ToolCall, width int) string {
 		renderGenericArgs(&body, t, args)
 	}
 
-	header := renderToolHeader(t, accent)
+	header := renderToolHeader(t, accent, busyGlyph)
 	content := header
 	if body.Len() > 0 {
 		content += "\n" + body.String()
@@ -155,7 +157,7 @@ func RenderToolResult(t Theme, toolName, content string, width int, isError bool
 	accent := t.ToolAccentFor(toolName)
 
 	var body strings.Builder
-	body.WriteString(renderToolHeader(t, accent))
+	body.WriteString(renderToolHeader(t, accent, ""))
 
 	preview := toolResultPreview(content, toolName)
 	if preview != "" {
@@ -377,7 +379,7 @@ func RenderPermissionPrompt(t Theme, p PermPrompt) (string, int) {
 
 	// Render the tool call header only (always visible).
 	accent := t.ToolAccentFor(tc.Function.Name)
-	header := renderToolHeader(t, accent)
+	header := renderToolHeader(t, accent, "")
 
 	// Render the body separately so we can truncate it.
 	args := parseToolArgs(tc.Function.Arguments)
@@ -486,17 +488,21 @@ func RenderPermissionPrompt(t Theme, p PermPrompt) (string, int) {
 	return b.String(), totalLines
 }
 
-func renderToolHeader(t Theme, accent ToolAccent) string {
+func renderToolHeader(t Theme, accent ToolAccent, iconOverride string) string {
 	badge := lipgloss.NewStyle().
 		Background(lipgloss.Color(t.Base)).
 		Bold(true).
 		Foreground(lipgloss.Color(accent.Color))
 
+	glyph := accent.Icon
+	if iconOverride != "" {
+		glyph = iconOverride
+	}
 	icon := lipgloss.NewStyle().
 		Background(lipgloss.Color(t.Base)).
 		Foreground(lipgloss.Color(accent.Color)).
 		Bold(true).
-		Render(accent.Icon)
+		Render(glyph)
 
 	return "  " + icon + " " + badge.Render(accent.Label)
 }

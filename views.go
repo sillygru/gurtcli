@@ -1352,6 +1352,13 @@ func wrapFirstRest(text string, first, rest int) []string {
 
 var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
 
+// workingSpinnerStep is the fixed on-screen cadence of the working spinner.
+// Glyph frames are picked from elapsed wall-clock time since the animation
+// started, so this constant is also the *visible* speed — independently of how
+// fast or slow the model streams tokens (tick delivery can lag behind a burst
+// of stream messages without slowing the spinner).
+const workingSpinnerStep = 250 * time.Millisecond
+
 var workingMessages = []string{
 	"Fidgeting with files",
 	"Reticulating splines",
@@ -1383,7 +1390,7 @@ func (m model) spacerParts() (left, right string) {
 	if m.retry.active {
 		left = m.renderRetryStatus()
 	} else if m.toolExec != nil && m.toolExec.active {
-		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
+		idx := m.workingFrameIdx()
 		spinner := workingSpinnerFrames[idx]
 		label := m.toolExec.label
 		if label == "" {
@@ -1391,7 +1398,7 @@ func (m model) spacerParts() (left, right string) {
 		}
 		left = m.theme.WorkingStatus.Render(spinner + " " + label)
 	} else if m.isStreaming && m.workingMsg != "" {
-		idx := m.workingSpinnerIdx % len(workingSpinnerFrames)
+		idx := m.workingFrameIdx()
 		spinner := workingSpinnerFrames[idx]
 		left = m.theme.WorkingStatus.Render(spinner + " " + m.workingMsg)
 	}

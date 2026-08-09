@@ -16,7 +16,7 @@ func TestRenderToolCallReadFile(t *testing.T) {
 			Arguments: `{"filePath":"src/main.go","offset":10,"limit":50}`,
 		},
 	}
-	out := RenderToolCall(theme, tc, 80)
+	out := RenderToolCall(theme, tc, 80, "")
 	if !strings.Contains(out, "Read") {
 		t.Fatalf("expected Read label, got: %q", out)
 	}
@@ -34,7 +34,7 @@ func TestRenderToolCallRunBash(t *testing.T) {
 			Arguments: `{"command":"go test ./...","title":"Run tests"}`,
 		},
 	}
-	out := RenderToolCall(theme, tc, 80)
+	out := RenderToolCall(theme, tc, 80, "")
 	if !strings.Contains(out, "Shell") {
 		t.Fatalf("expected Shell label, got: %q", out)
 	}
@@ -46,16 +46,45 @@ func TestRenderToolCallRunBash(t *testing.T) {
 	}
 }
 
+func TestRenderToolCallRunBashBusyGlyph(t *testing.T) {
+	t.Parallel()
+	theme := DefaultTheme()
+	tc := llm.ToolCall{
+		Function: llm.ToolCallFunction{
+			Name:      "run_bash",
+			Arguments: `{"command":"run-tests --watch","title":"Watch tests"}`,
+		},
+	}
+
+	// Quiet render uses the static shell icon.
+	quiet := RenderToolCall(theme, tc, 80, "")
+	if !strings.Contains(quiet, "$") {
+		t.Fatalf("expected static $ icon, got: %q", quiet)
+	}
+
+	// Busy render swaps the header icon for the spinner frame.
+	busy := RenderToolCall(theme, tc, 80, "◓")
+	if strings.Contains(busy, "$") {
+		t.Fatalf("busy render must not keep the static $ icon, got: %q", busy)
+	}
+	if !strings.Contains(busy, "◓") {
+		t.Fatalf("expected the spinner frame in the busy card, got: %q", busy)
+	}
+	if !strings.Contains(busy, "Watch tests") {
+		t.Fatalf("expected title retained, got: %q", busy)
+	}
+}
+
 func TestRenderToolCallEditFile(t *testing.T) {
 	t.Parallel()
 	theme := DefaultTheme()
 	tc := llm.ToolCall{
 		Function: llm.ToolCallFunction{
-			Name: "edit_file",
+			Name:      "edit_file",
 			Arguments: `{"filePath":"foo.go","oldString":"old\nline","newString":"new\nline"}`,
 		},
 	}
-	out := RenderToolCall(theme, tc, 80)
+	out := RenderToolCall(theme, tc, 80, "")
 	if !strings.Contains(out, "Edit") {
 		t.Fatalf("expected Edit label, got: %q", out)
 	}

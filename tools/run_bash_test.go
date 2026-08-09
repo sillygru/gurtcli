@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUtf8Tail(t *testing.T) {
@@ -94,5 +96,37 @@ func TestRunBashUnderLimitNotTruncated(t *testing.T) {
 	}
 	if result != "short output" {
 		t.Errorf("expected untruncated output, got %q", result)
+	}
+}
+
+// Interrupting a run_bash must kill the whole process tree, not just the sh
+// wrapper. The command sleeps before touching the marker, so the marker
+// existing after cancel means an orphaned child outlived the interrupt.
+func TestRunBashCancellationKillsProcessGroup(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "interrupted-marker")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunBash(ctx, fmt.Sprintf("sleep 30 && touch %s", marker), 30000, 100, "", "")
+		done <- err
+	}()
+
+	// Let the shell spawn before interrupting it.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("RunBash returned nil after the context was cancelled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunBash did not return after cancel — the process is still running")
+	}
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Error("marker exists — a child process survived the interrupt")
 	}
 }
