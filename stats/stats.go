@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/sillygru/gurtcli/llm"
 	"github.com/sillygru/gurtcli/sessions"
@@ -21,6 +22,8 @@ type Stats struct {
 	UserMessages        int
 	APICalls            int
 	Days                int
+	CurrentStreak       int
+	HighestStreak       int
 	InputTokens         int
 	OutputTokens        int
 	ReasoningTokens     int
@@ -33,6 +36,8 @@ func Compute() (*Stats, error) {
 	var (
 		totalSessions        int
 		totalDays            int
+		currentStreak        int
+		highestStreak        int
 		userMsgs             int
 		apiCalls             int
 		inputTokens          int
@@ -57,6 +62,12 @@ func Compute() (*Stats, error) {
 		if err := db.QueryRow("SELECT COUNT(DISTINCT DATE(created_at)) FROM sessions").Scan(&totalDays); err != nil {
 			return fmt.Errorf("counting days: %w", err)
 		}
+
+		cur, high, sErr := computeStreaks(db)
+		if sErr != nil {
+			return fmt.Errorf("computing streaks: %w", sErr)
+		}
+		currentStreak, highestStreak = cur, high
 
 		if err := db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM sessions").Scan(&inputTokens); err != nil {
 			return fmt.Errorf("summing input tokens: %w", err)
@@ -104,6 +115,8 @@ func Compute() (*Stats, error) {
 		UserMessages:       userMsgs,
 		APICalls:           apiCalls,
 		Days:               totalDays,
+		CurrentStreak:      currentStreak,
+		HighestStreak:      highestStreak,
 		InputTokens:        inputTokens,
 		OutputTokens:       outputTokens,
 		ReasoningTokens:    reasoningTokens,
@@ -111,6 +124,75 @@ func Compute() (*Stats, error) {
 		Tools:              tools,
 		CacheHitTokens:     cacheHitTokens,
 	}, nil
+}
+
+// computeStreaks returns the current and longest runs of consecutive days
+// that had at least one session. A day counts when any session was created
+// or updated that day (so sessions created before midnight and resumed after
+// still count for both days).
+func computeStreaks(db *sql.DB) (current, highest int, err error) {
+	rows, err := db.Query("SELECT DISTINCT DATE(created_at) FROM sessions")
+	if err != nil {
+		return 0, 0, fmt.Errorf("querying session days: %w", err)
+	}
+	defer rows.Close()
+
+	var days []time.Time
+	for rows.Next() {
+		var dayStr string
+		if err := rows.Scan(&dayStr); err != nil {
+			continue
+		}
+		day, err := time.Parse("2006-01-02", dayStr)
+		if err != nil {
+			continue
+		}
+		days = append(days, day)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, fmt.Errorf("reading session days: %w", err)
+	}
+
+	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
+	if len(days) == 0 {
+		return 0, 0, nil
+	}
+
+	run := 1
+	highest = 1
+	prev := days[0]
+	for _, day := range days[1:] {
+		if day.Sub(prev) == 24*time.Hour {
+			run++
+			if run > highest {
+				highest = run
+			}
+		} else {
+			run = 1
+		}
+		prev = day
+	}
+
+	// Current streak: consecutive days ending today. If the last active day is
+	// before today, the streak is broken even if no session ran today. A run
+	// ending yesterday still counts while today is incomplete.
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	last := days[len(days)-1]
+	if last.Before(today) && last.Add(24*time.Hour).Before(today) {
+		return 0, highest, nil
+	}
+
+	current = 1
+	prev = last
+	for i := len(days) - 2; i >= 0; i-- {
+		if prev.Sub(days[i]) == 24*time.Hour {
+			current++
+			prev = days[i]
+		} else {
+			break
+		}
+	}
+	return current, highest, nil
 }
 
 func countMessagesAndTools(db *sql.DB) (userMsgs, apiCalls int, toolCounts map[string]int, reasoningChars, assistantContentChars int, err error) {

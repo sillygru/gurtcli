@@ -311,6 +311,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent = new(strings.Builder)
 		}
 		m.streamingContent.WriteString(msg.content)
+		m = m.syncWorkingMsg()
 		if time.Since(m.lastStreamRender) > 50*time.Millisecond {
 			m.lastStreamRender = time.Now()
 			// buildChatContent already includes renderStreamingPart, so we
@@ -335,6 +336,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.content = new(strings.Builder)
 		}
 		m.reasoning.content.WriteString(msg.content)
+		m = m.syncWorkingMsg()
 		if !m.reasoning.active {
 			m.reasoning.active = true
 			m.reasoning.visible = m.reasoning.mode.visibleWhileActive()
@@ -511,16 +513,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(startChatStreamCmd(m), workingTickCmd())
 
 	case workingTickMsg:
-		m.workingSpinnerIdx++
 		if m.retry.active {
 			// The retry countdown redraws off this tick, so keep it running
 			// even though nothing is streaming yet.
 			return m, workingTickCmd()
 		}
 		if m.isStreaming || m.toolExec.active {
-			if m.workingSpinnerIdx%40 == 0 {
-				m.workingMsg = workingMessages[rand.Intn(len(workingMessages))]
-			}
+			m = m.syncWorkingMsg()
 			// Refresh the transcript while a shell command runs so the spinner
 			// woven into its tool card advances. The finalized prefix comes
 			// from the render cache, so this is cheap; only the tail that holds
@@ -2134,6 +2133,24 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		isCommand := strings.HasPrefix(input, "/")
 
+		// Slash messages that are not registered commands never reach the LLM
+		// and are not queued: surface the unknown command where the user is
+		// already looking and drop the input.
+		if isCommand {
+			fields := strings.Fields(input)
+			if len(fields) > 0 && !isKnownSlashCommand(strings.TrimPrefix(fields[0], "/")) {
+				m.chatInput.Reset()
+				m.historyLoadedValue = ""
+				m = m.adjustViewportHeight()
+				m.toastSeq++
+				m.toast = &toastMsg{
+					text: fmt.Sprintf("Unknown command: %s. Type /help for available commands.", fields[0]),
+					id:   m.toastSeq,
+				}
+				return m, toastTimeoutCmd(m.toastSeq)
+			}
+		}
+
 		if m.isStreaming || (m.toolExec != nil && m.toolExec.cancel != nil) {
 			if isCommand {
 				cmd := strings.TrimPrefix(strings.Fields(input)[0], "/")
@@ -2894,6 +2911,16 @@ func findMarker(lines []string, contentLine, radius int, markers ...string) int 
 		}
 	}
 	return -1
+}
+
+// isKnownSlashCommand reports whether name is a registered slash command.
+func isKnownSlashCommand(name string) bool {
+	for _, sc := range slashCommands {
+		if sc.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
@@ -3716,7 +3743,7 @@ func (m model) resetStreamingState() model {
 // anchor, so the animation runs at a fixed rate no matter how fast or slow
 // tokens arrive from the model.
 func (m model) startWorkingAnim() model {
-	m.workingSpinnerIdx = 0
+	m.workingMsgSlot = 0
 	m.workingAnimStart = time.Now()
 	return m
 }
@@ -3735,11 +3762,56 @@ func (m model) workingFrameIdx() int {
 	return int(elapsed/workingSpinnerStep) % len(workingSpinnerFrames)
 }
 
+// randomWorkingMessage picks a fresh message from the pool, never repeating the
+// one it is currently showing (unless the pool holds a single message).
+func randomWorkingMessage(exclude string) string {
+	if len(workingMessages) <= 1 {
+		return workingMessages[0]
+	}
+	i := rand.Intn(len(workingMessages))
+	for workingMessages[i] == exclude {
+		i = (i + 1) % len(workingMessages)
+	}
+	return workingMessages[i]
+}
+
+// syncWorkingMsg advances the rotating status message to whatever wall-clock
+// slot the animation has reached. Only a slot transition picks a new message,
+// and the slot is derived from absolute elapsed time since the animation
+// started — not from how many ticks arrived. A model that streams a burst of
+// chunks (delaying tick delivery) or one that trickles tokens must not stretch
+// or compress the working cadence the way a tick counter would.
+func (m model) syncWorkingMsg() model {
+	if m.workingAnimStart.IsZero() {
+		return m
+	}
+	elapsed := time.Since(m.workingAnimStart)
+	if elapsed < 0 {
+		return m
+	}
+	slot := int(elapsed / workingMessageStep)
+	if slot <= m.workingMsgSlot {
+		return m
+	}
+	m.workingMsg = randomWorkingMessage(m.workingMsg)
+	m.workingMsgSlot = slot
+	return m
+}
+
 func (m model) replayQueuedMessage() (tea.Model, tea.Cmd) {
 	qmsg := m.queuedMessage
 	m.queuedMessage = ""
 
 	if strings.HasPrefix(qmsg, "/") {
+		fields := strings.Fields(qmsg)
+		if len(fields) > 0 && !isKnownSlashCommand(strings.TrimPrefix(fields[0], "/")) {
+			m.toastSeq++
+			m.toast = &toastMsg{
+				text: fmt.Sprintf("Unknown command: %s. Type /help for available commands.", fields[0]),
+				id:   m.toastSeq,
+			}
+			return m, toastTimeoutCmd(m.toastSeq)
+		}
 		return m.handleSlashCommand(qmsg)
 	}
 

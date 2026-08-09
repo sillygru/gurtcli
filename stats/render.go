@@ -71,11 +71,13 @@ func renderOverview(w io.Writer, s *Stats, inner int) {
 		{"User Messages", s.UserMessages},
 		{"API Calls", s.APICalls},
 		{"Days", s.Days},
+		{"Current streak", s.CurrentStreak},
+		{"Highest streak", s.HighestStreak},
 	}
 	for _, r := range rows {
 		label := r.label
 		val := formatInt(r.value)
-		fill := inner - runewidth.StringWidth(label) - runewidth.StringWidth(val) - 2
+		fill := inner - runewidth.StringWidth(label) - runewidth.StringWidth(val) - 1
 		if fill < 0 {
 			fill = 0
 		}
@@ -134,7 +136,7 @@ func renderTokenUsage(w io.Writer, s *Stats, inner int) {
 		val := formatInt(r.value)
 		pctStr := fmt.Sprintf("(%5.1f%%)", pctOf(r.value, r.denom))
 		content := fmt.Sprintf("%s  %s%s %s", label, r.color, val, pctStr)
-		fill := inner - runewidth.StringWidth(content)
+		fill := inner - visibleWidth(content)
 		if fill < 0 {
 			fill = 0
 		}
@@ -153,7 +155,7 @@ func renderTokenUsage(w io.Writer, s *Stats, inner int) {
 		strings.Repeat(" ", maxLabel-5),
 		teal, totalStr,
 	)
-	fill := inner - runewidth.StringWidth(content)
+	fill := inner - visibleWidth(content)
 	if fill < 0 {
 		fill = 0
 	}
@@ -186,7 +188,7 @@ func renderTools(w io.Writer, s *Stats, inner int) {
 	}
 	pctWidth := 8
 	minBar := 5
-	barArea := inner - maxName - maxCount - pctWidth - 4
+	barArea := inner - maxName - maxCount - pctWidth - 2
 	if barArea < minBar {
 		barArea = minBar
 	}
@@ -295,4 +297,25 @@ func guessWidth() int {
 		return w
 	}
 	return 80
+}
+
+// visibleWidth returns the display width of text ignoring ANSI escape
+// sequences, so fill padding aligns with what the terminal actually shows.
+func visibleWidth(s string) int {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			if r == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\033' {
+			inEscape = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return runewidth.StringWidth(b.String())
 }

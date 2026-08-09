@@ -488,8 +488,7 @@ type model struct {
 	contextCacheTokens  int
 	contextOutputTokens int
 	workingMsg          string
-	workingMsgIndex     int
-	workingSpinnerIdx   int
+	workingMsgSlot      int
 	workingAnimStart    time.Time
 
 	telemetryEnabled   bool

@@ -1359,6 +1359,12 @@ var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
 // of stream messages without slowing the spinner).
 const workingSpinnerStep = 250 * time.Millisecond
 
+// workingMessageStep is the fixed on-screen cadence of the rotating status
+// message. Like the spinner glyphs it is anchored to wall clock — the message
+// swaps when real time crosses each 10s slot since the animation started, so a
+// slow or bursty model can't change how fast the messages roll by.
+const workingMessageStep = 10 * time.Second
+
 var workingMessages = []string{
 	"Fidgeting with files",
 	"Reticulating splines",
