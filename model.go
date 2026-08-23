@@ -927,7 +927,7 @@ func initialModel(yolo bool, providerArg, modelArg string, reconfigure bool, for
 	} else {
 		key, _ := config.GetAPIKey(provider, customURL, savedEndpointName)
 		apiKey = key
-		if apiKey == "" {
+		if apiKey == "" && provider != llm.ProviderCustom {
 			dk, _ := config.GetDotenvKeys()
 			if len(dk) > 0 {
 				startState = stateDotenvPick
@@ -1357,7 +1357,7 @@ func (m model) Init() tea.Cmd {
 	}
 	if m.state == stateModelFetch && m.provider != "" {
 		cmds = append(cmds, m.spinner.Tick, m.fetchModelsCmd())
-	} else if m.state == stateChat && m.provider != "" && m.apiKey != "" {
+	} else if m.state == stateChat && m.provider != "" && (m.apiKey != "" || m.provider == llm.ProviderCustom) {
 		// Resuming into a saved session still refreshes model metadata from
 		// the models API so context windows and capabilities reflect the live
 		// source rather than only llmdetails.json.

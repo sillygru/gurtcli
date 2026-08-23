@@ -60,6 +60,54 @@ func hasDateSuffix(name string) bool {
 	return dateSuffixRegex.MatchString(name)
 }
 
+func isHomeKey(msg tea.KeyPressMsg) bool {
+	switch msg.Code {
+	case tea.KeyHome, tea.KeyKpHome:
+		return true
+	}
+	switch msg.String() {
+	case "home", "kp_home":
+		return true
+	}
+	return false
+}
+
+func isEndKey(msg tea.KeyPressMsg) bool {
+	switch msg.Code {
+	case tea.KeyEnd, tea.KeyKpEnd:
+		return true
+	}
+	switch msg.String() {
+	case "end", "kp_end":
+		return true
+	}
+	return false
+}
+
+func isPgUpKey(msg tea.KeyPressMsg) bool {
+	switch msg.Code {
+	case tea.KeyPgUp, tea.KeyKpPgUp:
+		return true
+	}
+	switch msg.String() {
+	case "pgup", "pageup", "kp_pgup", "kp_pageup":
+		return true
+	}
+	return false
+}
+
+func isPgDownKey(msg tea.KeyPressMsg) bool {
+	switch msg.Code {
+	case tea.KeyPgDown, tea.KeyKpPgDown:
+		return true
+	}
+	switch msg.String() {
+	case "pgdown", "pagedown", "pgdn", "kp_pgdown", "kp_pagedown", "kp_pgdn":
+		return true
+	}
+	return false
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -709,7 +757,7 @@ func (m model) updateWelcome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key != "" {
 			m.apiKey = key
 		}
-		if m.apiKey == "" {
+		if m.apiKey == "" && m.provider != llm.ProviderCustom {
 			m.state = stateAPIKeyInput
 			m.keyInput.Focus()
 			return m, nil
@@ -732,7 +780,7 @@ func (m model) updateWelcome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key != "" {
 		m.apiKey = key
 	}
-	if m.apiKey == "" {
+	if m.apiKey == "" && m.provider != llm.ProviderCustom {
 		m.state = stateAPIKeyInput
 		m.keyInput.Focus()
 		return m, nil
@@ -873,21 +921,25 @@ func (m model) currentModelInfo() llm.ModelInfo {
 }
 
 func (m model) updateCustomModePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up":
+	switch {
+	case msg.String() == "up":
 		m.customModeCursor--
 		if m.customModeCursor < 0 {
 			m.customModeCursor = 1
 		}
-	case "down":
+	case msg.String() == "down":
 		m.customModeCursor++
 		if m.customModeCursor > 1 {
 			m.customModeCursor = 0
 		}
-	case "esc":
+	case isHomeKey(msg), isPgUpKey(msg):
+		m.customModeCursor = 0
+	case isEndKey(msg), isPgDownKey(msg):
+		m.customModeCursor = 1
+	case msg.String() == "esc":
 		m.state = stateProviderPick
 		return m, nil
-	case "enter":
+	case msg.String() == "enter":
 		switch m.customModeCursor {
 		case 0:
 			m.customMode = customModeOneTime
@@ -994,6 +1046,11 @@ func (m model) updateAPIKeyInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	key := strings.TrimSpace(m.keyInput.Value())
 	if key == "" {
+		if m.provider == llm.ProviderCustom {
+			m.apiKey = ""
+			_ = config.DeleteAPIKey(m.provider, m.customURL, m.savedEndpointName)
+			return m.continueAfterAPIKey()
+		}
 		return m, nil
 	}
 	m.apiKey = key
@@ -1040,18 +1097,22 @@ func (m model) updateDotenvPrompt(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m model) updateDotenvPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	total := len(m.dotenvKeys) + 1
-	switch msg.String() {
-	case "up":
+	switch {
+	case msg.String() == "up":
 		m.dotenvPickCursor--
 		if m.dotenvPickCursor < 0 {
 			m.dotenvPickCursor = total - 1
 		}
-	case "down":
+	case msg.String() == "down":
 		m.dotenvPickCursor++
 		if m.dotenvPickCursor >= total {
 			m.dotenvPickCursor = 0
 		}
-	case "enter":
+	case isHomeKey(msg), isPgUpKey(msg):
+		m.dotenvPickCursor = 0
+	case isEndKey(msg), isPgDownKey(msg):
+		m.dotenvPickCursor = total - 1
+	case msg.String() == "enter":
 		if m.dotenvPickCursor < len(m.dotenvKeys) {
 			dk, err := config.GetDotenvKeys()
 			if err != nil {
@@ -1365,18 +1426,24 @@ func (m model) updateReasoningConfig(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m model) updateError(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	acts := m.errorActions()
-	switch msg.String() {
-	case "up":
+	switch {
+	case msg.String() == "up":
 		m.errChoice--
 		if m.errChoice < 0 {
 			m.errChoice = len(acts) - 1
 		}
-	case "down":
+	case msg.String() == "down":
 		m.errChoice++
 		if m.errChoice >= len(acts) {
 			m.errChoice = 0
 		}
-	case "enter":
+	case isHomeKey(msg), isPgUpKey(msg):
+		m.errChoice = 0
+	case isEndKey(msg), isPgDownKey(msg):
+		if len(acts) > 0 {
+			m.errChoice = len(acts) - 1
+		}
+	case msg.String() == "enter":
 		if m.provider == llm.ProviderCustom {
 			switch errorAction(m.errChoice) {
 			case errorRetry:
@@ -1522,19 +1589,25 @@ func toggleInList(list []string, item string) []string {
 func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Tool check/uncheck mode
 	if m.allowManageAdding && m.allowManageAddType == "tool" {
-		switch msg.String() {
-		case "up":
+		switch {
+		case msg.String() == "up":
 			if m.allowToolCheckCursor > 0 {
 				m.allowToolCheckCursor--
 			}
-		case "down":
+		case msg.String() == "down":
 			if m.allowToolCheckCursor < len(m.allowToolCheckItems)-1 {
 				m.allowToolCheckCursor++
 			}
-		case "enter", " ":
+		case isHomeKey(msg), isPgUpKey(msg):
+			m.allowToolCheckCursor = 0
+		case isEndKey(msg), isPgDownKey(msg):
+			if len(m.allowToolCheckItems) > 0 {
+				m.allowToolCheckCursor = len(m.allowToolCheckItems) - 1
+			}
+		case msg.String() == "enter", msg.String() == " ":
 			name := m.allowToolCheckItems[m.allowToolCheckCursor]
 			m.alwaysAllowTools = toggleInList(m.alwaysAllowTools, name)
-		case "esc":
+		case msg.String() == "esc":
 			saveConfig(m)
 			m.allowManageAdding = false
 			m.allowManageAddType = ""
@@ -1590,37 +1663,55 @@ func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		numCols = 1
 	}
 
-	switch msg.String() {
-	case "up":
+	switch {
+	case msg.String() == "up":
 		if m.allowManageCursor >= numCols {
 			m.allowManageCursor -= numCols
 		}
-	case "down":
+	case msg.String() == "down":
 		if m.allowManageCursor+numCols < len(cmds) {
 			m.allowManageCursor += numCols
 		}
-	case "left":
+	case isHomeKey(msg):
+		m.allowManageCursor = 0
+	case isEndKey(msg):
+		if len(cmds) > 0 {
+			m.allowManageCursor = len(cmds) - 1
+		}
+	case isPgUpKey(msg):
+		pageSize := numRows * numCols
+		m.allowManageCursor -= pageSize
+		if m.allowManageCursor < 0 {
+			m.allowManageCursor = 0
+		}
+	case isPgDownKey(msg):
+		pageSize := numRows * numCols
+		m.allowManageCursor += pageSize
+		if m.allowManageCursor >= len(cmds) {
+			m.allowManageCursor = len(cmds) - 1
+		}
+	case msg.String() == "left":
 		if m.allowManageCursor%numCols != 0 {
 			m.allowManageCursor--
 		}
-	case "right":
+	case msg.String() == "right":
 		if m.allowManageCursor%numCols != numCols-1 && m.allowManageCursor+1 < len(cmds) {
 			m.allowManageCursor++
 		}
-	case "t":
+	case msg.String() == "t":
 		m.allowManageAdding = true
 		m.allowManageAddType = "tool"
 		m.allowToolCheckItems = []string{"write_file", "edit_file", "delete_file"}
 		m.allowToolCheckCursor = 0
 		return m, nil
-	case "c":
+	case msg.String() == "c":
 		m.allowManageAdding = true
 		m.allowManageAddType = "command"
 		m.allowManageInput.Reset()
 		m.allowManageInput.Placeholder = "command prefix (e.g. npm, git push)"
 		m.allowManageInput.Focus()
 		return m, nil
-	case "d", "x":
+	case msg.String() == "d", msg.String() == "x":
 		if m.allowManageCursor >= 0 && m.allowManageCursor < len(cmds) {
 			m.alwaysAllowCommandPrefixes = append(cmds[:m.allowManageCursor], cmds[m.allowManageCursor+1:]...)
 			if m.allowManageCursor >= len(m.alwaysAllowCommandPrefixes) {
@@ -1632,7 +1723,7 @@ func (m model) updateAllowManage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			saveConfig(m)
 		}
 		return m, nil
-	case "esc":
+	case msg.String() == "esc":
 		m.state = stateChat
 		m.chatInput.Focus()
 		return m, nil
@@ -1732,8 +1823,8 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		tc := m.pendingPerm.toolCall
 		optionCount := len(ui.PermissionOptions(tc.Function.Name, "", m.pendingPerm.externalPath, m.pendingPerm.sudo))
 
-		switch msg.String() {
-		case "up":
+		switch {
+		case msg.String() == "up":
 			m.permCursor--
 			if m.permCursor < 0 {
 				m.permCursor = optionCount - 1
@@ -1744,7 +1835,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.permPatternInput.Blur()
 			}
 			return m, nil
-		case "down":
+		case msg.String() == "down":
 			m.permCursor++
 			if m.permCursor >= optionCount {
 				m.permCursor = 0
@@ -1755,18 +1846,32 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.permPatternInput.Blur()
 			}
 			return m, nil
-		case "pgup":
+		case isHomeKey(msg):
+			if tc.Function.Name == "run_bash" && (m.permCursor == 1 || m.permCursor == 2) && m.permPatternInput.Focused() {
+				var cmd tea.Cmd
+				m.permPatternInput, cmd = m.permPatternInput.Update(msg)
+				return m, cmd
+			}
+			return m.scrollPerm(-999999), nil
+		case isEndKey(msg):
+			if tc.Function.Name == "run_bash" && (m.permCursor == 1 || m.permCursor == 2) && m.permPatternInput.Focused() {
+				var cmd tea.Cmd
+				m.permPatternInput, cmd = m.permPatternInput.Update(msg)
+				return m, cmd
+			}
+			return m.scrollPerm(999999), nil
+		case isPgUpKey(msg):
 			return m.scrollPerm(-5), nil
-		case "pgdown":
+		case isPgDownKey(msg):
 			return m.scrollPerm(5), nil
-		case "esc":
+		case msg.String() == "esc":
 			m.pendingPerm = nil
 			m.permCursor = 0
 			m.permPatternInput.Blur()
 			m.chatInput.Focus()
 			m = m.adjustViewportHeight()
 			return m, nil
-		case "enter":
+		case msg.String() == "enter":
 			tc := m.pendingPerm.toolCall
 			if m.pendingPerm.origToolCall.ID != "" {
 				tc = m.pendingPerm.origToolCall
@@ -1956,8 +2061,8 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.showThemePicker {
-		switch msg.String() {
-		case "up":
+		switch {
+		case msg.String() == "up":
 			m.themePickerCursor--
 			if m.themePickerCursor < 0 {
 				m.themePickerCursor = len(ui.ThemeRegistry) - 1
@@ -1968,7 +2073,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.applyThemeToLists()
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			return m, nil
-		case "down":
+		case msg.String() == "down":
 			m.themePickerCursor++
 			if m.themePickerCursor >= len(ui.ThemeRegistry) {
 				m.themePickerCursor = 0
@@ -1979,7 +2084,45 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.applyThemeToLists()
 			m.chatViewport.SetContent(buildChatContentHighlighted(m))
 			return m, nil
-		case "enter":
+		case isHomeKey(msg):
+			m.themePickerCursor = 0
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		case isEndKey(msg):
+			m.themePickerCursor = len(ui.ThemeRegistry) - 1
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		case isPgUpKey(msg):
+			m.themePickerCursor -= 5
+			if m.themePickerCursor < 0 {
+				m.themePickerCursor = 0
+			}
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		case isPgDownKey(msg):
+			m.themePickerCursor += 5
+			if m.themePickerCursor >= len(ui.ThemeRegistry) {
+				m.themePickerCursor = len(ui.ThemeRegistry) - 1
+			}
+			entry := ui.ThemeRegistry[m.themePickerCursor]
+			m.theme = entry.NewFunc()
+			m.themeName = entry.Name
+			m.applyThemeToLists()
+			m.chatViewport.SetContent(buildChatContentHighlighted(m))
+			return m, nil
+		case msg.String() == "enter":
 			entry := ui.ThemeRegistry[m.themePickerCursor]
 			m.theme = entry.NewFunc()
 			m.themeName = entry.Name
@@ -1993,7 +2136,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatInput.Focus()
 			m = m.adjustViewportHeight()
 			return m, nil
-		case "esc":
+		case msg.String() == "esc":
 			m.theme = m.themePickerOrigTheme
 			m.themeName = m.themePickerOrigName
 			m.applyThemeToLists()
@@ -2008,20 +2151,26 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.showReasoningPicker {
 		// Unlike the theme picker there is no live preview: re-applying the
 		// mode rewrites every stored block, so it only happens on enter.
-		switch msg.String() {
-		case "up":
+		switch {
+		case msg.String() == "up":
 			m.reasoningPickerCursor--
 			if m.reasoningPickerCursor < 0 {
 				m.reasoningPickerCursor = len(reasoningModeRegistry) - 1
 			}
 			return m, nil
-		case "down":
+		case msg.String() == "down":
 			m.reasoningPickerCursor++
 			if m.reasoningPickerCursor >= len(reasoningModeRegistry) {
 				m.reasoningPickerCursor = 0
 			}
 			return m, nil
-		case "enter":
+		case isHomeKey(msg), isPgUpKey(msg):
+			m.reasoningPickerCursor = 0
+			return m, nil
+		case isEndKey(msg), isPgDownKey(msg):
+			m.reasoningPickerCursor = len(reasoningModeRegistry) - 1
+			return m, nil
+		case msg.String() == "enter":
 			// Expanding every block makes the transcript taller, which would
 			// otherwise leave someone who was reading the latest message parked
 			// partway up it. Measured before the content changes.
@@ -2037,7 +2186,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.chatViewport.GotoBottom()
 			}
 			return m, m.persistSessionCmd()
-		case "esc":
+		case msg.String() == "esc":
 			m.showReasoningPicker = false
 			m.chatInput.Focus()
 			m = m.adjustViewportHeight()
@@ -2046,20 +2195,38 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.suggestions.active && len(m.suggestions.items) > 0 && !m.isStreaming && m.pendingPerm == nil {
-		switch msg.String() {
-		case "up":
+		switch {
+		case msg.String() == "up":
 			m.suggestions.selected--
 			if m.suggestions.selected < 0 {
 				m.suggestions.selected = len(m.suggestions.items) - 1
 			}
 			return m, nil
-		case "down":
+		case msg.String() == "down":
 			m.suggestions.selected++
 			if m.suggestions.selected >= len(m.suggestions.items) {
 				m.suggestions.selected = 0
 			}
 			return m, nil
-		case "tab", "enter":
+		case isHomeKey(msg):
+			m.suggestions.selected = 0
+			return m, nil
+		case isEndKey(msg):
+			m.suggestions.selected = len(m.suggestions.items) - 1
+			return m, nil
+		case isPgUpKey(msg):
+			m.suggestions.selected -= 5
+			if m.suggestions.selected < 0 {
+				m.suggestions.selected = 0
+			}
+			return m, nil
+		case isPgDownKey(msg):
+			m.suggestions.selected += 5
+			if m.suggestions.selected >= len(m.suggestions.items) {
+				m.suggestions.selected = len(m.suggestions.items) - 1
+			}
+			return m, nil
+		case msg.String() == "tab", msg.String() == "enter":
 			sel := m.suggestions.selected
 			if sel >= 0 && sel < len(m.suggestions.items) {
 				if m.suggestions.isFiles {
@@ -2072,7 +2239,7 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.suggestions = suggestionState{}
 			return m.adjustViewportHeight(), nil
-		case "esc":
+		case msg.String() == "esc":
 			m.suggestions = suggestionState{}
 			return m.adjustViewportHeight(), nil
 		}
@@ -2242,12 +2409,28 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	var cmd tea.Cmd
-	switch msg.String() {
-	case "pgup", "pgdown", "home", "end":
-		m.chatViewport, _ = m.chatViewport.Update(msg)
+	if isHomeKey(msg) {
+		m.chatViewport.GotoTop()
 		m.stickToBottom = m.chatViewport.AtBottom()
+		return m, nil
 	}
+	if isEndKey(msg) {
+		m.chatViewport.GotoBottom()
+		m.stickToBottom = true
+		return m, nil
+	}
+	if isPgUpKey(msg) {
+		m.chatViewport.PageUp()
+		m.stickToBottom = m.chatViewport.AtBottom()
+		return m, nil
+	}
+	if isPgDownKey(msg) {
+		m.chatViewport.PageDown()
+		m.stickToBottom = m.chatViewport.AtBottom()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	m = m.updateSuggestions()
 	m = m.adjustViewportHeight()

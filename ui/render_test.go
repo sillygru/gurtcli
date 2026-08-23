@@ -23,6 +23,40 @@ func TestRenderToolCallReadFile(t *testing.T) {
 	if !strings.Contains(out, "main.go") {
 		t.Fatalf("expected path in output, got: %q", out)
 	}
+	if !strings.Contains(out, "(lines 10-59)") {
+		t.Fatalf("expected line range in output, got: %q", out)
+	}
+}
+
+func TestRenderReadFileRangeSuffix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args string
+		want string
+	}{
+		{"offset and limit", `{"filePath":"a.go","offset":10,"limit":50}`, "(lines 10-59)"},
+		{"offset only", `{"filePath":"a.go","offset":10}`, "(from line 10)"},
+		{"limit only", `{"filePath":"a.go","limit":50}`, "(first 50 lines)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := RenderToolCall(DefaultTheme(), llm.ToolCall{
+				Function: llm.ToolCallFunction{Name: "read_file", Arguments: tt.args},
+			}, 120, "")
+			if !strings.Contains(out, tt.want) {
+				t.Fatalf("expected %q in output, got: %q", tt.want, out)
+			}
+		})
+	}
+
+	full := RenderToolCall(DefaultTheme(), llm.ToolCall{
+		Function: llm.ToolCallFunction{Name: "read_file", Arguments: `{"filePath":"a.go"}`},
+	}, 80, "")
+	if strings.Contains(full, "lines") {
+		t.Fatalf("expected no range without offset/limit, got: %q", full)
+	}
 }
 
 func TestRenderToolCallRunBash(t *testing.T) {

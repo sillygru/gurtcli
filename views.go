@@ -199,7 +199,11 @@ func (m model) apiKeyView() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Brand.Render("  gurt"))
 	b.WriteString(m.gap())
-	b.WriteString(m.theme.Dim.Render(m.wrapProse(fmt.Sprintf("Enter your API key for %s:", llm.DisplayName(m.provider)))))
+	if m.provider == llm.ProviderCustom {
+		b.WriteString(m.theme.Dim.Render(m.wrapProse("Enter your API key (press enter to skip):")))
+	} else {
+		b.WriteString(m.theme.Dim.Render(m.wrapProse(fmt.Sprintf("Enter your API key for %s:", llm.DisplayName(m.provider)))))
+	}
 	b.WriteString(m.gap())
 	if m.customURL != "" {
 		b.WriteString(m.theme.Dim.Render(m.wrapProse("Endpoint: " + m.customURL)))
@@ -207,7 +211,11 @@ func (m model) apiKeyView() string {
 	}
 	b.WriteString(m.keyInput.View())
 	b.WriteString(m.gap())
-	b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • ctrl+c quit")))
+	if m.provider == llm.ProviderCustom {
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm (or skip) • ctrl+c quit")))
+	} else {
+		b.WriteString(m.theme.Dim.Render(m.wrapHelp("enter confirm • ctrl+c quit")))
+	}
 	return b.String()
 }
 

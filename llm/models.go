@@ -256,12 +256,18 @@ func fetchModelsOnce(ctx context.Context, url, provider, apiKey string) ([]Model
 
 	switch provider {
 	case ProviderAnthropic:
-		req.Header.Set("x-api-key", apiKey)
+		if apiKey != "" {
+			req.Header.Set("x-api-key", apiKey)
+		}
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case ProviderGemini:
-		req.Header.Set("x-goog-api-key", apiKey)
+		if apiKey != "" {
+			req.Header.Set("x-goog-api-key", apiKey)
+		}
 	default:
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}

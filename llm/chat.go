@@ -477,12 +477,16 @@ func StreamChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 
 	switch provider {
 	case ProviderAnthropic:
-		httpReq.Header.Set("x-api-key", apiKey)
+		if apiKey != "" {
+			httpReq.Header.Set("x-api-key", apiKey)
+		}
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 		// Enable prompt caching (GA as of 2025).
 		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	default:
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 
 	client := &http.Client{
@@ -872,11 +876,15 @@ func SimpleChatCompletion(ctx context.Context, provider, apiKey, baseURL string,
 
 	switch provider {
 	case ProviderAnthropic:
-		httpReq.Header.Set("x-api-key", apiKey)
+		if apiKey != "" {
+			httpReq.Header.Set("x-api-key", apiKey)
+		}
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	default:
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}

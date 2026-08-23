@@ -78,7 +78,7 @@ func renderReadFileLine(t Theme, args map[string]interface{}, resultContent stri
 	iconStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(accentColor)).Bold(true).Render(icon + " " + label)
 
 	head := "  " + iconStyled
-	tail := shortenPath(path)
+	tail := shortenPath(path) + t.ToolMeta.Render(readFileRangeSuffix(args))
 	errMsg := ""
 	if isError {
 		errMsg = "✕ " + firstLineTrimmed(resultContent, 60)
@@ -586,22 +586,20 @@ func renderWriteArgs(b *strings.Builder, t Theme, args map[string]interface{}) {
 	}
 }
 
-func renderReadArgs(b *strings.Builder, t Theme, args map[string]interface{}) {
-	if path, ok := args["filePath"].(string); ok && path != "" {
-		b.WriteString(t.ToolPath.Render("    " + shortenPath(path)))
-		b.WriteString("\n")
-	}
-
-	var meta []string
-	if offset, ok := args["offset"].(float64); ok && offset > 0 {
-		meta = append(meta, fmt.Sprintf("from line %d", int(offset)))
-	}
-	if limit, ok := args["limit"].(float64); ok && limit > 0 {
-		meta = append(meta, fmt.Sprintf("%d lines", int(limit)))
-	}
-	if len(meta) > 0 {
-		b.WriteString(t.ToolMeta.Render("    " + strings.Join(meta, " · ")))
-		b.WriteString("\n")
+// readFileRangeSuffix describes an explicit offset/limit request for read_file
+// so the transcript shows which slice of the file is being read.
+func readFileRangeSuffix(args map[string]interface{}) string {
+	offset, _ := args["offset"].(float64)
+	limit, _ := args["limit"].(float64)
+	switch {
+	case offset > 0 && limit > 0:
+		return fmt.Sprintf(" (lines %d-%d)", int(offset), int(offset)+int(limit)-1)
+	case offset > 0:
+		return fmt.Sprintf(" (from line %d)", int(offset))
+	case limit > 0:
+		return fmt.Sprintf(" (first %d lines)", int(limit))
+	default:
+		return ""
 	}
 }
 
