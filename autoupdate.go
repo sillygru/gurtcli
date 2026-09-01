@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,6 +119,10 @@ func compareVersions(a, b string) int {
 }
 
 func downloadRelease(ctx context.Context, version string) (string, error) {
+	if runtime.GOOS == "windows" {
+		return "", fmt.Errorf("self-update on Windows is not yet supported")
+	}
+
 	verStr := strings.TrimPrefix(version, "v")
 
 	var archiveName string
@@ -145,16 +150,32 @@ func downloadRelease(ctx context.Context, version string) (string, error) {
 		return "", fmt.Errorf("download failed: %s returned %d", downloadURL, resp.StatusCode)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "gurtcli-update-*")
+	tmpDir, err := createUpdateTempDir()
 	if err != nil {
 		return "", fmt.Errorf("creating temp dir: %w", err)
 	}
 
-	if runtime.GOOS == "windows" {
-		return "", fmt.Errorf("self-update on Windows is not yet supported")
+	path, err := extractTarGz(resp.Body, tmpDir)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
 	}
 
-	return extractTarGz(resp.Body, tmpDir)
+	return path, nil
+}
+
+func createUpdateTempDir() (string, error) {
+	if execPath, err := os.Executable(); err == nil {
+		if execPath, err = filepath.EvalSymlinks(execPath); err == nil {
+			dir := filepath.Dir(execPath)
+			if dir != "" {
+				if tmpDir, err := os.MkdirTemp(dir, ".gurtcli-update-*"); err == nil {
+					return tmpDir, nil
+				}
+			}
+		}
+	}
+	return os.MkdirTemp("", "gurtcli-update-*")
 }
 
 func extractTarGz(r io.Reader, destDir string) (string, error) {
@@ -198,6 +219,60 @@ func extractTarGz(r io.Reader, destDir string) (string, error) {
 	return "", fmt.Errorf("binary not found in archive")
 }
 
+func isCrossDeviceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EXDEV) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "invalid cross-device link") || strings.Contains(msg, "cross-device link")
+}
+
+func copyFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening source: %w", err)
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("creating destination: %w", err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return fmt.Errorf("copying file: %w", err)
+	}
+
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return fmt.Errorf("syncing file: %w", err)
+	}
+
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("closing destination: %w", err)
+	}
+
+	if err := os.Chmod(dst, perm); err != nil {
+		return fmt.Errorf("chmod destination: %w", err)
+	}
+
+	return nil
+}
+
+func cleanupUpdateTempDir(tempPath string) {
+	dir := filepath.Dir(tempPath)
+	base := filepath.Base(dir)
+	if strings.HasPrefix(base, "gurtcli-update-") || strings.HasPrefix(base, ".gurtcli-update-") {
+		os.RemoveAll(dir)
+	} else {
+		os.Remove(tempPath)
+	}
+}
+
 func swapBinary(tempPath string) error {
 	execPath, err := os.Executable()
 	if err != nil {
@@ -210,24 +285,62 @@ func swapBinary(tempPath string) error {
 	}
 
 	oldPath := execPath + ".old"
+	// Ensure temp dir is cleaned even on failure (avoid leaking /tmp dirs).
+	defer cleanupUpdateTempDir(tempPath)
+
+	// Backup current binary. This is same-directory so Rename should succeed,
+	// but handle cross-device defensively.
+	backupViaRename := true
 	if err := os.Rename(execPath, oldPath); err != nil {
-		return fmt.Errorf("backing up current binary: %w", err)
+		if !isCrossDeviceError(err) {
+			return fmt.Errorf("backing up current binary: %w", err)
+		}
+		if err := copyFile(execPath, oldPath, 0755); err != nil {
+			return fmt.Errorf("backing up current binary: %w", err)
+		}
+		backupViaRename = false
 	}
 
+	restore := func() {
+		if backupViaRename {
+			os.Rename(oldPath, execPath)
+		} else {
+			// Backup was a copy, so oldPath and execPath coexist. Restore via copy
+			// if Rename fails (should be same device, but be defensive).
+			if err := os.Rename(oldPath, execPath); err != nil {
+				copyFile(oldPath, execPath, 0755)
+			}
+		}
+	}
+
+	// Move new binary into place, handling cross-device (e.g. /tmp vs /home).
 	if err := os.Rename(tempPath, execPath); err != nil {
-		os.Rename(oldPath, execPath)
-		return fmt.Errorf("replacing binary: %w", err)
+		if !isCrossDeviceError(err) {
+			restore()
+			return fmt.Errorf("replacing binary: %w", err)
+		}
+		// Cross-device: copy to a staging file in the same dir then atomically rename.
+		staging := execPath + ".new"
+		os.Remove(staging)
+		if err := copyFile(tempPath, staging, 0755); err != nil {
+			os.Remove(staging)
+			restore()
+			return fmt.Errorf("replacing binary: %w", err)
+		}
+		if err := os.Rename(staging, execPath); err != nil {
+			os.Remove(staging)
+			restore()
+			return fmt.Errorf("replacing binary: %w", err)
+		}
 	}
 
 	if err := os.Chmod(execPath, 0755); err != nil {
-		os.Rename(execPath, oldPath)
-		os.Rename(oldPath, execPath)
+		restore()
 		return fmt.Errorf("chmod binary: %w", err)
 	}
 
 	if err := syscall.Exec(execPath, os.Args, os.Environ()); err != nil {
-		os.Rename(execPath, oldPath)
-		os.Rename(oldPath, execPath)
+		restore()
 		return fmt.Errorf("restarting: %w", err)
 	}
 
@@ -244,6 +357,14 @@ func cleanOldBinary() {
 		return
 	}
 	os.Remove(execPath + ".old")
+	os.Remove(execPath + ".new")
+	dir := filepath.Dir(execPath)
+	for _, pat := range []string{".gurtcli-update-*", "gurtcli-update-*"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, pat))
+		for _, m := range matches {
+			os.RemoveAll(m)
+		}
+	}
 }
 
 func checkForUpdateCmd() tea.Cmd {
