@@ -143,7 +143,7 @@ func Definitions(maxOutputChars int) []llm.Tool {
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "read_file",
-				Description: "Read a file and return its content with line numbers, prefixed by a header showing the total line count. Use offset and limit to read specific sections of large files instead of loading the whole thing.",
+				Description: "Read a file and return its content with line numbers, prefixed by a header showing the total line count. Use offset and limit to read specific sections of large files instead of loading the whole thing; a read cut short by limit ends with a marker stating how many lines you got and how to get the rest.",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
@@ -174,7 +174,7 @@ func Definitions(maxOutputChars int) []llm.Tool {
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "edit_file",
-				Description: "Replace an exact string match in a file with new text. Fails cleanly if the old string is not found or matches more than once; when it appears multiple times, include surrounding context to make the match unique. Prefer this over write_file for targeted changes.",
+				Description: "Replace an exact string match in a file with new text. Fails cleanly if the old string is not found or matches more than once; when it appears multiple times, include surrounding context to make the match unique. A not-found result usually means the file changed since you read it: re-read and retry. Prefer this over write_file for targeted changes.",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
@@ -204,7 +204,7 @@ func Definitions(maxOutputChars int) []llm.Tool {
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "run_bash",
-				Description: fmt.Sprintf("Execute a shell command via sh -c and return its output. Captures both stdout and stderr. Timeout defaults to 30000ms (max 300000ms). Output larger than %d characters keeps the tail (errors and summaries usually sit at the end) and saves the full output to a file whose path is returned — use read_file to load the rest. Failures are returned as 'Error: ...' text. Use this to build, test, lint, or run shell utilities.", maxOutputChars),
+				Description: fmt.Sprintf("Execute a shell command via sh -c and return its output. Captures both stdout and stderr. Timeout defaults to 30000ms (max 300000ms). Output longer than %d characters is trimmed to the tail (errors and summaries usually sit at the end) and the full output is saved to a file whose path is returned — use read_file to load the rest. A non-zero exit is normal: it returns with status FAILED and the command's output in the body. Use this to build, test, lint, or run shell utilities.", maxOutputChars),
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {

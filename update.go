@@ -1888,10 +1888,15 @@ func (m model) handleChatMessage(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 			name := tc.Function.Name
 			deny := func() (tea.Model, tea.Cmd) {
+				// A denial is a failed operation like any other, so it uses the
+				// same status envelope as tool failures. The model must be able
+				// to tell "the user said no" apart from "this produced no
+				// output", or it will retry or re-derive a blocked step.
 				m.messages = append(m.messages, llm.Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
-					Content:    "User denied this operation.",
+					Content:    "status: FAILED\n\nUser denied this operation. Do not retry this call. Either use an alternative that achieves the same goal, or explain to the user what you need and why.",
+					IsError:    true,
 				})
 				m.toolCallCycle = 0
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))
@@ -2499,15 +2504,32 @@ func (m model) executeNextTool() (tea.Model, tea.Cmd) {
 		if ctx.Err() != nil {
 			return nil
 		}
-		content := result
-		if content == "" && err == nil {
-			content = "(no output)"
-		}
+		// Every tool result carries an explicit, machine-checkable status
+		// header. This is the in-band half of the fix for post-tool-failure
+		// fabrication: the envelope must never let a truncated, empty, or
+		// failed result read as a clean success.
+		var content string
 		if err != nil {
-			content = fmt.Sprintf("Error: %v", err)
+			content = fmt.Sprintf("%s\n\n%s", toolResultHeader(false), err.Error())
+		} else {
+			body := result
+			if body == "" {
+				body = "(no output)"
+			}
+			content = fmt.Sprintf("%s\n\n%s", toolResultHeader(true), body)
 		}
 		return toolResultMsg{toolCallID: tc.ID, content: content, isError: err != nil}
 	})
+}
+
+// toolResultHeader returns the first line of every tool result. It is a fixed
+// string per outcome, never parameterized with model or run state, so it stays
+// byte-identical across requests and does not break the cached prefix.
+func toolResultHeader(ok bool) string {
+	if ok {
+		return "status: OK"
+	}
+	return "status: FAILED"
 }
 
 // allowBashPattern adds the command pattern from a run_bash tool call to the
@@ -2583,7 +2605,8 @@ func (m model) processToolCalls(tcs []llm.ToolCall) (tea.Model, tea.Cmd) {
 				m.messages = append(m.messages, llm.Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
-					Content:    "sudo commands are not allowed in YOLO mode",
+					Content:    "status: FAILED\n\nsudo commands are not allowed in YOLO mode. Reissue the command without sudo, or tell the user why it needs elevated privileges.",
+					IsError:    true,
 				})
 				m.toolCallCycle = 0
 				m.chatViewport.SetContent(buildChatContentHighlighted(m))

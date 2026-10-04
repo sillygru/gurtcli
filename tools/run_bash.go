@@ -52,28 +52,51 @@ func RunBash(ctx context.Context, command string, timeout int, maxOutputChars in
 	}
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return b.String(), fmt.Errorf("command timed out after %dms", timeout)
-	}
-
-	if err != nil {
-		exitErr := ""
-		if b.Len() > 0 {
-			exitErr = fmt.Sprintf("\n%s", b.String())
+		out := b.String()
+		if len(out) > maxOutputChars {
+			out = fmt.Sprintf(
+				"[output exceeded %d characters; showing the tail]\n\n%s",
+				maxOutputChars, utf8Tail(out, maxOutputChars),
+			)
 		}
-		return b.String(), fmt.Errorf("command failed: %w%s", err, exitErr)
+		if out == "" {
+			return out, fmt.Errorf("command timed out after %dms", timeout)
+		}
+		return out, fmt.Errorf("command timed out after %dms\n\n%s", timeout, out)
 	}
 
 	result := b.String()
 
-	if len(result) > maxOutputChars && sessionID != "" && outputsDir != "" {
+	// Bound the output on the failure path too. Previously only successful
+	// commands were truncated, so a command that failed after emitting 5MB
+	// (a stack trace, a full test run) returned all of it, and the model then
+	// reasoned over a wall of text it never needed.
+	if len(result) > maxOutputChars {
 		savedPath, saveErr := saveLargeOutput(result, sessionID, outputsDir)
-		if saveErr == nil {
-			truncated := utf8Tail(result, maxOutputChars)
+		if saveErr != nil {
+			savedPath = ""
+		}
+		if savedPath != "" {
 			result = fmt.Sprintf(
-				"Output > %d characters, saved to %s (use read_file to load it). Showing the tail:\n\n%s",
-				maxOutputChars, savedPath, truncated,
+				"[output exceeded %d characters, full output saved to %s (use read_file to load it); showing the tail]\n\n%s",
+				maxOutputChars, savedPath, utf8Tail(result, maxOutputChars),
+			)
+		} else {
+			result = fmt.Sprintf(
+				"[output exceeded %d characters and could not be saved to disk; showing the tail]\n\n%s",
+				maxOutputChars, utf8Tail(result, maxOutputChars),
 			)
 		}
+	}
+
+	if err != nil {
+		// The harness drops the separate return value when err != nil, so the
+		// command's output must be carried inside the error or the model never
+		// sees why it failed.
+		if result == "" {
+			return result, fmt.Errorf("command failed: %w", err)
+		}
+		return result, fmt.Errorf("command failed: %w\n\n%s", err, result)
 	}
 
 	return result, nil

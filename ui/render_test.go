@@ -207,3 +207,51 @@ func TestToolAccentForUnknown(t *testing.T) {
 		t.Fatalf("unexpected accent: %+v", a)
 	}
 }
+
+// The status line is a protocol marker for the model, not content for the
+// user. It must be stripped from the rendered preview along with the blank
+// line that follows it.
+func TestToolResultPreviewStripsStatusHeader(t *testing.T) {
+	got := toolResultPreview("status: OK\n\nhello world", "run_bash")
+	if got != "hello world" {
+		t.Errorf("status header not stripped, got %q", got)
+	}
+
+	got = toolResultPreview("status: FAILED\n\ncommand failed: exit 1", "run_bash")
+	if got != "command failed: exit 1" {
+		t.Errorf("failed status header not stripped, got %q", got)
+	}
+}
+
+// A result that is nothing but the status line must render as empty rather than
+// as a lone marker.
+func TestToolResultPreviewStripsHeaderOnlyResult(t *testing.T) {
+	if got := toolResultPreview("status: OK\n\n", "run_bash"); got != "" {
+		t.Errorf("expected empty preview for a bodyless result, got %q", got)
+	}
+}
+
+// Content that merely starts with the word "status" but is not the header must
+// survive untouched.
+func TestToolResultPreviewKeepsNonHeaderStatusLines(t *testing.T) {
+	if got := toolResultPreview("status of the build: ok", "run_bash"); got != "status of the build: ok" {
+		t.Errorf("non-header line was stripped, got %q", got)
+	}
+}
+
+// Truncation and trailing-line caps must still apply after the header is
+// stripped, and the "more lines" notice must remain the last thing shown.
+func TestToolResultPreviewStillTruncatesAfterStripping(t *testing.T) {
+	body := make([]string, 0, maxBashResultLines+5)
+	body = append(body, "status: OK", "")
+	for i := 0; i < maxBashResultLines+5; i++ {
+		body = append(body, "line")
+	}
+	got := toolResultPreview(strings.Join(body, "\n"), "run_bash")
+	if !strings.Contains(got, "more lines") {
+		t.Errorf("expected the more-lines notice, got %q", got)
+	}
+	if strings.Contains(got, ToolResultStatusHeader) {
+		t.Errorf("status header leaked into a truncated preview: %q", got)
+	}
+}

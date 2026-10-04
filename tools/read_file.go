@@ -57,5 +57,14 @@ func ReadFile(workspaceRoot, filePath string, offset, limit int, allowedExternal
 		fmt.Fprintf(&b, "%d: %s\n", start+i+1, line)
 	}
 
+	// State the truncation explicitly. A silently shortened read is
+	// indistinguishable from a complete one, so the model will quote a
+	// fragment as if it were the whole file. Only annotate when a whole-file
+	// read was actually narrowed, since that is the case that misleads.
+	if end < totalLines {
+		fmt.Fprintf(&b, "[showing %d of %d lines; the rest of the file was NOT read. Use offset=%d to continue.]",
+			len(selected), totalLines, end+1)
+	}
+
 	return b.String(), nil
 }

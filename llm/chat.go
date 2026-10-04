@@ -169,14 +169,21 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type         string          `json:"type"`
-	Text         string          `json:"text,omitempty"`
-	ID           string          `json:"id,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	ToolUseID    string          `json:"tool_use_id,omitempty"`
-	Content      string          `json:"content,omitempty"`
-	CacheControl *CacheControl   `json:"cache_control,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	// IsError marks a tool_result block as failed. Setting this is not
+	// cosmetic: research on post-tool-failure agent behavior found the
+	// operative variable is the presence of a *named* failure state, not the
+	// model's deference to tool output. Returning ok-shaped results with
+	// truncated/empty/stale payloads drove fabrication in ~45% of cases; an
+	// explicit is_error flag plus an in-band status line removes it.
+	IsError      bool          `json:"is_error,omitempty"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type openaiPromptTokensDetails struct {
@@ -311,6 +318,7 @@ func convertToAnthropicMessages(msgs []Message) []anthropicMessage {
 					Type:      "tool_result",
 					ToolUseID: msg.ToolCallID,
 					Content:   msg.Content,
+					IsError:   msg.IsError,
 				}
 				// Last tool_result gets cache_control so the prefix up to
 				// this point is cached across tool call cycles.

@@ -625,10 +625,27 @@ func firstLineTrimmed(content string, maxLen int) string {
 	return first
 }
 
+// ToolResultStatusHeader is the first line of every tool result the harness
+// produces. It is stripped from the TUI preview so the user sees the output
+// rather than the model's protocol marker.
+const ToolResultStatusHeader = "status: "
+
 func toolResultPreview(content, toolName string) string {
 	lines := splitLines(content)
 	if len(lines) == 0 {
 		return ""
+	}
+
+	// Drop the status line and the blank line after it. When only those
+	// remain there is nothing left to preview.
+	if strings.HasPrefix(lines[0], ToolResultStatusHeader) {
+		lines = lines[1:]
+		if len(lines) > 0 && lines[0] == "" {
+			lines = lines[1:]
+		}
+		if len(lines) == 0 {
+			return ""
+		}
 	}
 
 	switch toolName {

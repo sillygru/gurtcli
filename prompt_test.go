@@ -116,3 +116,68 @@ func TestEmbeddedPromptsRender(t *testing.T) {
 		t.Errorf("sessionTitlePrompt must not contain template vars:\n%s", sessionTitlePrompt)
 	}
 }
+
+// Every tool result the harness produces must start with the status line the
+// system prompt tells the model to look for. Without it the model cannot tell a
+// failed or truncated call from a clean one, which is the mechanism behind
+// post-tool-failure fabrication.
+func TestToolResultHeaderContract(t *testing.T) {
+	ok := toolResultHeader(true)
+	failed := toolResultHeader(false)
+
+	if ok == failed {
+		t.Fatal("OK and FAILED headers must differ, otherwise the status line carries no signal")
+	}
+	for _, h := range []string{ok, failed} {
+		if strings.Contains(h, "{{") {
+			t.Errorf("tool result header must be static, got %q", h)
+		}
+		if strings.TrimSpace(h) != h {
+			t.Errorf("tool result header must not carry surrounding whitespace, got %q", h)
+		}
+		if strings.Contains(h, "\n") {
+			t.Errorf("tool result header must be a single line, got %q", h)
+		}
+	}
+}
+
+// The system prompt documents a specific status vocabulary. If the harness
+// emits anything else, the contract in the prompt is a lie.
+func TestSystemPromptDocumentsStatusVocabulary(t *testing.T) {
+	for _, token := range []string{toolResultHeader(true), toolResultHeader(false)} {
+		if !strings.Contains(systemPromptTemplate, token) {
+			t.Errorf("system prompt does not document %q, so the model is never told the status line exists", token)
+		}
+	}
+}
+
+// A prompt that tells the model not to verify is a prompt that produces
+// confident, wrong reports. These instructions are the harness's only defense.
+func TestSystemPromptKeepsVerificationDiscipline(t *testing.T) {
+	required := []string{
+		"ran the verification",
+		"did not verify",
+		"status: FAILED",
+		"Never invent",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(systemPromptTemplate, phrase) {
+			t.Errorf("system prompt lost required verification guidance: %q", phrase)
+		}
+	}
+}
+
+// The plan-then-deliberate instruction pattern measurably burned reasoning
+// budget without improving outcomes, so it should not come back.
+func TestSystemPromptDoesNotEncourageUpfrontPlanning(t *testing.T) {
+	banned := []string{
+		"Plan, then execute",
+		"Before multi-step work, state a short plan",
+		"state a short plan",
+	}
+	for _, phrase := range banned {
+		if strings.Contains(systemPromptTemplate, phrase) {
+			t.Errorf("system prompt reintroduced deliberation-heavy planning: %q", phrase)
+		}
+	}
+}
